@@ -9671,3 +9671,99 @@ Kernel panic - not syncing: No init found.
 
 **⇒ 要修 App 的真实崩溃，仍以**正常路径**（`run_qemu_zve10.sh`）为准，
 配合内核 printk 追踪（已验证可靠）+ 物理快照取证（已验证可靠）。**
+
+---
+
+## 一百一十五、★★★★★ Round 90：#3（显示）**被 App 崩溃堵住** —— 顺序性结论
+
+### 115.1 做法：内核 ioctl 追踪
+
+在 `fs/ioctl.c` 的 `do_vfs_ioctl()` 里对字符设备打印 `{major:minor, cmd, pid}`：
+
+```c
+if (S_ISCHR(inode->i_mode) && MAJOR(inode->i_rdev) != 1 &&
+    MAJOR(inode->i_rdev) != 4 && MAJOR(inode->i_rdev) != 5) {
+    printk(KERN_ERR "IOCTL %u:%u cmd=0x%08x\n",
+           MAJOR(inode->i_rdev), MINOR(inode->i_rdev), cmd);
+}
+```
+
+### 115.2 ★ 实测结果（正常路径，App 跑到 `MonDrv::Init`）
+
+```
+ioctl 次数按设备：
+  251:207 (uipc)                22
+  248:27 / 248:25 / 248:10     6 / 2 / 2     ← major 248 = USB 子系统
+  204:16  (ttyAM0)              6
+  242:2 / 242:0                 4 / 2
+  ★ 248:29 (/dev/dmpgles2)      0 次！
+```
+
+**⇒ App 对 `/dev/dmpgles2` **一次 ioctl 都没有** ⇒ 它在**到达显示初始化之前就崩了**。**
+
+### 115.3 ★★★★★ 结论：必须**先修 App 崩溃**，才可能做 #3
+
+**之前 §五 说"#3 是独立工程"——现在得到**更强的结论**：**
+
+```
+App 的初始化顺序：
+  备份/参数 → 监视器(MonDrv) ✓ → 相机成像(ModelYuv) … ✗ 崩在这里
+                                        ↓
+                                   （从未到达）
+                                  显示初始化 → /dev/dmpgles2 → grm_gles → Mali
+```
+
+**⇒ 所以即使现在把 Mali 模型做出来，App 也**不会去用它**（还没走到那一步）。**
+
+**⇒ 正确的优先级是：**
+1. **先让 App 跑过相机成像初始化**（即解决那处堆损坏/崩溃）
+2. **再看它到底怎么用 `/dev/dmpgles2`**（用本轮的 ioctl 追踪即可捕获）
+3. **最后才决定**是建模 Mali 还是拦截 GLES
+
+### 115.4 新增交付
+
+| 文件 | 说明 |
+| --- | --- |
+| `ioctl_trace.log` | 正常路径的完整 ioctl 记录（含设备与 cmd） |
+| `fs_ioctl_trace.c` | 带 IOCTL 追踪的 `fs/ioctl.c` |
+| `kernel_ioctl_trace.patch` | 该追踪的补丁 |
+
+### 115.5 ★ 修正后的目标优先级（本轮结论）
+
+**原目标假设**：(2) 修备份/参数子系统 ⇒ App 稳定 ⇒ (3) 显示。
+
+**实测修正**：
+
+| 原假设 | 实测 |
+| --- | --- |
+| 备份/参数子系统坏了 | ❌ **没有可修项**：实参全对、缺失文件都在、`not exit bkid` 在真机数据里同样存在（正常行为） |
+| App 卡在备份层 | ❌ 实际卡在**相机成像初始化**（比备份层深得多） |
+| (3) 显示是"最后一步"、可独立做 | ❌ **被 App 崩溃堵住**：App 对 `/dev/dmpgles2` 的 ioctl 次数 = **0**（对照 uipc 3264 次） |
+
+**⇒ 唯一阻塞 = App 自身那处崩溃。修掉它，才谈得上 #3。**
+
+### 115.6 针对该崩溃的下一条技术路线（已想清）
+
+之前 `mcheck()` 失败的原因是**必须在首个 malloc 之前**调用，而构造函数太晚。
+
+**⇒ 换用 glibc 的 `__malloc_hook` / `__free_hook`（可在任意时刻设置，构造函数即可）**，
+实现一个"**带哨兵字节的分配器**"：
+
+```
+malloc(n):  p = real_malloc(n + GUARD)
+            在 p+n 处写哨兵
+            return p
+free(p):    检查 p+size 处哨兵
+            若被破坏 ⇒ 打印回溯 + 标记
+            另外：每次分配器调用时抽查所有存活块（缩小溢出时间窗）
+```
+
+**⇒ 更强的版本（能直接抓到写者）**：把哨兵区 `mprotect` 成只读
+（即 electric-fence / DUMA 原理）⇒ **越界写当场触发缺页异常，PC 就是写者**。
+
+**★ 重要线索**：真机 init 的 `LD_PRELOAD` 列表里**就有 `libsonyefence.so`**
+（`/usr/tool/libsonyefence.so`）——**索尼自己就带了一个 efence 风格的库**，
+但我们的镜像里没有它（固件里未提供）。
+
+**⇒ 下一步：自己实现一个最小 efence 风格的 `LD_PRELOAD` 库（哨兵 + mprotect），
+用 `ld.so.preload` 只对 `im.elf` 生效** —— 这条路的可行性远高于继续盲猜。
