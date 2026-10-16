@@ -10766,3 +10766,55 @@ App 调 u_osal_snd_sync_direct(arg0=0x910042, arg1=…)
 
 **⇒ 真正的修复点应在**用户态库**（`u_osal_snd_sync_direct` 的缓冲区布局）
 或**应用的调用约定**，而不是只保护某一个进程。**
+
+### 124.9 Round 107：公共 API 的语义与"长度没被传下去"
+
+**`libosal_uipc.so` 导出的公共 API `osal_snd_sync_direct(r0, r1)`（0x4134，336 B）：**
+
+```asm
+4134: osal_snd_sync_direct(r0, r1)
+413a: mov  r6, r0
+413e: mov  fp, r1
+4140: cbnz r1, 4156              ; arg1 == NULL ⇒ 返回 0xfffffc00
+4156: ldr  r3, [r1, #0]           ; ★★★ **长度 = *(arg1)**（arg1 指向的结构体首字段）
+4158: cmp  r3, #16
+415a: bls  4142                  ; 长度 <= 16 ⇒ 返回 0xfffffc00
+415c: tst.w r0, #0x8000
+4160: bne  416a
+4162: blx  u_osal_snd_sync_direct@plt    ; ★★ 却只以 (r0, r1) 调用
+…
+416e: lsls r6, r0, #17           ; 后面用 r0 算 handle
+4170: str  r3, [r7, #0]          ; 长度 r3 另存
+419a: sub.w sl, r3, #16
+41b8: asrs r3, r3, #5            ; 按 32B 为单位折算块数
+```
+
+**⇒ **长度 `r3 = *(arg1)` 被算出来了，却没有传给薄层**；
+薄层 `u_osal_snd_sync_direct(r0, r1)` 把 `{r0, r1}` 当作 8 字节头 ⇒
+内核读到的首字段是 `r0`（实测 `0x910042`，是一个 handle/ID），而不是长度。**
+
+**⇒ 于是内核按 `0x910042`（≈9.5 MB）执行 `copy_to_user`。**
+
+### 124.10 这是一个**真实的实现不一致**
+
+- 两版 `osal_uipc.ko`（initrd 39,624 / nflasha15 38,960）的 `__k_4u_snd_sync_direct`
+  **都**按"首字段=总长度"实现
+- 两版 `libosal_uipc.so`（initrd 26,652 / nflasha15 26,692）的
+  `u_osal_snd_sync_direct` **都**只传 `{r0, r1}`（8 字节）、且都只 `sub sp,#8`
+
+**⇒ 即：在同一固件版本内，用户态薄层与内核模块对"首字段"的解释**不一致**。**
+
+**⇒ 真机上之所以不炸，最可能是：真机路径下 App **不会**用 `osal_snd_sync_direct`
+（或走到该分支的前提不同），而我们在 QEMU 下让它走了这条路。**
+
+### 124.11 阶段性结论
+
+**根因（实验确证）**：内核按 App 传入的字段当长度，向 App 地址空间写 ~9.5MB ⇒ 碾坏堆与 GOT。
+
+**已可用的绕过**：`guard/libredir.c`（把该写入改道到安全缓冲区）。
+**必须同时覆盖 `im.elf` 与 `sen.elf`** 才能让 `im.elf` 的崩溃归零（§124.7）。
+
+**下一步（按性价比）**：
+1. **用 `libredir`（双进程版）让 App 跑过去**，看它能推进到哪一步（是否接近显示初始化）
+2. 再回头做治本（需确认 `osal_snd_sync_direct` 的**预期调用约定**——
+   很可能 App 侧应传"长度结构体"，而我们环境让它传了 handle）
