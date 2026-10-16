@@ -9575,3 +9575,99 @@ address: 00000000, trap_no: 00000006      ← 跳到 NULL
   - ⚠️ 坑 2：老内核（3.0.27）对现代 e2fsprogs 写的特性敏感，必要时用 `-O none`
   - ⚠️ 坑 3：`ramdisk_size` 必须 ≥ 镜像大小（13MB 镜像需 `ramdisk_size=16384`）
 - 也可打包成 cpio.gz initramfs（本内核下未验证成功，暂用 CRAMFS 原版最稳）
+
+---
+
+## 一百一十四、★★★★ Round 89：**两条启动路径用的 `backup.ko` 不是同一份！**
+
+### 114.1 关键区分（之前一直被忽略）
+
+| 路径 | 用的 `backup.ko` | 大小 | 说明 |
+| --- | --- | --- | --- |
+| **正常启动**（`run_qemu_zve10.sh` / `handoff_p0/initrd.img` + eMMC） | **我们打过补丁的那份**（来自 nflasha15 `/usr/kmod`） | 73,764 B | 含**惰性初始化 trampoline** + `0x950` nop |
+| **交互 shell**（真机 CRAMFS initrd） | **initrd 自带的**（110,248 B） | 110,248 B | **未打补丁**，`Data_SearchId` 是原版 |
+
+**⇒ 所以 shell 里跑 `im.elf` 观察到的崩溃，**不等于**正常路径的崩溃！**
+（shell 路径下 `Data_SearchId` 原版在表为空时返回 0 ⇒ 走不同错误路径。）
+
+### 114.2 ★ 纠正一个误判：回溯里的 `osal_printf+0x98c` 是**符号大小算错**
+
+用 initrd 那份 `backup.ko` 查符号表：
+
+```
+0000038c 00000030 t osal_printf        ← ★ 只有 48 字节（0x30）
+```
+
+**⇒ `osal_printf` 只有 48 字节，不可能有 `+0x98c`。
+内核回溯把符号大小当成 `0xdd8`（因为报了 `+0x98c/0xdd8`）⇒ **误报**。**
+
+**真正落到 `0x5f06ad18` 的是模块偏移 `0xd18` 处**另一个函数**，
+它一开头就调 `Data_SearchId` / `Data_GetSize` / `Data_GetDataPt`：**
+
+```asm
+    d18: mov ip, sp
+    d1c: push {r4-r9, sl, fp, ip, lr, pc}
+    d24: sub sp, sp, #92
+    d38: bl  Data_SearchId        ← ★
+    d3c: subs r7, r0, #0
+    d44: beq e20                  ← 返回 0 时走错误路径（有处理）
+    d48: bl  Data_GetSize
+    d8c: bl  Data_GetDataPt
+    dc0: bl  __copy_to_user
+    dd4: bl  Data_GetDataPt
+    e0c: bl  Data_GetDataPt
+    e1c: bl  memcpy
+```
+
+**⇒ 该函数内**没有**间接调用（无 `blx` / `ldr pc`）⇒ 跳 NULL 不在这里直接发生，
+更可能是它调用的 `Data_GetDataPt` 返回 NULL 后被**当作指针使用**。**
+
+### 114.3 结论与下一步
+
+**⇒ 想调试"App 的真实崩溃"，必须在**与正常路径相同**的模块配置下跑。**
+两个可行做法：
+1. 在 shell 里 `rmmod` 掉 initrd 那套依赖链，改 insmod **nflasha15 里我打过补丁的** `backup.ko`
+2. 或把补丁版 `backup.ko` 塞进 initrd 树，重建一个自定义 initrd（需先解决
+   §113.4 里的权限/符号链接问题）
+
+**⇒ 这也解释了为什么 shell 路径一跑就崩、而正常路径能跑到相机成像阶段。**
+
+### 114.4 重建 initrd 的阻塞点（已排查到底）
+
+**目标**：把补丁版 `backup.ko` 塞进 initrd，让交互 shell 与正常路径配置一致。
+
+**已做完**：解包 → 放入文件 → `chmod 755` → 为 busybox 重建 `sh/ash/mount/...` 符号链接 → mke2fs。
+
+**镜像验证全部正确：**
+```
+bin/busybox  Type: regular  Mode: 0755
+bin/sh       Type: symlink  Fast link dest: "busybox"
+sbin/init    Type: regular  Mode: 0755
+```
+
+**但内核仍报：**
+```
+Failed to execute /sbin/init.  Attempting defaults...
+（然后 /etc/init、/bin/init、/bin/sh 全部失败）
+Kernel panic - not syncing: No init found.
+```
+
+**⇒ 已排除**：权限、符号链接丢失、ext2 特性（试过 `-O none`）、`ramdisk_size`（试过 16384）、
+镜像尺寸（14MB / 空闲 3.4MB）、文件完整性（逐文件比对大小与 ELF magic）。
+
+**⇒ 结论**：老内核（3.0.27）的 ext2-over-ramdisk 路径对**新 e2fsprogs(1.47)** 生成的镜像
+有兼容问题（尽管能挂载，但无法 exec）。**继续走这条路性价比很低。**
+
+**⇒ 运行时 `rmmod` 换模块也验证不可行**（`rmmod` 直接触发内核异常，见本轮日志）。
+
+### 114.5 因此：交互 shell 的定位
+
+**`shell_zve10.sh` / `shell_camera.sh` 是**极强的"环境探查/现场取证"工具**（已多次证明价值）：
+- 看 `lsmod` / `/sys/module/*/parameters/*` / `/proc/*`
+- 挂载分区、`busybox chroot` 进相机 rootfs
+- 手动跑 `im.elf` 观察它自己的报错
+
+**但它**不能替代**正常路径的功能测试**（模块配置不同）。
+
+**⇒ 要修 App 的真实崩溃，仍以**正常路径**（`run_qemu_zve10.sh`）为准，
+配合内核 printk 追踪（已验证可靠）+ 物理快照取证（已验证可靠）。**

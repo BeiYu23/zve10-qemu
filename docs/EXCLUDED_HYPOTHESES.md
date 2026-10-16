@@ -108,3 +108,45 @@ libc.so.6(cfree+0x55)
    - 用**硬件 watchpoint** 监控可疑 chunk 的头部
    - 既然 App 已进入**多线程**阶段，注意**线程间共享结构**的竞争
    - `libosal_uipc.so` / `libosal_utm.so`（UIPC 消息栈）是当前最可疑的方向
+
+---
+
+## 七、后续补充（2026-10 更新）
+
+### 7.1 ❌ 排除：备份数据缺 key 导致堆损坏
+
+`IMCMN` 会打印大量 `not exit bkid` / `invaid data size`，一度被怀疑是堆损坏源头。
+**把真机 `/setting/Backup.bin` 与我们的 `BACKUP.BIN.real`/`fixed` 做键级对比后确认：
+那些 key（如 `0x00d50099`、`0x00fa0028`）在真机数据里本来就不存在**
+⇒ 那些日志是**正常行为**（可选键缺失），不是损坏源头。
+
+### 7.2 ⚠️ 一个容易踩的误判：内核回溯的符号大小可能错
+
+实测回溯给出 `(osal_printf+0x98c/0xdd8 [backup])`，但查 `backup.ko` 符号表发现：
+
+```
+0000038c 00000030 t osal_printf     ← 只有 48 字节！
+```
+
+**⇒ `osal_printf` 不可能有 `+0x98c`。内核把符号大小算成了 `0xdd8`（错），
+真正落点是模块偏移 `0xd18` 处**另一个函数**。
+⇒ **不要盲信回溯里的 `+offset/size`，要用符号表核实。**
+
+### 7.3 ⚠️ 两条启动路径的模块**不是同一份**
+
+| 路径 | `backup.ko` | 大小 |
+|------|-------------|------|
+| 正常启动（eMMC 的 `/usr/kmod`） | 我们打过补丁的那份 | 73,764 B |
+| 真机 CRAMFS initrd（给交互 shell 的那份） | initrd 自带 | 110,248 B |
+
+**⇒ 用交互 shell 复现的崩溃**不等于**正常路径的崩溃。做功能验证要以正常路径为准。**
+（运行时 `rmmod` 换模块实测会触发内核异常，不可行。）
+
+### 7.4 重建 initrd 的坑（想改 initrd 的人注意）
+
+- 解包会**丢失可执行位与符号链接** ⇒ 必须 `chmod 755` + 为 busybox 重建 `sh`/`mount`/… 链接
+- 老内核（3.0.27）的 ext2-over-ramdisk 对 **新 e2fsprogs(1.47)** 生成的镜像
+  **能挂载但无法 exec**（`Failed to execute /sbin/init` → `No init found`）
+  ⇒ 即便权限/链接/特性（试过 `-O none`）都正确也如此；这条路易走死
+- `ramdisk_size` 必须 ≥ 镜像大小（13MB 镜像需 `ramdisk_size=16384`）
+- busybox 是精简版：没有 `head`/`id`/`df`；`chroot` 用 `busybox chroot`
