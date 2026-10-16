@@ -10233,3 +10233,55 @@ sen.elf（传感器服务）没启动
 3. 若 `sen.elf` 因缺某设备/服务而退出，就把那个设备补齐
 
 **⇒ 这是本 session 第一个"**明确的、可执行的修复目标**"。**
+
+### 121.5 ★★★★★★★ 修复已生效：`sen.elf` 现在会启动了！
+
+**根因定位链（全部有反汇编证据）：**
+
+```
+1. UIPC 响应数据里，89/90 次失败同步发送的目标 ID = 0x008f013a
+2. 该 ID 出现在 /usr/bin/sen.elf（19,208 B）
+3. 真机 /sbin/init 的 run_bg_process 列表含 /usr/bin/sen.elf
+4. 但内核 EXECVE 追踪显示 sen.elf 从未被启动
+5. 反汇编 init：sen.elf 的启动被全局标志 0x14884 控制
+6. 该标志只由 check_forced_senser() 写：
+     9114: open("/setting/sen/smode")
+     911a: fd < 0 ⇒ 返回 -1（标志保持 0）
+     912a: strncmp(buf, "UU", 2)      ← 内容必须以 "UU" 开头
+     9140: str r2, [0x14884]          ← 置 1 ⇒ 启动 sen.elf
+7. 我们的 nflasha2（= /setting）里**根本没有 /sen 目录**
+   ⇒ check_forced_senser() 返回 -1 ⇒ sen.elf 被跳过
+```
+
+**修复：在 nflasha2 里创建 `/sen/smode`，内容 `"UU\n"`。**
+
+**★★★ 实测修复效果（`ab_sen.img`）：**
+```
+EXECVE /usr/bin/bootin.elf
+EXECVE /usr/bin/sen.elf          ← ★★★ 现在启动了！（此前完全没有）
+EXECVE /usr/bin/net_cmdd.elf
+EXECVE /usr/bin/launch_shell.elf
+EXECVE /bin/ash
+EXECVE /usr/bin/im.elf
+```
+
+**⇒ 第一步修复成功。**
+
+### 121.6 但还有下一环：sen.elf 起来了却没注册处理器
+
+- `-1020` 次数**仍是 90**（未下降）
+- `0x80000008`（reg_msg_queue_cb）**仍是 8 次**（未增加）
+- 失败发生在 sen.elf 启动**之后**（日志行号 1958 > 959）
+
+**⇒ 说明 `sen.elf` 虽然被 exec 了，但**没能完成初始化/注册**。**
+可能原因：它自己启动失败后退出、或缺某个设备/服务、或初始化更慢。
+
+**⇒ 下一步**：查 sen.elf 启动后是否立刻退出 / 卡在何处
+（可加 `do_exit` 追踪，或在 shell 里手动 chroot 运行 sen.elf 观察它的报错）。
+
+### 121.7 交付
+
+| 文件 | 说明 |
+| --- | --- |
+| `ab_sen.img` | **含 `/setting/sen/smode` 的镜像（sen.elf 可启动）** |
+| `sen.log` | 修复后的引导日志（sen.elf 已出现在进程序列中） |
