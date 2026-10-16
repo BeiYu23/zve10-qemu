@@ -9955,3 +9955,86 @@ ip = 0x041171cc  →  libosal_uipc.so .got + 0xa0
 **⇒ 优先查 1**：把 kernel 回写的那 12 字节内容打印出来（在用户侧 ioctl 后 dump 缓冲区），
 看它是否含 `0x107` 之类的值。**这可以直接用 `LD_PRELOAD` 拦截 `ioctl` 来做，
 不必改内核。**
+
+---
+
+## 一百一十八、★★★★★★★ Round 93：新工具抓出 **UIPC 同步发送大量失败（自定义错误码 -1020）**
+
+### 118.1 新工具：`ioctl` 拦截 + dump（`LD_PRELOAD`，不必改内核）
+
+在 `guard/libguard.c` 里增加 `ioctl()` 的 interposition（用 `syscall(SYS_ioctl,…)` 避免递归），
+对 UIPC 的 `0x800000xx` 命令 dump **24 字节响应 + 返回值 + errno**：
+
+```c
+int ioctl(int fd, unsigned long req, ...) {
+    ...
+    errno = 0;
+    r = syscall(SYS_ioctl, fd, req, arg);
+    if (enabled && (req & 0xff000000UL) == 0x80000000UL)
+        printk→ "[IOC] fd=%d req=0x%lx ret=%ld errno=%d d=<24B hex>"
+    return r;
+}
+```
+
+**⇒ 实测一次启动抓到 **668 条** UIPC ioctl 记录 —— 等于给 UIPC 装了个协议分析仪。**
+
+### 118.2 ★★★★★ 统计结果（按 req + ret + errno）
+
+```
+194  req=0x8000000a  ret=0  errno=0
+157  req=0x8000000b  ret=0  errno=0
+ 96  req=0x80000001  ret=0  errno=0
+ 93  req=0x80000002  ret=0  errno=0
+★90  req=0x80000005  ret=-1 errno=1020      ← 同步发送失败！
+ 67  req=0x80000005  ret=0  errno=0
+ 38  req=0x8000000c  ret=0  errno=0
+ 37  req=0x80000004  ret=0  errno=0
+ 35  req=0x80000006  ret=0  errno=0
+```
+
+**⇒ `0x80000005`（= `__k_4u_snd_sync_msg`，同步发送）有 **90 次失败**，
+错误码 `ret=-1 / errno=1020`。**
+
+### 118.3 ★ `errno = 1020` 是什么
+
+- **不是标准 errno**（Linux 标准 errno 最大约 133）
+- libc 的 syscall 包装把内核返回的 **`-1020`** 映射成 `errno = 1020`
+  ⇒ **即内核 `osal_uipc.ko` 返回了自定义错误码 `-1020`（-0x3FC）**
+
+**★ 旁证**：用户态反汇编里出现
+```asm
+2626: mvn.w r5, #1020      ; r5 = -1021（0xFFFFFC03）—— 与 -1020 同族
+2646: mvn.w r5, #1020
+```
+**⇒ 说明用户态**知道**这个错误码，会走专门的处理分支。**
+
+### 118.4 失败时的缓冲区内容（垃圾）
+
+```
+[IOC] fd=3 req=0x80000005 ret=-1 errno=1020 d=3a018f007c9be85e00900b044c686f0491c2000094000000
+[IOC] fd=3 req=0x80000005 ret=-1 errno=1020 d=6a019400fc9be85e1000000000000000cec3000000000000
+[IOC] fd=3 req=0x80000005 ret=-1 errno=1020 d=3a018f00549be85eff0000004c686f0491c2000094000000
+```
+**⇒ 失败时内核**没有填充**响应（内容仍是上次残留/未初始化）**
+—— 例如 `ff000000`、`10000000`、`00000000`。**
+
+**⇒ ★ 这非常可能就是 §117 里看见的"`pc=0x106` 跳垃圾指针"的来源：
+用户态把**未初始化的响应字段**当成了回调指针使用的可能性大增。**
+
+### 118.5 崩溃点的变化（说明存在多条错误路径）
+
+| 日志 | 崩溃位置 |
+| --- | --- |
+| 无 guard | `pc=0x106`，`THREAD_INFRA2` |
+| 有 guard（本轮） | `address=0, trap_no=6`，`THREAD_INFRA0` (pid 131) |
+| 有 guard + ioctl 拦截 | `address=0, trap_no=6`，`THREAD_INFRA1` (pid 132) |
+
+**⇒ 三条 `THREAD_INFRA*` 线程都在崩，且栈/时序一变崩溃点就变
+⇒ 更支持"**共享状态被破坏后各处开花**"，而不是单点 bug。**
+
+### 118.6 下一步（很具体）
+
+1. **查 `-1020` 的含义**：在 `osal_uipc.ko` 里找产生该错误的路径
+   （很可能是"超时 / 目标未就绪"）
+2. **查为什么同步发送会失败 90 次**：UIPC 的对端（哪个子系统）没在 QEMU 里响应？
+3. **对失败时那 24 字节做"是否被当指针用"的核对**
