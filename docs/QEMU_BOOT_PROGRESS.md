@@ -11378,3 +11378,35 @@ App 应落到兜底分支。**
 返回的是 UIPC 同步消息的结果字段，而该字段在长度错位下可能是**垃圾/0**。
 ⇒ **这也可能是我们观测到 `adr=0x0`（而不是预期兜底值）的原因之一。**
 ⇒ 因此"注入 key 值"与"应用 UIPC 补丁"应**一起**验证，避免相互掩盖。
+
+### 126.16 Round 121：用 shell 手动加载 liro 验证 —— 被更新器模块集挡住
+
+**思路**：不去改备份数据，直接用交互 shell **手动** `insmod liro.ko adr=<有效地址>`，
+看驱动是否打印 `Load firmware %s to %x`（它**先打印再加载**，所以固件文件不必真实存在）。
+
+**实测（更新器环境）：**
+
+```
+mount -t ext2 -o ro /dev/nflasha15 /mnt        ✓ （拿到 /mnt/kmod/liro.ko）
+insmod /mnt/kmod/liro.ko adr=0x20000000 fn=/tmp/av-cam.bin load=1 debug=1
+  ⇒ insmod: can't insert '/mnt/kmod/liro.ko': unknown symbol in module, or unknown parameter
+  ⇒ rc=2
+```
+
+**⇒ `liro.ko` 依赖 `osal_uipc, backup, osal_utm, dma330`，
+而更新器 initrd 的模块集与真机 nflasha15 **不完全一致**（例如缺 `dma330`）
+⇒ 在 shell 环境里无法手动加载它。**
+
+**⇒ 因此"用 shell 验证地址换算"这条路**走不通**：
+必须在**正常路径**（模块集完整）下验证。**
+
+### 126.17 下一步（收敛到两个可行动作）
+
+| # | 动作 | 说明 |
+| --- | --- | --- |
+| **A** | **离线"造出"备份 key `0x00FA007C`** | 需改页 0xFA 的 `lo_id`/`base_off` 保持一致性（工作量中等） |
+| **B** | **改 `liro.ko` 自身**：把"adr==0 ⇒ 不加载"改成"adr==0 ⇒ 用一个内置的合法物理地址" | 二进制约 2–3 条指令的补丁，**最省事** |
+| C | 等真机在线读真实值 | 需要外部条件 |
+
+**⇒ 建议做 B**：在 `liro_init` 的 0x54-0x68 那段，把"`adr==0` 就跳过"改为
+"`adr==0` 就取内置常量"（例如 `0x20000000`）⇒ **只影响 liro，不动 App、不动备份数据。**
