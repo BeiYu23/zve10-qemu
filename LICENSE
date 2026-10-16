@@ -19,17 +19,3 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
--------------------------------------------------------------------------------
-
-注意 / NOTICE
-
-本仓库仅包含原创的补丁、脚本、文档与派生技术数据，不包含任何 Sony 固件、
-二进制或证书。使用者需自行从自己的设备导出固件，并自行承担合规责任。
-
-This repository contains only original patches, scripts, documentation and
-derived technical data. It contains NO Sony firmware, binaries or certificates.
-Users must dump firmware from their own devices and are responsible for their
-own compliance.
-
-文档（docs/）亦可按 CC BY 4.0 使用。Documentation (docs/) may also be used
-under CC BY 4.0.
