@@ -166,7 +166,7 @@ data/                    派生技术数据（分区表、IMDB 表、机型对�
 - 已定位到机制：glibc `_int_malloc` 用"尺寸被夸大的块"满足了 3.16MB 请求 ⇒ chunk split 越界
 - 已排除：内存压力、`brk`、`mmap`、dlopen 缺库、size 计算、jemalloc、`MALLOC_OPTIONS`
 
-**已试过但行不通的路（详见 [docs/HANDOFF.md](docs/HANDOFF.md) §十）：**
+**已试过但行不通的路（详见 [docs/EXCLUDED_HYPOTHESES.md](docs/EXCLUDED_HYPOTHESES.md)，内含 16 类已排除假设的完整清单）：**
 
 - ✗ **`mcheck()` 注入** —— `mcheck` 必须在任何 `malloc` 之前调用，
   而动态库构造函数跑在 `ld.so` 重定位之后 ⇒ **静默失效**。
