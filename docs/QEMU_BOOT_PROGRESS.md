@@ -10317,3 +10317,30 @@ EXECVE /usr/bin/im.elf
 ```
 
 **⇒ 下一步：确认 `/proc/osal/uipc` 是否存在；再顺着 sen.elf 的启动顺序找它卡在哪。**
+
+### 121.9 Round 98：依赖全部存在，卡点仍未定位
+
+**用交互 shell 在 guest 里核对 `sen.elf` / `libsencore.so` 的全部依赖：**
+
+```
+/proc/osal/           → minfo  uipc  ulogio        ✓ 都在
+/proc/snsc_boot_time                                ✓
+/dev/gpio   (240:0)                                 ✓
+/dev/mem    (1:1)                                   ✓
+/dev/nflasha5 (252:5, block)                        ✓
+/setting/sen/smode                                  ✓（已建）
+/usr/bin/sen.elf        19,208 B  -r-xr-xr-x        ✓ 可执行
+/usr/lib/libsencore.so 366,412 B  -r-xr-xr-x        ✓
+```
+
+**⇒ **依赖一个都不缺**，但 `sen.elf` 在正常启动里依然不注册处理器。**
+
+**在 shell 里手动跑 `sen.elf` 能启动（不报 "not found"），但它的输出没被捕获到
+（后台运行 + ash 管道缓冲）。**
+
+**⇒ 下一步需要更强的观测**：
+- 让 `sen.elf` 前台运行并把输出直接写串口（不经过 ash 管道）
+- 或用内核 `printk` 追踪它在**打开哪个文件/设备后停下**（扩展 MISSDEV 为"所有打开"）
+- 或看 `/proc/osal/uipc` 的内容（可能列出已注册的处理器 id）
+
+**注意**：`bash` 的 `timeout` 在 busybox 里不可用（`rc=127`），需改用 `&` + `sleep`。
