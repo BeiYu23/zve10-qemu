@@ -11069,3 +11069,33 @@ im.elf 的崩溃指标为 0，是因为**它压根没跑起来**，而不是被�
    看它崩在同一处还是别处 —— 这一步最干净
 2. 用 `address=0`（NULL 跳转）反查**哪个函数指针没被初始化**
 3. 若与其它进程无关，则集中攻 im.elf 自身的初始化序列
+
+### 125.14 Round 114：单独跑 im.elf —— 崩在内核 `backup.ko` 的 `Data_SearchId` NULL 路径
+
+**用交互 shell 在相机 rootfs 里单独启动 `im.elf`（`/tmp` 需先挂 tmpfs，否则只读）：**
+
+```
+[<5f06ad18>] (osal_printf+0x98c/0xdd8 [backup]) from [<5f06b4e8>] (Backup_nread+0x44/0x5c [backup])
+[<5f06b4a4>] (Backup_nread+0x0/0x5c [backup])   from [<5f0719b8>] (backup_osal_call_func+0x200/0x9e8 [backup])
+address: 00000000, trap_no: 00000006      ← NULL 跳转
+```
+
+**★ 注意**：`osal_printf+0x98c` 是**符号大小算错导致的误报**
+（`osal_printf` 实际只有 48 字节，见 §114.2）。
+真地址 `0x5f06ad18` = 模块偏移 `0xd18` = **一个调用 `Data_SearchId` / `Data_GetDataPt` 的函数**。
+
+**⇒ 结论：**
+- **shell（更新器）环境里的 `backup.ko` 是 `initrd` 自带、**未打补丁**的版本**
+- **`Data_SearchId` 在数据表为空时返回 0 ⇒ 调用方把 NULL 当指针用 ⇒ 内核 NULL 跳转**
+- **这正是我们**惰性初始化 trampoline**（`backup_lazy_final.ko`）所修的问题**
+  （`Backup_load=0` ⇒ 表为空）
+
+**⇒ 因此这一步的价值：**
+1. 确认了"单独跑 im.elf"时它**先撞内核 backup 层**，而不是 App 自身的堆问题
+2. 给出了一个**可验证的下一步**：把打好补丁的 `backup.ko` 放进 shell 环境，
+   看 im.elf 能否越过这一层
+
+### 125.15 下一步
+
+**把 `backup_lazy_final.ko`（含惰性初始化 trampoline）放进镜像，在 shell 里换上它，
+再单独跑 im.elf** ⇒ 若崩点后移，则继续；若仍崩在同处，说明 shell 环境另有差异。
