@@ -9767,3 +9767,136 @@ free(p):    检查 p+size 处哨兵
 
 **⇒ 下一步：自己实现一个最小 efence 风格的 `LD_PRELOAD` 库（哨兵 + mprotect），
 用 `ld.so.preload` 只对 `im.elf` 生效** —— 这条路的可行性远高于继续盲猜。
+
+---
+
+## 一百一十六、★★★★★★ Round 91：**哨兵分配器成功 ⇒ 证明主崩溃"不是堆越界写"**
+
+### 116.1 新工具：`libguard.so`（哨兵字节分配器，interposition）
+
+**为什么不用 `mcheck()`**：它必须在**任何 malloc 之前**调用，而动态库构造函数跑在
+`ld.so` 重定位之后 ⇒ 静默失效（§109.1 已验证）。
+
+**改用 interposition**：在预加载库里重新定义 `malloc/calloc/realloc/free`，
+每个分配多要 `16B 头 + 32B 尾哨兵`，释放时校验哨兵。
+
+**两个关键实现坑（都踩过）**：
+1. **绝不要在 `malloc` 里调 `dlsym`** —— `dlsym` 自身可能分配内存 ⇒ 递归/崩溃。
+   实测这样会让 **`bootin.elf` 崩在 `page translation fault`**（对所有程序生效，
+   不只是目标程序）。
+   ⇒ 改为直接用 glibc 导出的 **`__libc_malloc`/`__libc_free`/`__libc_realloc`/`__libc_calloc`**。
+2. 用 `__progname` 过滤，只对 `im.elf` 启用；其它程序**完全透传**。
+3. 哨兵用 **32 位**（ARM 32 位下 64 位常量会被截断）。
+
+**安装方式**：
+```sh
+# /lib/libguard.so  +  /etc/ld.so.preload 内容为 "libguard.so"
+```
+
+### 116.2 ★★★ 实测结果
+
+```
+[GUARD] enabled for im.elf                 ← 构造器判定成功
+libguard.so 在 im.elf 地址空间: 041d4000-041e5000  ✓
+
+App 进度:  FixedArea / Mon Buf Size  ✓（跑到 MonDrv::Init）
+崩溃:      pc=0x106, THREAD_INFRA2 (pid 133)
+           ★ 与"未加哨兵"时**完全一致**
+★ 没有任何 OVERFLOW-DETECTED —— 哨兵字节**完好无损**
+```
+
+### 116.3 ★★★★★ 结论：**主崩溃（`pc=0x106`）不是 malloc 堆越界写**
+
+**如果它是堆越界写，哨兵必被破坏。既然哨兵完好 ⇒ 该崩溃另有原因。**
+
+**⇒ 由此必须把此前混为一谈的**两个不同问题**分开：**
+
+| 编号 | 现象 | 性质 |
+| --- | --- | --- |
+| **A** | `pc = 0x00000106`（`THREAD_INFRA2`，跳到劣质函数指针） | **不是堆越界**（本轮证明） |
+| **B** | `libObj.so` 线程内 `glibc detected: free(): invalid next size` | 堆损坏（另一条路径/时机） |
+
+**⇒ 之前我把 A 的机制用 B 的证据解释（§102/§104），这个推理链需要修正。**
+
+### 116.4 A 的可能原因（新方向）
+
+`pc=0x106` 是**跳到一个坏函数指针**（Thumb `0x107`，且 `r0=r4=0x107`）。
+结合 §104.8 的寄存器（`ip`/`r3` 落在 `libosal_uipc.so` 的 `rw` 段）：
+
+- **函数指针表未初始化**（UIPC 回调表）
+- 或某结构体的**函数指针字段被写成了小整数**
+
+**⇒ 下一步**：用 UIPC 相关的追踪定位那张表；
+或对 `libosal_uipc.so` 的 `rw` 段做"谁写了它"的排查。
+
+### 116.5 新增交付
+
+| 文件 | 说明 |
+| --- | --- |
+| `guard/libguard.c` / `libguard.so` | 哨兵字节分配器（可复用的堆越界检测工具） |
+| `guard_test.log` | 本轮验证日志（哨兵未被破坏） |
+
+---
+
+## 一百一十七、★★★★★★★ Round 92：**问题 A 定位到崩溃指令** —— UIPC 发送路径的栈变量被覆写
+
+### 117.1 完整调用链（逐层展开，全部有反汇编证据）
+
+```
+libbackup.so : Backup_read (0x1205)
+   └─ blx backup_sync_msg@plt        → 返回点 = 0x1227 ✓（与崩溃时的 lr 完全一致）
+        libbackup.so : backup_sync_msg (0xf64)
+           ├─ blx osal_valloc_msg_wait@plt (0xdb4)
+           ├─ blx osal_snd_sync_msg@plt    (0xe08)
+           └─ blx osal_free_msg@plt        (0xe18)
+                libosal_uipc.so : osal_snd_sync_msg (0x3ec8, 16B)
+                   └─ b.w __osal_snd_sync_msg@plt (0x1a68)
+                        libosal_uipc.so : __osal_snd_sync_msg (0x3db0)
+                           └─ b.w u_osal_snd_sync_msg@plt (0x1768)
+                                libosal_uipc.so : u_osal_snd_sync_msg (0x2604)
+                                   └─ ★ 崩溃就在这里
+```
+
+### 117.2 ★★★★★ 崩溃指令（`libosal_uipc.so` 0x2604 函数内）
+
+```asm
+    2614: add  r3, pc             ; r3 = PC 相对基址（全局表）
+    2616: movs r4, #0
+    2620: str  r4, [r7, #8]       ; ★ [r7+8] **显式初始化为 0**（回调函数指针）
+    2626: mvn.w r5, #1020
+    262c: ldr  r4, [r3, r2]       ; r4 = 全局表项
+    2638: ldr  r0, [r4, #0]
+    263a: blx  ioctl@plt          ; ★ ioctl(fd, 0x80000005, &buf[r7+16]) → /dev/uipc
+    263e: cbnz r0, 267c
+    2640: ldr  r3, [r7, #8]       ; ★★ 从栈上取「回调函数指针」
+    2644: cbz  r3, 2672           ; 若为 0 则跳过（**正常情况下本该是 0**）
+    264a: mov  r0, r9
+    264c: ldr  r1, [r7, #12]
+    264e: blx  r3                 ; ★★★ 跳过去 —— 这里就是 pc = 0x106！
+```
+
+### 117.3 ★ 关键推理
+
+- `[r7+8]` 在 0x2620 **被显式写成 0**；
+- 正常路径应当命中 `cbz r3, 2672` 直接跳过这次调用；
+- 但崩溃时 `r3 = 0x107`（`r0 = r4 = 0x107`，`r5 = 0x01070e83` 也含 `0x107`）
+  ⇒ **`[r7+8]` 在 `ioctl` 前后被覆写了**；
+- `ioctl` 的响应缓冲区在 **`r7+16`**，而 `[r7+8]` **紧邻其下方**
+  ⇒ **典型的栈内缓冲区溢出 / 结构体尺寸不匹配**。
+
+**★ 旁证**：ioctl 号 `0x80000005` 在正常运行的追踪里出现 **490 次**
+（见 `ioctl_trace.log`）⇒ UIPC 发送路径平时是工作的，**只在特定条件下崩**。
+
+### 117.4 与 §116 的哨兵实验结果一致
+
+哨兵分配器证明"**不是 malloc 堆越界**"（§116.3）
+—— 而本轮的结论是"**是栈上的覆写**"，两者**互相印证**：
+**问题 A 属于栈内存被写坏，不是堆。**
+
+### 117.5 下一步（精确）
+
+1. **确认 `osal_uipc.ko`（内核侧）与 `libosal_uipc.so`（用户态）的 ioctl 协议是否匹配**
+   —— 尤其 `0x80000005` 的响应结构体大小与写入量
+2. 在 `osal_uipc.ko` 的 `ioctl` 处理里加**响应长度追踪**，看它写了多少字节、
+   是否超过用户态给的缓冲区
+3. 也可对比真机固件里 `osal_uipc.ko` 与 `libosal_uipc.so` 的版本/时间戳
