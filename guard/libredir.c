@@ -37,7 +37,7 @@ static int name_match(const char *n, const char *want)
 __attribute__((constructor))
 static void r_init(void)
 {
-    enabled = name_match(__progname, "im.elf") || name_match(__progname, "sen.elf");
+    enabled = name_match(__progname, "im.elf");   /* ★ 只对 im.elf，避开 sen.elf 副作用 */
     if (!enabled) return;
     safe = mmap(0, SAFE_SZ, PROT_READ|PROT_WRITE, MAP_PRIVATE|MAP_ANONYMOUS, -1, 0);
     if (safe == MAP_FAILED) { safe = 0; enabled = 0; write(2, "[REDIR] mmap failed\n", 20); return; }
