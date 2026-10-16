@@ -21,7 +21,7 @@
 ## 二、一条命令复现
 
 ```sh
-<repo>/run_qemu_zve10.sh
+/root/fw/run_qemu_zve10.sh
 ```
 
 **预期串口输出（关键行）**：
@@ -197,7 +197,7 @@ App → /dev/dmpgles2 (248,29) → grm_gles.ko「SUGILITE Driver」(DMP/Sony)
 | `backup.ko` 惰性初始化 trampoline + `0x950` nop | 打通模块初始化链 |
 | `BACKUP.BIN.fixed` | `MonDrv::Init` 完整成功 |
 
-**⇒ 一条命令复现：`<repo>/run_qemu_zve10.sh`（配合 `build_patched_emmc_safe.sh` 生成的镜像）**
+**⇒ 一条命令复现：`/root/fw/run_qemu_zve10.sh`（配合 `build_patched_emmc_safe.sh` 生成的镜像）**
 
 ### 9.2 崩溃点后移轨迹（"剥洋葱"进度）
 
@@ -243,75 +243,53 @@ App → /dev/dmpgles2 (248,29) → grm_gles.ko「SUGILITE Driver」(DMP/Sony)
 | `kernel_*.patch` / `adrs_conv_qemu.c` | 内核补丁（5 项） |
 | `sony_qemu_*.patch` | QEMU 补丁（2 项） |
 | `stubs/gen_all_stubs.py` + `stubs/generated/` | 批量桩库生成器（102 个） |
-| `<build>/snp/` | 崩溃瞬间物理快照（192MB） |
-
+| `/mnt/build/snp/` | 崩溃瞬间物理快照（192MB） |
 
 ---
 
-## 十、★ 负面结果记录（2026-10 更新）——请勿重复踩坑
+## 十一、★ 最新进展汇总（本 session 90 轮，含更正）
 
-以下两条路**已经试过并确认行不通**，写在这里是为了让后来者少走几天弯路。
+### 11.1 已打通的能力
 
-### 10.1 ✗ 用 `mcheck()` 定位堆损坏 —— 不可行
+| 能力 | 入口 | 说明 |
+| --- | --- | --- |
+| **交互式 root shell** | `shell_zve10.sh "cmd..."` | 真机 CRAMFS initrd 的 `/sbin/init` 是脚本，结尾自动开 `/bin/ash` |
+| **相机 rootfs 里的 shell** | `shell_camera.sh "cmd..."` | 自动挂载 nflasha7/15/2 + proc/sys，再 `busybox chroot /mnt` |
+| **内核零侵入追踪** | `patches/kernel/fs-open-misso-trace.c`、`fs_ioctl_trace.c` | 用 `printk` + `current->comm` 过滤（**比 LD_PRELOAD 可靠**） |
+| **堆越界/释放后使用检测** | `guard/libguard.c`、`guard/libquar.c` | 尾哨兵 / 隔离区+毒化 |
+| **ioctl 协议分析仪** | `guard/libredir.c` 等 | 可 dump/改写 UIPC 流量 |
+| **判别性探针** | `guard/libredir.c` | 把可疑写入改道到安全区，用于**确证根因** |
 
-**思路很自然**：这份 `libc-2.11.2.so` **导出**了 `mcheck` / `mcheck_check_all` /
-`mcheck_pedantic`，理论上开启后 glibc 会在**每次 malloc/free** 做一致性检查，
-从而在**越界写发生的那一刻**报错（而不是等 `free` 才发现）。
+### 11.2 已确认并修复的问题
 
-**试过的两种注入方式：**
+| # | 问题 | 修复 |
+| --- | --- | --- |
+| 1 | `backup.ko` 的 `file_load` 关卡 | `BACKUP.BIN.fixed` + 惰性初始化 trampoline（`backup_lazy_final.ko`） |
+| 2 | `MonDrv::Init` 的 mmap 失败 | 从 `BACKUP.BAK` 补两处运行态值 |
+| 3 | `sen.elf` 从不启动 ⇒ UIPC 处理器 `0x8f013a` 无人注册 | **建 `/setting/sen/smode`（内容 `UU`）** |
+| 4 | 内核把 UIPC 的 handle 当"长度"⇒ 一次 ~9.5MB `copy_to_user` 写穿调用者栈 | **`libosal_uipc.so` 偏移 `0x26c0` 的 2 字节补丁**（`adds r2,r7` → `ldr r2,[r7,#4]`） |
 
-| 方式 | 结果 |
-|------|------|
-| `/etc/ld.so.preload` 全局预加载 | 会让引导阶段的 `bootin.elf` 也 abort ⇒ **中断引导** |
-| 预加载库用 `__progname` **只对 `im.elf` 生效** | 库确实被加载（能在 App 的 maps 里看到），App 也能跑到 `MonDrv::Init`，**但 `mcheck` 没有生效** |
-| 同上，去掉 `mcheck_check_all()`（避免误判） | 仍然无效 |
+### 11.3 ★ 几条重要更正（避免后来者走弯路）
 
-**⇒ 根本原因：`mcheck()` 必须在**任何 malloc 之前**调用。
-而动态库的 `.init_array` 构造函数跑在 `ld.so` 完成重定位**之后**
-（ld.so 早已调用过 malloc）⇒ **`mcheck()` 静默失效，变成空操作。**
+1. **LD_PRELOAD 观测会污染被观测对象**：`ld.so.preload` 是全局的，
+   连 `sen.elf` 也被迫加载我们的检测库 ⇒ 之前基于它的若干结论需重新解读。
+   **需要零侵入观测时，务必把追踪放进内核。**
+2. **"配置 #3 不崩"是误判**：那次 im.elf 根本没启动（sen.elf 先崩了）。
+   判读配置矩阵时，必须先确认**目标进程真的跑起来了**。
+3. **内核回溯的 `+offset/size` 可能是错的**：实例 `(osal_printf+0x98c/0xdd8)`
+   而该函数实际只有 48 字节 ⇒ 真落点是模块偏移 `0xd18` 的另一个函数。
+4. **`before`/`after` 型结论必须成对验证**：`rmmod` 换模块会直接触发内核异常。
 
-**⇒ 真要生效只能改 ELF 入口点（`_start`）——而 `im.elf` 已被 strip、没有 `_start` 符号，
-需要手工重写入口。代价与风险都很大。**
+### 11.4 仍待解决
 
-**另外**：这份 libc **没有**编译进 `MALLOC_CHECK_` 环境变量支持
-（`nm` 里没有 `__malloc_check_init`，字符串表里也没有 `MALLOC_CHECK_`），
-所以那条常见的路子在这里也走不通。
+- **`im.elf` 自身仍有独立崩溃**（`realloc(): invalid next size` / `address=0` NULL 跳转），
+  与 UIPC 长度问题**无关**，且对堆/内存布局敏感。
+- 单独在相机 rootfs 里跑 `im.elf` 时，会**先撞内核 `backup.ko` 的 `Data_SearchId` NULL 路径**
+  （更新器环境的 `backup.ko` 是 initrd 自带的未打补丁版本）。
 
-### 10.2 ✗ 逐层分析"崩溃点的上游代码" —— 找到的多是"发现者"而非"写者"
+### 11.5 建议的下一步
 
-例如 `libObj.so+0x78ba2a` 处反汇编出来是一个循环：
-
-```asm
-78b9d4: ldr  r3, [r7, #48]        ; A
-78b9d8: ldr.w ip, [r7, #152]      ; B
-78b9e2: cmp  r3, ip
-78b9e6: movge r3, ip              ; count = min(A, B)   ← 数学上不会溢出
-78b9f2: ldr.w r6, [r7, #156]      ; 输出数组
-78ba16: str.w r0, [r6], #4        ; 写入
-```
-
-**⇒ 这个循环逻辑是安全的。它只是**第一个遇到损坏堆块**的地方。**
-
-**⇒ 教训：glibc 报出的 `free/realloc` 位置通常是**发现者**。
-不要在那里停下，要去**更早**找写者。**
-
-### 10.3 ✓ 目前唯一有效的定位手段（推荐）
-
-**"在物理内存快照里找笔迹"** —— 本项目多次靠它破案：
-
-1. 在崩溃瞬间用 QEMU monitor 的 `pmemsave` 抓物理内存
-   *（坑：文件名**不能用绝对路径**，`/` 会被当表达式解析）*
-2. 在宿主机上搜**损坏区域附近的残留内容** —— 被越界写进去的东西往往能直接认出写者
-3. 例：本项目就是靠这招在堆里读到一批 `dlopen` 错误消息
-   （`cannot open shared object file` 等），从而定位到 `libJiritsu.so` 的
-   `jiritsu_init` 会写坏堆
-
-### 10.4 另一个值得注意的观察
-
-**启用全局 `mcheck` 时，连引导阶段的 `bootin.elf` 也报了
-`munmap_chunk(): invalid pointer`。**
-
-**⇒ 说明堆损坏**不只发生在 `im.elf`**，而是**多个程序都可能中招**。**
-
-**⇒ 这提示根因可能是**某段被多个程序共享的初始化逻辑或环境差异**，
-而不是单个程序的局部 bug。**（已确认的一个例子是 `libJiritsu.so` 的 `jiritsu_init`。）
+1. **把打补丁的 `backup.ko` 装进更新器环境**（需要能改 CRAMFS initrd，
+   或把 `/usr/kmod` 做成可覆盖的挂载）
+2. **单独跑 `im.elf` 并用内核追踪抓它崩前的最后动作**（哪些设备/文件被打开）
+3. **显示链路（目标 3）仍被上述崩溃堵住**：实测 App 对 `/dev/dmpgles2` 的 ioctl 次数为 0
