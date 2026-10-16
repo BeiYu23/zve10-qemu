@@ -11140,3 +11140,88 @@ address: 00000000, trap_no: 00000006      ← NULL 跳转
 
 **⇒ 建议：回到正常路径，用内核追踪抓 im.elf 崩前的最后动作
 （哪些设备/文件被打开、最后调用了哪些 ioctl），而不是继续在更新器路径上试探。**
+
+---
+
+## 一百二十六、★★★★★★★★★★ Round 116：**找到 im.elf 崩前的关键缺失 —— liro 固件地址为 0**
+
+### 126.1 从"im.elf 崩前最后打开 `/usr/kmod/liro.ko`"顺藤摸瓜
+
+**内核追踪（`IMOPEN`）显示：**
+
+```
+5521: IMOPEN OK /usr/kmod/liro.ko        ← im.elf 崩前最后打开的文件
+5553: MODLOAD attempt                    ← 随即加载它
+LIRO (liro) rev:4-MUSASHI
+Param:adrs=00000000, debug=0, delay=0
+Address not set, firmware will no be loaded!   ← ★★★ 固件没加载！
+```
+
+**⇒ `liro`（4-MUSASHI，Spica 图像处理器）因**地址未设置**而没加载固件。**
+
+### 126.2 `liro.ko` 需要的参数（模块自述）
+
+```
+parmtype=adr:uint      ← 固件地址
+parmtype=fn:string     ← 固件文件名
+parmtype=load:int   parmtype=debug:int   parmtype=delay:int
+depends=osal_uipc,backup,osal_utm,dma330
+```
+
+### 126.3 ★ 追踪 `init_module` 的参数串 ⇒ 拿到 App 的真实传参
+
+**内核追踪（`MODARGS`）：**
+```
+MODARGS im.elf len=65212 args= adr=0x0
+```
+**⇒ App 加载了 `liro.ko`（65,212 B ✓），但**地址传了 0**。**
+
+### 126.4 ★★★ 反汇编 `im.elf` 找到命令模板与地址来源
+
+**字符串（`im.elf` 内）：**
+```
+'delay=1'
+'fn=/system/av-cam.bin load=1 debug=1'     ← 固件是 /system/av-cam.bin
+'%s adr=0x%x %s %s'                        ← 组装格式
+```
+
+**构造参数的代码（`im.elf` 0xb610 起）：**
+```asm
+b62e: blx memset            ; buf 清零（1024B）
+b63c: blx Backup_read       ; Backup_read(**0x00FA007C**, buf)   ← ★ 主 key
+b640: cmp r0, #0
+b642: bge b64a              ; 读成功 ⇒ 用读到的值
+b644: mov.w r3, #0xC0000000 ; ★ 读失败 ⇒ 兜底 0xC0000000
+b64a: ldr.w r3, [r7,#1028]
+b64e: cmp.w r3, #0xFFFFFFFF ; 值 == -1 ⇒ 再试
+b654: blx Backup_read       ; Backup_read(**0x00FA0076**, buf)   ← ★ 备选 key
+b660: ldr r3, =0xC0000000   ; 仍失败 ⇒ 0xC0000000
+b662: str.w r3, [r7,#1028]  ; 最终地址
+…
+b68a: ldr r2, ="%s adr=0x%x %s %s"
+b698: blx snprintf
+```
+
+### 126.5 ★★★★★ 结论
+
+**App 期望的 `adr` 来自备份 key `0x00FA007C`（备选 `0x00FA0076`），
+缺省兜底值是 `0xC0000000`。**
+
+**而我们观测到 `adr=0x0` ⇒ 说明**该 key 被"找到"但值为 0**
+⇒ App 认为读取成功、于是用了 0 ⇒ `liro` 拒绝加载固件 ⇒
+`4-MUSASHI` 图像处理器不可用 ⇒ App 后续行为异常（并最终崩）。**
+
+**内核侧逻辑核对（`backup.ko` 内部读函数 0x92c）：**
+```asm
+94c: bl  Data_SearchId
+954: mvneq r6, #0        ; key 不存在 ⇒ 返回 -1（正确）
+```
+**⇒ 内核确实对"不存在"返回 -1 ⇒ 所以"返回 0"意味着 **key 存在但值为 0 / 大小为 0**。**
+
+### 126.6 ★ 下一步（高度可操作）
+
+1. **把 `/system/av-cam.bin` 的存在性确认**（真机 nflasha3 里有 ✓，检查我们镜像挂载后的路径）
+2. **让 `Backup_read(0x00FA007C)` 返回正确地址**
+   —— 最直接：**在备份数据里把该 key 设为 `0xC0000000`**（或让读取失败以走兜底）
+3. 之后观察 `liro` 是否成功加载固件（`Load firmware %s to %x`），
+   以及 im.elf 是否不再崩
