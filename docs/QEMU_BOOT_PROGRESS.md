@@ -11099,3 +11099,44 @@ address: 00000000, trap_no: 00000006      ← NULL 跳转
 
 **把 `backup_lazy_final.ko`（含惰性初始化 trampoline）放进镜像，在 shell 里换上它，
 再单独跑 im.elf** ⇒ 若崩点后移，则继续；若仍崩在同处，说明 shell 环境另有差异。
+
+### 125.16 Round 115：★ 澄清 —— 两条路径的 `backup.ko` 不同，结论不可混用
+
+**实测 MD5：**
+
+```
+正常路径（nflasha15 /usr/kmod/backup.ko）:  84,028 B  md5=dd74539c…
+我的补丁版 backup_lazy_final.ko:            84,028 B  md5=dd74539c…   ✅ 完全一致
+更新器（CRAMFS initrd /usr/kmod/backup.ko）: 110,248 B md5=5fda3d8b…   ✗ 不同
+```
+
+**⇒ **正常路径用的就是打过补丁（惰性初始化 trampoline）的 `backup.ko`** ⇒
+它**早已越过** `Data_SearchId` 的 NULL 关卡，因此能跑到 `MonDrv::Init`。**
+
+**⇒ 而 shell（更新器）路径用的是 initrd 自带、未打补丁的那份 ⇒
+"单独跑 im.elf 撞 `backup.ko` NULL"**只反映更新器环境**，
+**不能用来推断正常路径的行为**。**
+
+### 125.17 由此得到的方法论要点
+
+**本项目有两条并行可用的启动路径，模块集不同：**
+
+| | 正常路径 | 更新器路径（shell） |
+| --- | --- | --- |
+| initrd | `handoff_p0/initrd.img`（ext2，ELF init） | 真机 CRAMFS（**脚本 init**） |
+| 模块来源 | **eMMC nflasha15 `/usr/kmod`（含我们的补丁）** | **initrd 自带（未打补丁）** |
+| 长处 | 反映**真实运行配置**，App 能跑到 `MonDrv::Init` | 提供**交互 shell** 与可写环境 |
+| 短处 | 无交互 shell | 模块未打补丁，App 走不到深处 |
+
+**⇒ 因此：**
+- **要判断"App 的真实行为"⇒ 用正常路径**
+- **要"现场探查/手动跑程序"⇒ 用更新器路径，但要记得其模块差异**
+- **跨路径搬运结论时，必须先核对模块/库的版本（MD5）**
+
+### 125.18 下一步（重新聚焦）
+
+**im.elf 的真实崩溃仍在**正常路径**上（`realloc(): invalid next size` / `address=0`），
+且已证明与 UIPC 长度问题无关（§125.6~125.13）。**
+
+**⇒ 建议：回到正常路径，用内核追踪抓 im.elf 崩前的最后动作
+（哪些设备/文件被打开、最后调用了哪些 ioctl），而不是继续在更新器路径上试探。**
