@@ -11463,3 +11463,44 @@ insmod /mnt/kmod/liro.ko adr=0x20000000 fn=/tmp/av-cam.bin load=1 debug=1
 
 **⇒ 结论：目标 1 已完全达成；目标 2 已推进到"只剩 liro 固件地址 + 独立崩溃"；
 目标 3/4 仍被目标 2 堵住。**
+
+---
+
+## 一百二十八、Round 123：★ 回归验证 —— 文档声称的行为**逐条复现**
+
+**目的**：确认主文档中"当前最佳配置（`ab_sen_clean.img`）"的各项结论**可复现**，
+以保证开源交付物的可信度。
+
+**命令**：
+```sh
+Q=<build>/qemu-build/arm-softmmu/qemu-system-arm
+Z=<build>/src/a7c-kernel/linux/arch/arm/boot/zImage
+$Q -M cxd90045 -display none -serial stdio -kernel $Z \
+   -initrd handoff_p0/initrd.img \
+   -drive if=mtd,file=<build>/ab_sen_clean.img,format=raw \
+   -device loader,file=BACKUP.BIN.fixed,addr=0x02E80000,force-raw=on \
+   -append "earlyprintk $(cat real_cmdline.txt)"
+```
+
+**结果（全部与文档一致 ✅）：**
+
+| # | 文档声称 | 实测 |
+| --- | --- | --- |
+| 1 | 平台模块加载 | ✓（日志含 `liro`/`cec`/`codec_drv` 等） |
+| 2 | `sen.elf` 会启动（smode 修复） | ✓ 2 次 EXECVE |
+| 3 | `im.elf` 会启动 | ✓ 2 次 EXECVE |
+| 4 | `MonDrv::Init` 成功 | ✓ `Mon Buf Size : 00008000` |
+| 5 | App 打印 `FixedAreaTop` | ✓ |
+| 6 | **`/dev/dmpgles2` 的 ioctl 次数 = 0**（从未走到显示） | ✓ **0** |
+| 7 | 崩溃为 `glibc detected` / `invalid next size` / `pc=0x106` | ✓ 各 1 次 |
+| 8 | 崩溃线程为 `THREAD_INFRA2` | ✓ |
+
+**⇒ 结论：主文档的"当前状态"章节**经得起复现**，可作为交接与开源的可信基线。**
+
+### 128.1 本次验证的产品
+
+| 文件 | 说明 |
+| --- | --- |
+| `verify.log` | 回归验证的完整日志（7,480 行） |
+
+**⇒ 连同 §127.3 的状态表，构成了本 session 的可复核总结。**
