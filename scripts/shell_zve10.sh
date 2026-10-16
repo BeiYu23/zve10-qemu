@@ -14,16 +14,16 @@
 #
 # 环境变量: WAIT(等 shell 秒数) TAILTIME TIMEOUT EMMC OUT
 set -e
-IR=${IR:-/root/fw/unpacked_zve10/firmware.tar_unpacked/0400_updater/dev/nflasha1_unpacked/boot/initrd.img}
-Q=${QEMU:-/mnt/build/qemu-build/arm-softmmu/qemu-system-arm}
-Z=${ZIMAGE:-/mnt/build/src/a7c-kernel/linux/arch/arm/boot/zImage}
-IMG=${EMMC:-/mnt/build/ab_sym.img}
-BK=${BACKUP:-/root/fw/BACKUP.BIN.fixed}
+IR=${IR:-${INITRD_REAL:-/path/to/your/nflasha1/boot/initrd.img}}
+Q=${QEMU:-/usr/local/bin/qemu-system-arm}}
+Z=${ZIMAGE:-/path/to/zImage}}
+IMG=${EMMC:-/path/to/zve10_patched.img}}
+BK=${BACKUP:-/path/to/BACKUP.BIN.fixed}}
 RAMDISK_SIZE=${RAMDISK_SIZE:-8192}
 WAIT=${WAIT:-50}
 PER=${PER:-2}            # 每条命令间隔
 TAILTIME=${TAILTIME:-20}
-OUT=${OUT:-/mnt/build/shellout.log}
+OUT=${OUT:-./shellout.log}}
 CMD="mem=1G@0 memrsv=680M@0x15800000:uc mem=256M@0x80000000@1 root=/dev/ram0 init=/sbin/init ramdisk_size=${RAMDISK_SIZE:-8192} console=ttyAM0,115200n8 cfg.uart=9"
 
 CMDS=()

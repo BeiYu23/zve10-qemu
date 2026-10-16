@@ -8,7 +8,7 @@
 #
 # 用法: ./shell_camera.sh "命令1" "命令2" ...
 set -e
-IR=${IR:-/root/fw/unpacked_zve10/firmware.tar_unpacked/0400_updater/dev/nflasha1_unpacked/boot/initrd.img}
+IR=${IR:-${INITRD_REAL:-/path/to/your/nflasha1/boot/initrd.img}}
 PREP=(
   "mount -t ext2 -o ro /dev/nflasha7 /mnt"
   "mount -t ext2 -o ro /dev/nflasha15 /mnt/usr"
@@ -18,4 +18,4 @@ PREP=(
 )
 CMDS=("${PREP[@]}")
 for c in "$@"; do CMDS+=("busybox chroot /mnt /bin/ash -c '$c'"); done
-exec /root/fw/shell_zve10.sh "${CMDS[@]}"
+exec $(dirname "$0")/shell_zve10.sh "${CMDS[@]}"

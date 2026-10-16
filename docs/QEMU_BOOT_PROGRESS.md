@@ -8,7 +8,7 @@
 ## ✅ 一条命令复现当前最佳状态
 
 ```sh
-/root/fw/run_qemu_zve10.sh
+<repo>/run_qemu_zve10.sh
 ```
 
 **能看到的（串口输出）：**
@@ -145,7 +145,7 @@ arch/arm/configs/cxd90045_qemu_nfs_defconfig
 # 工具链（Bootlin 2018.02，GCC 6.4，armv7-eabihf）
 curl -x $PROXY -L -o tc.tar.bz2 \
   https://toolchains.bootlin.com/downloads/releases/toolchains/armv7-eabihf/tarballs/armv7-eabihf--glibc--stable-2018.02-1.tar.bz2
-tar xjf tc.tar.bz2 -C /mnt/build/toolchain/
+tar xjf tc.tar.bz2 -C <build>/toolchain/
 
 # 它的 cc1 需要 MPFR 3.x（现代宿主只有 6）
 curl -x $PROXY -L -o mpfr4.deb \
@@ -153,8 +153,8 @@ curl -x $PROXY -L -o mpfr4.deb \
 dpkg-deb -x mpfr4.deb /tmp/mpfr4x && cp -a /tmp/mpfr4x/usr/lib/x86_64-linux-gnu/libmpfr.so.4* /usr/local/lib/ && ldconfig
 
 # 编译
-cd /mnt/build/src/a7c-kernel/linux
-export PATH=/mnt/build/toolchain/armv7-eabihf--glibc--stable-2018.02-1/bin:$PATH
+cd <build>/src/a7c-kernel/linux
+export PATH=<build>/toolchain/armv7-eabihf--glibc--stable-2018.02-1/bin:$PATH
 CC=arm-buildroot-linux-gnueabihf-
 make ARCH=arm CROSS_COMPILE=$CC cxd90045_qemu_nfs_defconfig
 make ARCH=arm CROSS_COMPILE=$CC -j4 vmlinux
@@ -173,7 +173,7 @@ make ARCH=arm CROSS_COMPILE=$CC -j4 zImage          # → arch/arm/boot/zImage (
 
 ---
 
-## 三、`cxd90045` 机器模型的 4 处修补（`/root/fw/sony_qemu_bionz.patch`）
+## 三、`cxd90045` 机器模型的 4 处修补（`<repo>/sony_qemu_bionz.patch`）
 
 | # | 问题 | 现象 | 修法 |
 | --- | --- | --- | --- |
@@ -245,7 +245,7 @@ Uncompressing Linux.... done, booting the kernel.
 
 ```
 Uncompressing Linux.... done, booting the kernel.
-Linux version 3.0.27_nl-rt106 (root@dsh-ubuntu) (gcc version 6.4.0 ...) #3 SMP PREEMPT RT
+Linux version 3.0.27_nl-rt106 (root@<build-host>) (gcc version 6.4.0 ...) #3 SMP PREEMPT RT
 CPU: ARMv7 Processor [410fc051] revision 1 (ARMv7), cr=10c5387d
 CPU: VIPT nonaliasing data cache, VIPT aliasing instruction cache
 cmdline override at 60133005                                  ← 补的 cmdline 生效
@@ -501,7 +501,7 @@ initrd     @0x700000  : 1f 8b 08 00 (= gzip)
 - **绕法：把 initramfs 直接编进内核**，彻底不需要 atags：
 
 ```
-CONFIG_INITRAMFS_SOURCE="/mnt/build/initramfs"
+CONFIG_INITRAMFS_SOURCE="<build>/initramfs"
 ```
 
 ### 14.2 实测输出
@@ -600,17 +600,17 @@ kernel BUG at .../Guiengine_161H/driver/grm_gles/./src/sugi_hw.c:221!
    让上电检查通过；
 3. 逐层往上补：**时钟/复位 → GRM 显存 → framebuffer 输出**，最后就能 dump 出画面。
 
-`grm_gles.ko` 就在固件里（`/root/fw/ref_e10/usr/kmod/grm_gles.ko`），可以静态分析。
+`grm_gles.ko` 就在固件里（`<repo>/ref_e10/usr/kmod/grm_gles.ko`），可以静态分析。
 
 ### 16.5 完整产物与命令
 
 ```sh
-Q=/mnt/build/qemu-build/arm-softmmu/qemu-system-arm
-Z=/mnt/build/src/a7c-kernel/linux/arch/arm/boot/zImage
+Q=<build>/qemu-build/arm-softmmu/qemu-system-arm
+Z=<build>/src/a7c-kernel/linux/arch/arm/boot/zImage
 $Q -M cxd90045 -display none -serial stdio \
    -kernel $Z \
-   -initrd /mnt/build/initramfs-stock.cpio.gz \
-   -drive if=mtd,file=/mnt/build/zve10_emmc.img,format=raw \
+   -initrd <build>/initramfs-stock.cpio.gz \
+   -drive if=mtd,file=<build>/zve10_emmc.img,format=raw \
    -append "console=ttyAM0,115200n8 mem=1G@0 rw noatime qemu rdinit=/sbin/init"
 ```
 
@@ -698,11 +698,11 @@ W: 79/79/0: dma330_init(3630): udif_err=-14
 ### 17.5 当前可复现的完整状态
 
 ```sh
-Q=/mnt/build/qemu-build/arm-softmmu/qemu-system-arm
-Z=/mnt/build/src/a7c-kernel/linux/arch/arm/boot/zImage
+Q=<build>/qemu-build/arm-softmmu/qemu-system-arm
+Z=<build>/src/a7c-kernel/linux/arch/arm/boot/zImage
 $Q -M cxd90045 -display none -serial stdio -kernel $Z \
-   -initrd /mnt/build/initramfs-stock.cpio.gz \
-   -drive if=mtd,file=/mnt/build/zve10_emmc.img,format=raw \
+   -initrd <build>/initramfs-stock.cpio.gz \
+   -drive if=mtd,file=<build>/zve10_emmc.img,format=raw \
    -append "console=ttyAM0,115200n8 mem=1G@0 rw noatime qemu rdinit=/sbin/init"
 ```
 
@@ -1738,7 +1738,7 @@ FB_PARAM_640_384_RGB565     FB_PARAM_640_384_RGBA8888_FROM_COMMON_MEMSPACE
 
 ### 31.1 成果
 
-`grmstub/libgrm.c` / `libgrm.so`（也在 `/root/fw/libgrm.{c,so}`）：
+`grmstub/libgrm.c` / `libgrm.so`（也在 `<repo>/libgrm.{c,so}`）：
 
 | 项 | 值 |
 | --- | --- |
@@ -2261,7 +2261,7 @@ insmod: Input/output error
 - 路线 B：给 `backup.ko` 打**更精细**的补丁 —— 跳过校验但仍做最小初始化（让数据结构不是野指针）
 - 路线 C：照 `MonDrv::Init` 期望的语义，直接让 `Backup_read_4Byte` 返回合理值
 
-**产物**：`/tmp/backup_patched.ko`、`/mnt/build/zve10_patched_emmc.img`（补丁版整盘镜像，可直接引导）
+**产物**：`/tmp/backup_patched.ko`、`<build>/zve10_patched_emmc.img`（补丁版整盘镜像，可直接引导）
 
 ---
 
@@ -2324,9 +2324,9 @@ insmod: can't insert 'backup.ko': Input/output error
 
 | 文件 | 说明 |
 | --- | --- |
-| `/root/fw/backup_patched.ko` | 补丁版 backup.ko（`.init.text+0xcc`: `bl backupfile_load` → `mov r0,#0`）。**用它能得到 Unknown symbol = 0（89 → 0），所有模块加载成功** |
-| `/mnt/build/zve10_patched_emmc.img` | 用补丁版 nflasha15 重建的整盘镜像，可直接引导 |
-| `/mnt/build/initramfs-readtest.cpio.gz` + 构建脚本 | 可复现的读盘/模块加载诊断环境 |
+| `<repo>/backup_patched.ko` | 补丁版 backup.ko（`.init.text+0xcc`: `bl backupfile_load` → `mov r0,#0`）。**用它能得到 Unknown symbol = 0（89 → 0），所有模块加载成功** |
+| `<build>/zve10_patched_emmc.img` | 用补丁版 nflasha15 重建的整盘镜像，可直接引导 |
+| `<build>/initramfs-readtest.cpio.gz` + 构建脚本 | 可复现的读盘/模块加载诊断环境 |
 | `/tmp/dk4.sh` 等 gdb 脚本 | klog 内存区 dump 的复现脚本 |
 
 ---
@@ -2414,7 +2414,7 @@ helper 0x46f4:
 | 真实路径 `/setting/Backup.bin`+`.bak` | `hbreak *0x601e3ed8` on filp_open |
 | `Data_check` 判定表 | `objdump -dr --start-address=0x3e04 ref_e10/usr/kmod/backup.ko` |
 | 真机 count 716/715 | 从 `zve10_delivery/nflasha2.img` 连续读出两份文件，读偏移 0x2C |
-| 补丁后 Unknown symbol 89→0 | `/root/fw/backup_patched.ko` + `/mnt/build/zve10_patched_emmc.img` |
+| 补丁后 Unknown symbol 89→0 | `<repo>/backup_patched.ko` + `<build>/zve10_patched_emmc.img` |
 
 ---
 
@@ -2479,10 +2479,10 @@ backup_init
 
 | 文件 | 说明 |
 | --- | --- |
-| `/root/fw/BACKUP.BIN.real` / `BACKUP.BAK.real` | 从真机 nflasha2 取出的两份原文件（count 716 / 715） |
-| `/root/fw/initrd_with_backup.img` | 已把两份文件放进 `/setting/` 的 8MB initrd |
-| `/root/fw/backup_patched.ko` | 补丁版 backup.ko（Unknown symbol 89→0） |
-| `/mnt/build/zve10_patched_emmc.img` | 补丁版整盘镜像 |
+| `<repo>/BACKUP.BIN.real` / `BACKUP.BAK.real` | 从真机 nflasha2 取出的两份原文件（count 716 / 715） |
+| `<repo>/initrd_with_backup.img` | 已把两份文件放进 `/setting/` 的 8MB initrd |
+| `<repo>/backup_patched.ko` | 补丁版 backup.ko（Unknown symbol 89→0） |
+| `<build>/zve10_patched_emmc.img` | 补丁版整盘镜像 |
 
 ---
 
@@ -2572,7 +2572,7 @@ unsigned long backupfile_init(const char *path, int flag)   /* flag = Backup_loa
 $Q -M cxd90045 -display none -serial stdio \
    -kernel <zImage> -initrd handoff_p0/initrd.img \
    -drive if=mtd,file=zve10_delivery/ZVE10_EMMC_FULL.img,format=raw \
-   -device loader,file=/root/fw/BACKUP.BIN.real,addr=0x02E80000,force-raw=on \
+   -device loader,file=<repo>/BACKUP.BIN.real,addr=0x02E80000,force-raw=on \
    -append "earlyprintk $(cat real_cmdline.txt)"
 ```
 
@@ -2589,7 +2589,7 @@ Modules linked in: devno(P) dmac(P) ldec(P) emmc(P) osal_utm(P) osal_uipc(P)
 之前因这些符号失败的 14 个模块（input/i2c/indctr/dmm/... ）开始陆续加载。**
 
 另外为 App 侧也打了补丁（`libMWF.so` 的 `MonDrv::PutcharSub` → `movs r0,#1; bx lr`，
-文件偏移 `0x313b8`，见 `/mnt/build/zve10_mwf_emmc.img`）。
+文件偏移 `0x313b8`，见 `<build>/zve10_mwf_emmc.img`）。
 
 ### 39.4 新阻塞：`udate_init_clock`
 
@@ -2659,7 +2659,7 @@ return *(u32*)Data_GetDataPt(e);
 | `Unknown symbol` | 89 | **0** |
 | `backup_init() error (file_load)` | 有 | **消失** |
 | `Modules linked in` | 停在 `utimer` | **`backup(P) input(P) udate(P+)` 一路加载** |
-| 用户态 App 崩溃 | `libMWF.so+0x32372` 空指针 | **已打补丁绕过**（`/mnt/build/zve10_mwf_emmc.img`） |
+| 用户态 App 崩溃 | `libMWF.so+0x32372` 空指针 | **已打补丁绕过**（`<build>/zve10_mwf_emmc.img`） |
 
 **关键修复**：`-device loader,file=BACKUP.BIN.real,addr=0x02E80000,force-raw=on`
 （`Backup_load=0` 时引导器本该做的事）。已固化到 `run_qemu_zve10.sh`。
@@ -2858,7 +2858,7 @@ Data_GetDataPt(e) = *(Data) + (v & 0xFFFFFF) + klass
 | 备份表结构 | 未知 | **两层结构完全解出且自洽** |
 | App 侧崩溃 | `libMWF.so+0x32372` | **已补丁绕过** |
 
-**可复现命令**：`/root/fw/run_qemu_zve10.sh`（配合 `/mnt/build/zve10_mwf_emmc.img`
+**可复现命令**：`<repo>/run_qemu_zve10.sh`（配合 `<build>/zve10_mwf_emmc.img`
 ——即打了 `libMWF.so` + `udate.ko` 两个补丁、`backup.ko` 保持原版的镜像）。
 
 ---
@@ -2918,7 +2918,7 @@ unsigned long arch_phys_to_noncache(unsigned long pa)
 
 **重编内核**：
 ```sh
-TC=/mnt/build/toolchain/armv7-eabihf--glibc--stable-2018.02-1/bin/arm-buildroot-linux-gnueabihf-
+TC=<build>/toolchain/armv7-eabihf--glibc--stable-2018.02-1/bin/arm-buildroot-linux-gnueabihf-
 make ARCH=arm CROSS_COMPILE=$TC -j4 zImage
 ```
 
@@ -3080,7 +3080,7 @@ Modules linked in:
 
 ### 43.5 当前可复现命令
 
-`/root/fw/run_qemu_zve10.sh`（镜像 `/mnt/build/zve10_mwf_emmc.img` 已含
+`<repo>/run_qemu_zve10.sh`（镜像 `<build>/zve10_mwf_emmc.img` 已含
 `libMWF.so` + `udate.ko` + `usbg_sen.ko` + `usb_extcmd.ko` + `kikilog.ko` + `upm.ko`
 六处补丁，`backup.ko` 保持原版），配合内核 `adrs_conv` 兜底与
 `-device loader,file=BACKUP.BIN.real,addr=0x02E80000`。
@@ -3285,7 +3285,7 @@ section translation fault (0x005) at 0x029c19e0
 
 ### 45.6 最小补丁集已脚本化并可复现
 
-`/root/fw/build_patched_emmc.sh`（从真机镜像一键重建）：
+`<repo>/build_patched_emmc.sh`（从真机镜像一键重建）：
 
 ```
 补丁 lib/libMWF.so                    # MonDrv::PutcharSub -> movs r0,#1; bx lr
@@ -3593,7 +3593,7 @@ pc -> libc-2.11.2.so +0x15796
 dd if=/dev/zero of=/tmp/n11.img bs=1M count=500
 mkfs.vfat -F 32 -n LOG /tmp/n11.img
 python3 -c "
-f=open('/mnt/build/zve10_min_emmc.img','r+b')
+f=open('<build>/zve10_min_emmc.img','r+b')
 f.seek(2*0x200000+0x0B800000); f.write(open('/tmp/n11.img','rb').read())"
 ```
 
@@ -4542,7 +4542,7 @@ end
 **⇒ 完整读出来是：**
 
 ```
-"…cannot open shared object file libMWF.so "
+"…cannot open shared object filelibMWF.so"
 ```
 
 ### 58.3 ★ 根因结论
@@ -4605,11 +4605,11 @@ CALL name=0x040f485b -> RET ...           成功
 ### 59.2 ★ 失败目标的名字（dump 128 字节）
 
 ```
-libbkdmn.so 
-BkDmn_init 
-BkDmn_exit 
-BkDmn_suspend 
-BkDmn_resume 
+libbkdmn.so
+BkDmn_init
+BkDmn_exit
+BkDmn_suspend
+BkDmn_resume
 ```
 
 **⇒ App 用「dlopen 库 → dlsym 符号 → 调用」的封装加载 `libbkdmn.so`
@@ -4666,7 +4666,7 @@ int BkDmn_resume(void)  { return 0; }
 ```
 
 ```sh
-TC=/mnt/build/toolchain/armv7-eabihf--glibc--stable-2018.02-1/bin/arm-buildroot-linux-gnueabihf-
+TC=<build>/toolchain/armv7-eabihf--glibc--stable-2018.02-1/bin/arm-buildroot-linux-gnueabihf-
 ${TC}gcc -shared -fPIC -O2 -o libbkdmn.so bkdmn.c -Wl,-soname,libbkdmn.so
 ```
 产物 7,544 字节，4 个符号齐全，SONAME 正确，`Tag_CPU_arch: v7 / Cortex-A9`。
@@ -4760,7 +4760,7 @@ libInfraAccessLog.so          -> AccessLogInfra_init/sus/res
 
 **「批量桩库生成器」**：从 `libIMDB.so` 自动提取 (库,符号) → 生成 → 编译 → 安装。
 后续遇到"App 因可选库缺失走错误分支"的情况可直接复用
-（脚本：`/root/fw/stubs/`，源码 `/tmp/stubs/src`，产物 `/tmp/stubs/out`）。
+（脚本：`<repo>/stubs/`，源码 `/tmp/stubs/src`，产物 `/tmp/stubs/out`）。
 
 ### 61.6 下一步（回归最直接的手段）
 
@@ -4885,7 +4885,7 @@ cannot open shared object 计数: 0
 
 **关键点：每一步都有断言/校验，绝不吞 stderr。**
 
-### 63.2 修复后实测（`/mnt/build/zve10_safe_emmc.img`）
+### 63.2 修复后实测（`<build>/zve10_safe_emmc.img`）
 
 | 指标 | 修复前 | **修复后** |
 | --- | --- | --- |
@@ -5396,7 +5396,7 @@ Cannot access memory at address 0x16000              ← 但堆不可访问
 在修好 `/tmp` 空间后重跑：
 
 ```sh
-gdb -ex "hbreak *0x<do_page_fault>"     -ex "condition 1 \$r0 >= 0x30000 && \$r0 < 0x40000"     -ex "continue" -ex "dump binary memory /mnt/build/heap.bin 0x16000 0x37000"
+gdb -ex "hbreak *0x<do_page_fault>"     -ex "condition 1 \$r0 >= 0x30000 && \$r0 < 0x40000"     -ex "continue" -ex "dump binary memory <build>/heap.bin 0x16000 0x37000"
 ```
 
 （dump 文件也改放到 `/mnt/build`，避免再写满 `/tmp`。）
@@ -5412,12 +5412,12 @@ gdb -ex "hbreak *0x<do_page_fault>"     -ex "condition 1 \$r0 >= 0x30000 && \$r0
 
 ```python
 # 失败（被当成表达式解析）
-hmp('pmemsave 0 1048576 /mnt/build/t1.bin')
+hmp('pmemsave 0 1048576 <build>/t1.bin')
 #   -> "invalid char 'm' in expression"
 
 # 成功（相对文件名，写到 QEMU 的 CWD）
 hmp('pmemsave 0 1048576 t1.bin')      # QEMU 的 CWD = /root/fw
-#   -> ''（无错误），文件出现在 /root/fw/t1.bin
+#   -> ''（无错误），文件出现在 <repo>/t1.bin
 ```
 
 **⇒ QEMU 的 monitor 用表达式解析器处理 `addr`/`size`，第三个参数虽是文件名，
@@ -5430,7 +5430,7 @@ for i in range(8):
     hmp(f'pmemsave 0x{i*0x2000000:x} 0x2000000 phys_{i}.bin')
 ```
 
-结果：`/root/fw/phys_0.bin` … `phys_7.bin`，每块 32MB，全部成功 ✓
+结果：`<repo>/phys_0.bin` … `phys_7.bin`，每块 32MB，全部成功 ✓
 
 ### 70.3 在物理内存里定位到 App 的数据
 
@@ -6300,7 +6300,7 @@ address: 00000000, page translation fault (0x017) at 0x00000000
 | `kmod/backup.ko` `0x30dc` | `bl strcmp` → `mov r0,#0` | 跳过签名校验，使 `bss+4` 被写入 |
 | `kmod/backup.ko` `0x950` | `strbeq r4,[r4]` → `nop` | 消除 `backup_suspend` 空写崩溃 |
 
-产物：`/root/fw/backup_final.ko`（两处补丁合一）
+产物：`<repo>/backup_final.ko`（两处补丁合一）
 
 ### 81.5 下一步
 
@@ -6619,7 +6619,7 @@ ERROR : Failed to mmap!
    ⇒ 需要找出真机把"监视器固定区"信息放在哪
 3. 若存在但查不到 ⇒ 是 key 编码问题（大小端/高低位次序）
 
-**产物**：`/root/fw/backup_lazy_final.ko` · `/root/fw/boot_lazy_init_ok.log`
+**产物**：`<repo>/backup_lazy_final.ko` · `<repo>/boot_lazy_init_ok.log`
 
 ---
 
@@ -7315,7 +7315,7 @@ open('BACKUP.BIN.fixed','wb').write(d)
 但 `glibc detected` 计数为 0 ⇒ 需要按 §68/§71 的方法
 在崩溃点 dump 用户堆并做 chunk 链遍历，定位这次的越界写。
 
-**产物**：`/root/fw/BACKUP.BIN.fixed` · `/root/fw/boot_mondrv_ok.log`
+**产物**：`<repo>/BACKUP.BIN.fixed` · `<repo>/boot_mondrv_ok.log`
 
 ---
 
@@ -7498,14 +7498,14 @@ Cannot execute this command while the target is running.
 ## 一百二十一、复现命令
 
 ```sh
-Q=/mnt/build/qemu-build/arm-softmmu/qemu-system-arm
-Z=/mnt/build/src/a7c-kernel/linux/arch/arm/boot/zImage
-CMD=$(grep '^CONFIG_CMDLINE=' /mnt/build/src/a7c-kernel/linux/.config | sed 's/^CONFIG_CMDLINE="//; s/"$//')
+Q=<build>/qemu-build/arm-softmmu/qemu-system-arm
+Z=<build>/src/a7c-kernel/linux/arch/arm/boot/zImage
+CMD=$(grep '^CONFIG_CMDLINE=' <build>/src/a7c-kernel/linux/.config | sed 's/^CONFIG_CMDLINE="//; s/"$//')
 $Q -M cxd90045 -display none -serial stdio -kernel $Z -append "$CMD"
 
 # 带 gdb
 $Q -M cxd90045 -display none -serial null -kernel $Z -append "$CMD" -gdb tcp::1234
-gdb-multiarch -q -ex "file /mnt/build/src/a7c-kernel/linux/vmlinux" -ex "target remote :1234"
+gdb-multiarch -q -ex "file <build>/src/a7c-kernel/linux/vmlinux" -ex "target remote :1234"
 ```
 
 ### 69.4 条件断点仍未命中的排查方向
@@ -7533,7 +7533,7 @@ gdb-multiarch -q -ex "file /mnt/build/src/a7c-kernel/linux/vmlinux" -ex "target 
 
 ```python
 s=socket.socket(socket.AF_UNIX, socket.SOCK_STREAM); s.connect('/tmp/qmon.sock')
-s.sendall(b'pmemsave 0x00000000 0x10000000 /mnt/build/phys_low.bin\n')
+s.sendall(b'pmemsave 0x00000000 0x10000000 <build>/phys_low.bin\n')
 ```
 
 - **monitor 连通 ✓**（`MON OK`，命令回显正常）
@@ -7679,19 +7679,19 @@ hbreak *0x6013da20        (__dabt_usr，用户态数据异常入口)
 ### 93.1 可复现的最佳配置（一条命令）
 
 ```sh
-/root/fw/run_qemu_zve10.sh
+<repo>/run_qemu_zve10.sh
 ```
 
 或手工：
 
 ```sh
-Q=/mnt/build/qemu-build/arm-softmmu/qemu-system-arm
-Z=/mnt/build/src/a7c-kernel/linux/arch/arm/boot/zImage
+Q=<build>/qemu-build/arm-softmmu/qemu-system-arm
+Z=<build>/src/a7c-kernel/linux/arch/arm/boot/zImage
 $Q -M cxd90045 -display none -serial stdio \
-   -kernel $Z -initrd /root/fw/handoff_p0/initrd.img \
-   -drive if=mtd,file=/mnt/build/ab_lazy2.img,format=raw \
-   -device loader,file=/root/fw/BACKUP.BIN.fixed,addr=0x02E80000,force-raw=on \
-   -append "earlyprintk $(cat /root/fw/real_cmdline.txt)"
+   -kernel $Z -initrd <repo>/handoff_p0/initrd.img \
+   -drive if=mtd,file=<build>/ab_lazy2.img,format=raw \
+   -device loader,file=<repo>/BACKUP.BIN.fixed,addr=0x02E80000,force-raw=on \
+   -append "earlyprintk $(cat <repo>/real_cmdline.txt)"
 ```
 
 ### 93.2 全部交付物
@@ -8114,7 +8114,7 @@ addr=0x5595000 len=0x304000 prot=0x3 flags=0x12 fd=5 → ret=0x5595000   ✓（M
 **直接在宿主机上反汇编它们、看它们从哪里取值**（哪个全局/哪个配置），
 比在 guest 里断点更容易定位。
 
-**⇒ 产物**：`/root/fw/qmmap.log`（本轮 mmap 全记录）
+**⇒ 产物**：`<repo>/qmmap.log`（本轮 mmap 全记录）
 
 ---
 
@@ -9159,7 +9159,7 @@ if (IS_ERR(f)) {
 ### 108.4 本轮交付
 
 - **`MISSSO` 追踪已加入内核**（`fs/open.c`）—— 后续任何"库找不到"类问题都能一网打尽
-- 产物：`/root/fw/misso_trace.log`（96 条失败路径全记录）
+- 产物：`<repo>/misso_trace.log`（96 条失败路径全记录）
 - 内核源码：`fs/open.c`（新增约 8 行，可随时移除）
 
 ---
@@ -9367,7 +9367,7 @@ done
 ### 112.2 一条命令启动交互式 shell
 
 ```sh
-/root/fw/shell_zve10.sh "mount" "cat /proc/partitions" "ls /"
+<repo>/shell_zve10.sh "mount" "cat /proc/partitions" "ls /"
 ```
 
 **实测输出（干净可用）：**
