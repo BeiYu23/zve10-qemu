@@ -10285,3 +10285,35 @@ EXECVE /usr/bin/im.elf
 | --- | --- |
 | `ab_sen.img` | **含 `/setting/sen/smode` 的镜像（sen.elf 可启动）** |
 | `sen.log` | 修复后的引导日志（sen.elf 已出现在进程序列中） |
+
+### 121.8 下一环进展（Round 97）
+
+**已确认：**
+
+| 检查 | 结果 |
+| --- | --- |
+| `sen.elf` 是否启动 | ✅ 启动（smode 修复生效） |
+| `sen.elf` 是否立刻退出 | ❌ **没退出**（EXIT 追踪里只有 `bootin.elf pid=123 code=0`） |
+| `sen.elf` 是否注册了处理器 | ❌ 没有（`0x80000008` 仍 8 次） |
+| `sen.elf` 是否打开了 `/dev/gpio` | ❌ **0 次**（说明卡在更早） |
+
+**⇒ `sen.elf` 活着但**卡住了**，且**还没走到**打开 `/dev/gpio` 那一步。**
+
+**顺带排除的**：`init` 报 `open file: /usr/kmod/msen_drv.ko`（还有 `nfc.ko`/`sata_drv.ko`）
+—— 这三个模块**在固件里根本不存在**（`msen_drv` 是 M2 机型的），
+且修复前后报错完全相同 ⇒ **属于可选模块，报错无害**。
+
+**`libsencore.so`（sen.elf 的核心库，366 KB）依赖：**
+```
+/dev/gpio            ← 存在（240:0）✓ 但从未被打开
+/dev/mem             ✓
+/dev/nflasha5        （= /system）
+/proc/osal/uipc      ← ★ 需要确认
+/proc/klog
+/proc/snsc_boot_time （cmdline 里有 snsc_boot_time.us=Y）
+/setting/sen/smode   ✓（已建）
+/setting/.hasp /setting/.etools
+/tmp/images/*.ltt / *.ttf （字体，用到时才需要）
+```
+
+**⇒ 下一步：确认 `/proc/osal/uipc` 是否存在；再顺着 sen.elf 的启动顺序找它卡在哪。**
