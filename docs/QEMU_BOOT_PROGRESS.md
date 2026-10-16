@@ -10417,3 +10417,36 @@ App 进度：FixedArea / Mon Buf Size ✓（跑到 MonDrv::Init）
 | `ab_sen_clean.img` | **干净镜像**：ab_sym + `/setting/sen/smode`（无 guard 库、无 ld.so.preload） |
 | `uipc_kernel_trace.log` | **内核侧 UIPC 追踪**（零侵入）的原始日志 |
 | `fs_ioctl_trace.c` | 内核侧 UIPC 追踪的源码 |
+
+### 122.6 Round 101：排除"尾越界"与"释放后使用"，但发现覆盖面漏洞
+
+**新工具 `guard/libquar.c`（隔离区 + 毒化，即 DUMA 的 `PROTECT_FREE` 原理）：**
+
+```c
+free(p):  毒化整块 + 放进隔离区（**不真释放**）
+malloc(): 先抽查隔离区所有块的毒化字节
+          ⇒ 被改写就报 "USE-AFTER-FREE!"
+```
+
+**实测（干净镜像 + 只对 im.elf 启用）：**
+```
+[QUAR] enabled for im.elf
+USE-AFTER-FREE 命中: 0
+崩溃依旧: *** glibc detected *** realloc(): invalid next size: 0x0002d410
+```
+
+**⇒ 结论：**
+1. ❌ **不是尾越界**（§116 的尾哨兵库没命中）
+2. ❌ **不是隔离区内可检出的释放后使用**（本轮没命中）
+3. ✅ 但 **glibc 的 arena 元数据仍被写坏**（`realloc(): invalid next size` 地址每次不同）
+
+### 122.7 ★ 发现的覆盖面漏洞（下一步）
+
+**我的两个库只 interpose 了 `malloc/calloc/realloc/free`，
+**没有覆盖 `memalign` / `posix_memalign` / `valloc` / `pvalloc` / `aligned_alloc` 这一族**。**
+
+**⇒ 如果被写越界的缓冲区来自 `posix_memalign` 等，我的哨兵/隔离区都**保护不到它**
+⇒ 这解释了为什么两种检测都没命中、而 glibc 的元数据仍被写坏。**
+
+**⇒ 下一步：把 memalign 一族也纳入 interposition**（并在库内部用同一套
+头+哨兵/隔离区机制），再测。
