@@ -147,6 +147,68 @@ patch -p1 < patches/qemu/sd-cid.patch
 
 ---
 
+---
+
+## ★ 交互式调试（强烈推荐）
+
+**不必每次等几分钟看日志 —— 可以直接在客机里敲命令。**
+
+### 原理
+
+真机 `nflasha1/boot/initrd.img`（4.9MB **CRAMFS**，md5 `bb50bfb5…`，与 `p1chksum` 吻合）
+的 `/sbin/init` 是**脚本**，结尾为：
+
+```sh
+while true; do
+    if [ -f /root/IAMLDUDWRT ]; then read -p LOGIN: hoge; ...
+    else /bin/ash --login        # ← 该文件不存在时，自动开出 root shell
+    fi
+    sleep 1
+done
+```
+
+> ⚠️ 注意区分：`nflasha1/boot/initrd.img` 是这份**脚本 init**（给出 shell）；
+> 而正常启动链里第一段用的 initrd 的 `/sbin/init` 是 **ELF**。
+
+### 用法
+
+```sh
+./scripts/shell_zve10.sh "cmd1" "cmd2" ...     # 客机 root shell
+./scripts/shell_camera.sh "cmd1" "cmd2" ...    # 自动挂载 + chroot 进相机 rootfs
+```
+
+`shell_camera.sh` 实际执行：
+
+```sh
+mount -t ext2 -o ro /dev/nflasha7  /mnt
+mount -t ext2 -o ro /dev/nflasha15 /mnt/usr
+mount -t vfat       /dev/nflasha2  /mnt/setting
+mount -t proc proc /mnt/proc ; mount -t sysfs none /mnt/sys
+busybox chroot /mnt /bin/ash
+```
+
+### 实测能做什么
+
+```sh
+/ # lsmod                                   # 看模块加载与依赖
+/ # cat /sys/module/dmm/parameters/DmmConfig   # 看模块实参
+/ # cat /proc/partitions                    # 看分区
+/ # busybox chroot /mnt /bin/ash -c 'cd /; export LD_LIBRARY_PATH=/lib:/usr/lib; \
+       /usr/bin/im.elf debug s g r u l i a lazy-global'   # 手动跑相机 App
+```
+
+**⇒ 这是本项目最强的调试手段：可现场复现崩溃、看内核栈回溯、逐条验证假设。**
+
+### 踩坑提醒
+
+- 解包 CRAMFS 会**丢失可执行位与符号链接**；重建镜像时要 `chmod 755`
+  并为 busybox 重建 `sh`/`ash`/`mount`/... 链接，否则内核报 `No init found`
+- 老内核（3.0.27）对现代 e2fsprogs 的特性敏感，必要时 `mke2fs -O none`
+- `ramdisk_size` 必须 ≥ 镜像大小（13MB 镜像需 `ramdisk_size=16384`）
+- busybox 是精简版：没有 `head`/`id`/`df`；`chroot` 要用 `busybox chroot`
+
+---
+
 ## 目录结构
 
 ```

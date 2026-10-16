@@ -8,7 +8,7 @@
 ## ✅ 一条命令复现当前最佳状态
 
 ```sh
-<repo>/run_qemu_zve10.sh
+/root/fw/run_qemu_zve10.sh
 ```
 
 **能看到的（串口输出）：**
@@ -145,7 +145,7 @@ arch/arm/configs/cxd90045_qemu_nfs_defconfig
 # 工具链（Bootlin 2018.02，GCC 6.4，armv7-eabihf）
 curl -x $PROXY -L -o tc.tar.bz2 \
   https://toolchains.bootlin.com/downloads/releases/toolchains/armv7-eabihf/tarballs/armv7-eabihf--glibc--stable-2018.02-1.tar.bz2
-tar xjf tc.tar.bz2 -C <build>/toolchain/
+tar xjf tc.tar.bz2 -C /mnt/build/toolchain/
 
 # 它的 cc1 需要 MPFR 3.x（现代宿主只有 6）
 curl -x $PROXY -L -o mpfr4.deb \
@@ -153,8 +153,8 @@ curl -x $PROXY -L -o mpfr4.deb \
 dpkg-deb -x mpfr4.deb /tmp/mpfr4x && cp -a /tmp/mpfr4x/usr/lib/x86_64-linux-gnu/libmpfr.so.4* /usr/local/lib/ && ldconfig
 
 # 编译
-cd <build>/src/a7c-kernel/linux
-export PATH=<build>/toolchain/armv7-eabihf--glibc--stable-2018.02-1/bin:$PATH
+cd /mnt/build/src/a7c-kernel/linux
+export PATH=/mnt/build/toolchain/armv7-eabihf--glibc--stable-2018.02-1/bin:$PATH
 CC=arm-buildroot-linux-gnueabihf-
 make ARCH=arm CROSS_COMPILE=$CC cxd90045_qemu_nfs_defconfig
 make ARCH=arm CROSS_COMPILE=$CC -j4 vmlinux
@@ -173,7 +173,7 @@ make ARCH=arm CROSS_COMPILE=$CC -j4 zImage          # → arch/arm/boot/zImage (
 
 ---
 
-## 三、`cxd90045` 机器模型的 4 处修补（`<repo>/sony_qemu_bionz.patch`）
+## 三、`cxd90045` 机器模型的 4 处修补（`/root/fw/sony_qemu_bionz.patch`）
 
 | # | 问题 | 现象 | 修法 |
 | --- | --- | --- | --- |
@@ -245,7 +245,7 @@ Uncompressing Linux.... done, booting the kernel.
 
 ```
 Uncompressing Linux.... done, booting the kernel.
-Linux version 3.0.27_nl-rt106 (root@<build-host>) (gcc version 6.4.0 ...) #3 SMP PREEMPT RT
+Linux version 3.0.27_nl-rt106 (root@dsh-ubuntu) (gcc version 6.4.0 ...) #3 SMP PREEMPT RT
 CPU: ARMv7 Processor [410fc051] revision 1 (ARMv7), cr=10c5387d
 CPU: VIPT nonaliasing data cache, VIPT aliasing instruction cache
 cmdline override at 60133005                                  ← 补的 cmdline 生效
@@ -501,7 +501,7 @@ initrd     @0x700000  : 1f 8b 08 00 (= gzip)
 - **绕法：把 initramfs 直接编进内核**，彻底不需要 atags：
 
 ```
-CONFIG_INITRAMFS_SOURCE="<build>/initramfs"
+CONFIG_INITRAMFS_SOURCE="/mnt/build/initramfs"
 ```
 
 ### 14.2 实测输出
@@ -600,17 +600,17 @@ kernel BUG at .../Guiengine_161H/driver/grm_gles/./src/sugi_hw.c:221!
    让上电检查通过；
 3. 逐层往上补：**时钟/复位 → GRM 显存 → framebuffer 输出**，最后就能 dump 出画面。
 
-`grm_gles.ko` 就在固件里（`<repo>/ref_e10/usr/kmod/grm_gles.ko`），可以静态分析。
+`grm_gles.ko` 就在固件里（`/root/fw/ref_e10/usr/kmod/grm_gles.ko`），可以静态分析。
 
 ### 16.5 完整产物与命令
 
 ```sh
-Q=<build>/qemu-build/arm-softmmu/qemu-system-arm
-Z=<build>/src/a7c-kernel/linux/arch/arm/boot/zImage
+Q=/mnt/build/qemu-build/arm-softmmu/qemu-system-arm
+Z=/mnt/build/src/a7c-kernel/linux/arch/arm/boot/zImage
 $Q -M cxd90045 -display none -serial stdio \
    -kernel $Z \
-   -initrd <build>/initramfs-stock.cpio.gz \
-   -drive if=mtd,file=<build>/zve10_emmc.img,format=raw \
+   -initrd /mnt/build/initramfs-stock.cpio.gz \
+   -drive if=mtd,file=/mnt/build/zve10_emmc.img,format=raw \
    -append "console=ttyAM0,115200n8 mem=1G@0 rw noatime qemu rdinit=/sbin/init"
 ```
 
@@ -698,11 +698,11 @@ W: 79/79/0: dma330_init(3630): udif_err=-14
 ### 17.5 当前可复现的完整状态
 
 ```sh
-Q=<build>/qemu-build/arm-softmmu/qemu-system-arm
-Z=<build>/src/a7c-kernel/linux/arch/arm/boot/zImage
+Q=/mnt/build/qemu-build/arm-softmmu/qemu-system-arm
+Z=/mnt/build/src/a7c-kernel/linux/arch/arm/boot/zImage
 $Q -M cxd90045 -display none -serial stdio -kernel $Z \
-   -initrd <build>/initramfs-stock.cpio.gz \
-   -drive if=mtd,file=<build>/zve10_emmc.img,format=raw \
+   -initrd /mnt/build/initramfs-stock.cpio.gz \
+   -drive if=mtd,file=/mnt/build/zve10_emmc.img,format=raw \
    -append "console=ttyAM0,115200n8 mem=1G@0 rw noatime qemu rdinit=/sbin/init"
 ```
 
@@ -1738,7 +1738,7 @@ FB_PARAM_640_384_RGB565     FB_PARAM_640_384_RGBA8888_FROM_COMMON_MEMSPACE
 
 ### 31.1 成果
 
-`grmstub/libgrm.c` / `libgrm.so`（也在 `<repo>/libgrm.{c,so}`）：
+`grmstub/libgrm.c` / `libgrm.so`（也在 `/root/fw/libgrm.{c,so}`）：
 
 | 项 | 值 |
 | --- | --- |
@@ -2261,7 +2261,7 @@ insmod: Input/output error
 - 路线 B：给 `backup.ko` 打**更精细**的补丁 —— 跳过校验但仍做最小初始化（让数据结构不是野指针）
 - 路线 C：照 `MonDrv::Init` 期望的语义，直接让 `Backup_read_4Byte` 返回合理值
 
-**产物**：`/tmp/backup_patched.ko`、`<build>/zve10_patched_emmc.img`（补丁版整盘镜像，可直接引导）
+**产物**：`/tmp/backup_patched.ko`、`/mnt/build/zve10_patched_emmc.img`（补丁版整盘镜像，可直接引导）
 
 ---
 
@@ -2324,9 +2324,9 @@ insmod: can't insert 'backup.ko': Input/output error
 
 | 文件 | 说明 |
 | --- | --- |
-| `<repo>/backup_patched.ko` | 补丁版 backup.ko（`.init.text+0xcc`: `bl backupfile_load` → `mov r0,#0`）。**用它能得到 Unknown symbol = 0（89 → 0），所有模块加载成功** |
-| `<build>/zve10_patched_emmc.img` | 用补丁版 nflasha15 重建的整盘镜像，可直接引导 |
-| `<build>/initramfs-readtest.cpio.gz` + 构建脚本 | 可复现的读盘/模块加载诊断环境 |
+| `/root/fw/backup_patched.ko` | 补丁版 backup.ko（`.init.text+0xcc`: `bl backupfile_load` → `mov r0,#0`）。**用它能得到 Unknown symbol = 0（89 → 0），所有模块加载成功** |
+| `/mnt/build/zve10_patched_emmc.img` | 用补丁版 nflasha15 重建的整盘镜像，可直接引导 |
+| `/mnt/build/initramfs-readtest.cpio.gz` + 构建脚本 | 可复现的读盘/模块加载诊断环境 |
 | `/tmp/dk4.sh` 等 gdb 脚本 | klog 内存区 dump 的复现脚本 |
 
 ---
@@ -2414,7 +2414,7 @@ helper 0x46f4:
 | 真实路径 `/setting/Backup.bin`+`.bak` | `hbreak *0x601e3ed8` on filp_open |
 | `Data_check` 判定表 | `objdump -dr --start-address=0x3e04 ref_e10/usr/kmod/backup.ko` |
 | 真机 count 716/715 | 从 `zve10_delivery/nflasha2.img` 连续读出两份文件，读偏移 0x2C |
-| 补丁后 Unknown symbol 89→0 | `<repo>/backup_patched.ko` + `<build>/zve10_patched_emmc.img` |
+| 补丁后 Unknown symbol 89→0 | `/root/fw/backup_patched.ko` + `/mnt/build/zve10_patched_emmc.img` |
 
 ---
 
@@ -2479,10 +2479,10 @@ backup_init
 
 | 文件 | 说明 |
 | --- | --- |
-| `<repo>/BACKUP.BIN.real` / `BACKUP.BAK.real` | 从真机 nflasha2 取出的两份原文件（count 716 / 715） |
-| `<repo>/initrd_with_backup.img` | 已把两份文件放进 `/setting/` 的 8MB initrd |
-| `<repo>/backup_patched.ko` | 补丁版 backup.ko（Unknown symbol 89→0） |
-| `<build>/zve10_patched_emmc.img` | 补丁版整盘镜像 |
+| `/root/fw/BACKUP.BIN.real` / `BACKUP.BAK.real` | 从真机 nflasha2 取出的两份原文件（count 716 / 715） |
+| `/root/fw/initrd_with_backup.img` | 已把两份文件放进 `/setting/` 的 8MB initrd |
+| `/root/fw/backup_patched.ko` | 补丁版 backup.ko（Unknown symbol 89→0） |
+| `/mnt/build/zve10_patched_emmc.img` | 补丁版整盘镜像 |
 
 ---
 
@@ -2572,7 +2572,7 @@ unsigned long backupfile_init(const char *path, int flag)   /* flag = Backup_loa
 $Q -M cxd90045 -display none -serial stdio \
    -kernel <zImage> -initrd handoff_p0/initrd.img \
    -drive if=mtd,file=zve10_delivery/ZVE10_EMMC_FULL.img,format=raw \
-   -device loader,file=<repo>/BACKUP.BIN.real,addr=0x02E80000,force-raw=on \
+   -device loader,file=/root/fw/BACKUP.BIN.real,addr=0x02E80000,force-raw=on \
    -append "earlyprintk $(cat real_cmdline.txt)"
 ```
 
@@ -2589,7 +2589,7 @@ Modules linked in: devno(P) dmac(P) ldec(P) emmc(P) osal_utm(P) osal_uipc(P)
 之前因这些符号失败的 14 个模块（input/i2c/indctr/dmm/... ）开始陆续加载。**
 
 另外为 App 侧也打了补丁（`libMWF.so` 的 `MonDrv::PutcharSub` → `movs r0,#1; bx lr`，
-文件偏移 `0x313b8`，见 `<build>/zve10_mwf_emmc.img`）。
+文件偏移 `0x313b8`，见 `/mnt/build/zve10_mwf_emmc.img`）。
 
 ### 39.4 新阻塞：`udate_init_clock`
 
@@ -2659,7 +2659,7 @@ return *(u32*)Data_GetDataPt(e);
 | `Unknown symbol` | 89 | **0** |
 | `backup_init() error (file_load)` | 有 | **消失** |
 | `Modules linked in` | 停在 `utimer` | **`backup(P) input(P) udate(P+)` 一路加载** |
-| 用户态 App 崩溃 | `libMWF.so+0x32372` 空指针 | **已打补丁绕过**（`<build>/zve10_mwf_emmc.img`） |
+| 用户态 App 崩溃 | `libMWF.so+0x32372` 空指针 | **已打补丁绕过**（`/mnt/build/zve10_mwf_emmc.img`） |
 
 **关键修复**：`-device loader,file=BACKUP.BIN.real,addr=0x02E80000,force-raw=on`
 （`Backup_load=0` 时引导器本该做的事）。已固化到 `run_qemu_zve10.sh`。
@@ -2858,7 +2858,7 @@ Data_GetDataPt(e) = *(Data) + (v & 0xFFFFFF) + klass
 | 备份表结构 | 未知 | **两层结构完全解出且自洽** |
 | App 侧崩溃 | `libMWF.so+0x32372` | **已补丁绕过** |
 
-**可复现命令**：`<repo>/run_qemu_zve10.sh`（配合 `<build>/zve10_mwf_emmc.img`
+**可复现命令**：`/root/fw/run_qemu_zve10.sh`（配合 `/mnt/build/zve10_mwf_emmc.img`
 ——即打了 `libMWF.so` + `udate.ko` 两个补丁、`backup.ko` 保持原版的镜像）。
 
 ---
@@ -2918,7 +2918,7 @@ unsigned long arch_phys_to_noncache(unsigned long pa)
 
 **重编内核**：
 ```sh
-TC=<build>/toolchain/armv7-eabihf--glibc--stable-2018.02-1/bin/arm-buildroot-linux-gnueabihf-
+TC=/mnt/build/toolchain/armv7-eabihf--glibc--stable-2018.02-1/bin/arm-buildroot-linux-gnueabihf-
 make ARCH=arm CROSS_COMPILE=$TC -j4 zImage
 ```
 
@@ -3080,7 +3080,7 @@ Modules linked in:
 
 ### 43.5 当前可复现命令
 
-`<repo>/run_qemu_zve10.sh`（镜像 `<build>/zve10_mwf_emmc.img` 已含
+`/root/fw/run_qemu_zve10.sh`（镜像 `/mnt/build/zve10_mwf_emmc.img` 已含
 `libMWF.so` + `udate.ko` + `usbg_sen.ko` + `usb_extcmd.ko` + `kikilog.ko` + `upm.ko`
 六处补丁，`backup.ko` 保持原版），配合内核 `adrs_conv` 兜底与
 `-device loader,file=BACKUP.BIN.real,addr=0x02E80000`。
@@ -3285,7 +3285,7 @@ section translation fault (0x005) at 0x029c19e0
 
 ### 45.6 最小补丁集已脚本化并可复现
 
-`<repo>/build_patched_emmc.sh`（从真机镜像一键重建）：
+`/root/fw/build_patched_emmc.sh`（从真机镜像一键重建）：
 
 ```
 补丁 lib/libMWF.so                    # MonDrv::PutcharSub -> movs r0,#1; bx lr
@@ -3593,7 +3593,7 @@ pc -> libc-2.11.2.so +0x15796
 dd if=/dev/zero of=/tmp/n11.img bs=1M count=500
 mkfs.vfat -F 32 -n LOG /tmp/n11.img
 python3 -c "
-f=open('<build>/zve10_min_emmc.img','r+b')
+f=open('/mnt/build/zve10_min_emmc.img','r+b')
 f.seek(2*0x200000+0x0B800000); f.write(open('/tmp/n11.img','rb').read())"
 ```
 
@@ -4666,7 +4666,7 @@ int BkDmn_resume(void)  { return 0; }
 ```
 
 ```sh
-TC=<build>/toolchain/armv7-eabihf--glibc--stable-2018.02-1/bin/arm-buildroot-linux-gnueabihf-
+TC=/mnt/build/toolchain/armv7-eabihf--glibc--stable-2018.02-1/bin/arm-buildroot-linux-gnueabihf-
 ${TC}gcc -shared -fPIC -O2 -o libbkdmn.so bkdmn.c -Wl,-soname,libbkdmn.so
 ```
 产物 7,544 字节，4 个符号齐全，SONAME 正确，`Tag_CPU_arch: v7 / Cortex-A9`。
@@ -4760,7 +4760,7 @@ libInfraAccessLog.so          -> AccessLogInfra_init/sus/res
 
 **「批量桩库生成器」**：从 `libIMDB.so` 自动提取 (库,符号) → 生成 → 编译 → 安装。
 后续遇到"App 因可选库缺失走错误分支"的情况可直接复用
-（脚本：`<repo>/stubs/`，源码 `/tmp/stubs/src`，产物 `/tmp/stubs/out`）。
+（脚本：`/root/fw/stubs/`，源码 `/tmp/stubs/src`，产物 `/tmp/stubs/out`）。
 
 ### 61.6 下一步（回归最直接的手段）
 
@@ -4885,7 +4885,7 @@ cannot open shared object 计数: 0
 
 **关键点：每一步都有断言/校验，绝不吞 stderr。**
 
-### 63.2 修复后实测（`<build>/zve10_safe_emmc.img`）
+### 63.2 修复后实测（`/mnt/build/zve10_safe_emmc.img`）
 
 | 指标 | 修复前 | **修复后** |
 | --- | --- | --- |
@@ -5387,8 +5387,8 @@ Cannot access memory at address 0x16000              ← 但堆不可访问
 
 清理后：**4.6G → 601M（可用 5.2G）** ✓
 
-**⇒ 后续所有构建/调试脚本都要注意 `/tmp` 容量**（大镜像应放 `<build>`，
-本次安全构建脚本已默认输出到 `<build>`，但其工作目录 `mktemp -d` 仍在 `/tmp`）。
+**⇒ 后续所有构建/调试脚本都要注意 `/tmp` 容量**（大镜像应放 `/mnt/build`，
+本次安全构建脚本已默认输出到 `/mnt/build`，但其工作目录 `mktemp -d` 仍在 `/tmp`）。
 
 ### 69.3 下一步
 
@@ -5396,10 +5396,10 @@ Cannot access memory at address 0x16000              ← 但堆不可访问
 在修好 `/tmp` 空间后重跑：
 
 ```sh
-gdb -ex "hbreak *0x<do_page_fault>"     -ex "condition 1 \$r0 >= 0x30000 && \$r0 < 0x40000"     -ex "continue" -ex "dump binary memory <build>/heap.bin 0x16000 0x37000"
+gdb -ex "hbreak *0x<do_page_fault>"     -ex "condition 1 \$r0 >= 0x30000 && \$r0 < 0x40000"     -ex "continue" -ex "dump binary memory /mnt/build/heap.bin 0x16000 0x37000"
 ```
 
-（dump 文件也改放到 `<build>`，避免再写满 `/tmp`。）
+（dump 文件也改放到 `/mnt/build`，避免再写满 `/tmp`。）
 
 ---
 
@@ -5412,12 +5412,12 @@ gdb -ex "hbreak *0x<do_page_fault>"     -ex "condition 1 \$r0 >= 0x30000 && \$r0
 
 ```python
 # 失败（被当成表达式解析）
-hmp('pmemsave 0 1048576 <build>/t1.bin')
+hmp('pmemsave 0 1048576 /mnt/build/t1.bin')
 #   -> "invalid char 'm' in expression"
 
 # 成功（相对文件名，写到 QEMU 的 CWD）
-hmp('pmemsave 0 1048576 t1.bin')      # QEMU 的 CWD = <repo>
-#   -> ''（无错误），文件出现在 <repo>/t1.bin
+hmp('pmemsave 0 1048576 t1.bin')      # QEMU 的 CWD = /root/fw
+#   -> ''（无错误），文件出现在 /root/fw/t1.bin
 ```
 
 **⇒ QEMU 的 monitor 用表达式解析器处理 `addr`/`size`，第三个参数虽是文件名，
@@ -5430,7 +5430,7 @@ for i in range(8):
     hmp(f'pmemsave 0x{i*0x2000000:x} 0x2000000 phys_{i}.bin')
 ```
 
-结果：`<repo>/phys_0.bin` … `phys_7.bin`，每块 32MB，全部成功 ✓
+结果：`/root/fw/phys_0.bin` … `phys_7.bin`，每块 32MB，全部成功 ✓
 
 ### 70.3 在物理内存里定位到 App 的数据
 
@@ -6300,7 +6300,7 @@ address: 00000000, page translation fault (0x017) at 0x00000000
 | `kmod/backup.ko` `0x30dc` | `bl strcmp` → `mov r0,#0` | 跳过签名校验，使 `bss+4` 被写入 |
 | `kmod/backup.ko` `0x950` | `strbeq r4,[r4]` → `nop` | 消除 `backup_suspend` 空写崩溃 |
 
-产物：`<repo>/backup_final.ko`（两处补丁合一）
+产物：`/root/fw/backup_final.ko`（两处补丁合一）
 
 ### 81.5 下一步
 
@@ -6619,7 +6619,7 @@ ERROR : Failed to mmap!
    ⇒ 需要找出真机把"监视器固定区"信息放在哪
 3. 若存在但查不到 ⇒ 是 key 编码问题（大小端/高低位次序）
 
-**产物**：`<repo>/backup_lazy_final.ko` · `<repo>/boot_lazy_init_ok.log`
+**产物**：`/root/fw/backup_lazy_final.ko` · `/root/fw/boot_lazy_init_ok.log`
 
 ---
 
@@ -7315,7 +7315,7 @@ open('BACKUP.BIN.fixed','wb').write(d)
 但 `glibc detected` 计数为 0 ⇒ 需要按 §68/§71 的方法
 在崩溃点 dump 用户堆并做 chunk 链遍历，定位这次的越界写。
 
-**产物**：`<repo>/BACKUP.BIN.fixed` · `<repo>/boot_mondrv_ok.log`
+**产物**：`/root/fw/BACKUP.BIN.fixed` · `/root/fw/boot_mondrv_ok.log`
 
 ---
 
@@ -7498,14 +7498,14 @@ Cannot execute this command while the target is running.
 ## 一百二十一、复现命令
 
 ```sh
-Q=<build>/qemu-build/arm-softmmu/qemu-system-arm
-Z=<build>/src/a7c-kernel/linux/arch/arm/boot/zImage
-CMD=$(grep '^CONFIG_CMDLINE=' <build>/src/a7c-kernel/linux/.config | sed 's/^CONFIG_CMDLINE="//; s/"$//')
+Q=/mnt/build/qemu-build/arm-softmmu/qemu-system-arm
+Z=/mnt/build/src/a7c-kernel/linux/arch/arm/boot/zImage
+CMD=$(grep '^CONFIG_CMDLINE=' /mnt/build/src/a7c-kernel/linux/.config | sed 's/^CONFIG_CMDLINE="//; s/"$//')
 $Q -M cxd90045 -display none -serial stdio -kernel $Z -append "$CMD"
 
 # 带 gdb
 $Q -M cxd90045 -display none -serial null -kernel $Z -append "$CMD" -gdb tcp::1234
-gdb-multiarch -q -ex "file <build>/src/a7c-kernel/linux/vmlinux" -ex "target remote :1234"
+gdb-multiarch -q -ex "file /mnt/build/src/a7c-kernel/linux/vmlinux" -ex "target remote :1234"
 ```
 
 ### 69.4 条件断点仍未命中的排查方向
@@ -7533,7 +7533,7 @@ gdb-multiarch -q -ex "file <build>/src/a7c-kernel/linux/vmlinux" -ex "target rem
 
 ```python
 s=socket.socket(socket.AF_UNIX, socket.SOCK_STREAM); s.connect('/tmp/qmon.sock')
-s.sendall(b'pmemsave 0x00000000 0x10000000 <build>/phys_low.bin\n')
+s.sendall(b'pmemsave 0x00000000 0x10000000 /mnt/build/phys_low.bin\n')
 ```
 
 - **monitor 连通 ✓**（`MON OK`，命令回显正常）
@@ -7679,19 +7679,19 @@ hbreak *0x6013da20        (__dabt_usr，用户态数据异常入口)
 ### 93.1 可复现的最佳配置（一条命令）
 
 ```sh
-<repo>/run_qemu_zve10.sh
+/root/fw/run_qemu_zve10.sh
 ```
 
 或手工：
 
 ```sh
-Q=<build>/qemu-build/arm-softmmu/qemu-system-arm
-Z=<build>/src/a7c-kernel/linux/arch/arm/boot/zImage
+Q=/mnt/build/qemu-build/arm-softmmu/qemu-system-arm
+Z=/mnt/build/src/a7c-kernel/linux/arch/arm/boot/zImage
 $Q -M cxd90045 -display none -serial stdio \
-   -kernel $Z -initrd <repo>/handoff_p0/initrd.img \
-   -drive if=mtd,file=<build>/ab_lazy2.img,format=raw \
-   -device loader,file=<repo>/BACKUP.BIN.fixed,addr=0x02E80000,force-raw=on \
-   -append "earlyprintk $(cat <repo>/real_cmdline.txt)"
+   -kernel $Z -initrd /root/fw/handoff_p0/initrd.img \
+   -drive if=mtd,file=/mnt/build/ab_lazy2.img,format=raw \
+   -device loader,file=/root/fw/BACKUP.BIN.fixed,addr=0x02E80000,force-raw=on \
+   -append "earlyprintk $(cat /root/fw/real_cmdline.txt)"
 ```
 
 ### 93.2 全部交付物
@@ -8114,7 +8114,7 @@ addr=0x5595000 len=0x304000 prot=0x3 flags=0x12 fd=5 → ret=0x5595000   ✓（M
 **直接在宿主机上反汇编它们、看它们从哪里取值**（哪个全局/哪个配置），
 比在 guest 里断点更容易定位。
 
-**⇒ 产物**：`<repo>/qmmap.log`（本轮 mmap 全记录）
+**⇒ 产物**：`/root/fw/qmmap.log`（本轮 mmap 全记录）
 
 ---
 
@@ -9159,5 +9159,419 @@ if (IS_ERR(f)) {
 ### 108.4 本轮交付
 
 - **`MISSSO` 追踪已加入内核**（`fs/open.c`）—— 后续任何"库找不到"类问题都能一网打尽
-- 产物：`<repo>/misso_trace.log`（96 条失败路径全记录）
+- 产物：`/root/fw/misso_trace.log`（96 条失败路径全记录）
 - 内核源码：`fs/open.c`（新增约 8 行，可随时移除）
+
+---
+
+## 一百零九、★★★★ Round 80-81：两个判定实验（均为**负面结果**，已写入开源文档）
+
+### 109.1 ✗ `mcheck()` 定位堆损坏 —— 不可行
+
+**动机**：本 libc 导出 `mcheck`/`mcheck_check_all`/`mcheck_pedantic`，
+理论上能在**越界写发生的那一刻**报错。
+
+**做法与结果**：
+
+| 注入方式 | 结果 |
+| --- | --- |
+| `/etc/ld.so.preload` 全局预加载 | `bootin.elf` 也 abort ⇒ **中断引导** |
+| 预加载库用 `__progname` 只对 `im.elf` 生效 | 库**确实加载**（App maps 可见 `libmcheck_preload.so`），App 也跑到 `MonDrv::Init`，**但 mcheck 未生效**（报告仍是 `realloc(): invalid next size`） |
+| 去掉 `mcheck_check_all()` | 仍无效 |
+
+**⇒ 根因：`mcheck()` 必须在**任何 malloc 之前**调用；而 `.init_array` 构造函数
+跑在 `ld.so` 重定位之后（ld.so 已 malloc）⇒ **静默失效**。
+真要生效只能重写 ELF 入口（`im.elf` 已 strip、无 `_start`）——代价与风险过大。**
+
+**另外**：本 libc **未编译进** `MALLOC_CHECK_` 支持（无 `__malloc_check_init`、
+无该字符串）⇒ 那条常见路也不通。**
+
+### 109.2 ✗ 逐层分析"崩溃点上游"——找到的多是**发现者**
+
+`libObj.so+0x78ba2a` 上游反汇编出的循环：
+```asm
+78b9d4: ldr  r3, [r7, #48]     ; A
+78b9d8: ldr.w ip, [r7, #152]   ; B
+78b9e2: cmp  r3, ip
+78b9e6: movge r3, ip           ; ★ count = min(A,B) —— 数学上安全
+78b9f2: ldr.w r6, [r7, #156]   ; 输出数组
+78ba16: str.w r0, [r6], #4
+```
+**⇒ 逻辑安全，它只是**第一个遇到坏块**的地方。**
+
+**⇒ 教训：glibc 报的 `free/realloc` 位置几乎总是**发现者**，要去**更早**找写者。**
+
+### 109.3 ★ 附带新线索：发起 dlopen 的是一条 `libosal_utm.so` 线程
+
+`mcheck` 版的崩溃回溯里出现了之前没注意的两帧：
+```
+libdl(dlerror+0x9f) ← im.elf[0xb546] ← im.elf[0x97ec]
+  ← /usr/lib/libosal_utm.so(+0xb26)     ← ★ 新线索
+  ← /lib/libpthread.so.0(+0x509c)       ← 线程入口
+```
+**⇒ 触发 dlopen 的是由 `libosal_utm.so`（UT 消息库）创建的线程；
+而堆损坏是**更早**被写坏的。**
+
+### 109.4 ★★ 重要观察：**多个程序都中招**
+
+全局 `mcheck` 下，**引导阶段的 `bootin.elf` 也报**：
+```
+*** glibc detected *** /usr/bin/bootin.elf: munmap_chunk(): invalid pointer: 0x00014030 ***
+```
+**⇒ 堆损坏**不只发生在 `im.elf`**，而是**多个程序** ⇒
+**提高"系统性原因"的可能性**（某段被多个程序共享的初始化逻辑 / 环境差异），
+也解释了"修一层冒一层"的现象。**
+
+### 109.5 全量 dlsym 覆盖复核（本轮）
+
+对 228 个被 dlopen 的库、1191 个符号做静态核对：
+**没有发现新的"完全缺失的库"**（"缺符号"的报告多为启发式误报，
+可靠清单来自 `libIMDB.so` 的顺序表，已由 110 个桩库覆盖）。
+
+**⇒ "缺库/缺符号"这条线已基本排除。**
+
+---
+
+## 一百一十、★★★★ Round 82：设备可达性核查 —— "设备号不匹配"假设**被排除**
+
+### 110.1 动机
+
+真机 `/dev` 里这些是**固定主次设备号**（`osal_uipc.ko`/`backup.ko` 不用 devtmpfs）：
+
+```
+/dev/uipc      : 251:207
+/dev/backup    : 251:208
+/dev/dmpgles2  : 248: 29
+/dev/mem       :   1:  1
+```
+
+**核对**：rootfs 里的 devnode 号与真机**完全一致** ✓
+
+**⇒ 于是产生一个很合理的怀疑：QEMU 里模块注册到的**主设备号**若与 251/248 不同，
+App 的 `open()` 就会失败或走错设备 ⇒ 错误路径 ⇒ 堆损坏。**
+
+### 110.2 做法：内核 printk 追踪**失败的 `/dev/*` 打开**
+
+在 `fs/open.c` 的 `do_sys_open()` 失败分支里，对 `/dev/` 开头的路径打印：
+
+```c
+if (tmp[0]=='/' && tmp[1]=='d' && tmp[2]=='e' && tmp[3]=='v' && tmp[4]=='/')
+    printk(KERN_ERR "MISSDEV %s (err=%ld)\n", tmp, PTR_ERR(f));
+```
+
+### 110.3 ★ 结果：关键设备**全部打开成功**
+
+| 设备 | 结果 |
+| --- | --- |
+| `/dev/uipc` | **✓ 未失败**（UIPC 共享内存可用） |
+| `/dev/backup` | **✓ 未失败**（备份服务可用） |
+| `/dev/dmpgles2` | **✓ 未失败**（显示设备可用） |
+| `/dev/mem` | **✓ 未失败** |
+| `/dev/usb/buspwr`、`/dev/tty` | 失败（次要，预期） |
+
+**⇒ "设备缺失 / 设备号不匹配"这条假设**被实测排除**。
+App 能正常访问 UIPC、备份、显示三个关键设备。**
+
+### 110.4 推论
+
+**⇒ 既然 UIPC 设备可达，那 §104.8 里那个坏函数指针（`0x107`）**不是**"设备打不开导致回调表为空"，
+而更可能是**UIPC 协议/状态层面**的问题（例如消息类型 2 的处理未注册、
+或共享内存里的描述符被写坏）。**
+
+### 110.5 本轮（Round 82）累计排除清单（更新）
+
+| # | 假设 | 结论 |
+| --- | --- | --- |
+| 1–8 | 内存压力 / `brk` / `mmap` / dlopen 缺库 / `libMWF`补丁 / size计算 / jemalloc / `MALLOC_OPTIONS` | ❌ 排除 |
+| 9 | `memset` 写穿 | ❌ 反证 |
+| 10 | 大分配是触发点 | ✅ 确认（去掉即消失） |
+| 11 | 堆损坏独立且更早 | ✅ 确认 |
+| 12 | `dlopen` 只是第一个检测者 | ✅ 确认 |
+| 13 | **`mcheck` 注入可行** | ❌ **不可行（须在首个 malloc 前；构造函数太晚）** |
+| 14 | **崩溃点上游代码是写者** | ❌ 多为"发现者" |
+| 15 | **设备号不匹配 / 设备打不开** | ❌ **实测排除（本轮）** |
+| 16 | **"缺库/缺符号"** | ❌ 全量核对排除 |
+
+**⇒ 16 类假设已排除，剩下的是"App/UIPC 内部状态被写坏"这一具体方向。**
+
+---
+
+## 一百一十一、Round 83：开源文档补齐「16 类已排除假设」清单
+
+### 111.1 新增 `docs/EXCLUDED_HYPOTHESES.md`（开源仓库）
+
+把定位堆损坏过程中做过的实验**全部记录**，避免后来者重复：
+
+- **16 类已排除假设**（含每条的反证方式）
+- **为什么 `mcheck()` 走不通**（须在首个 malloc 前；构造函数太晚）
+- **唯一验证有效的定位手段**（物理内存快照里找越界写的"笔迹"）
+- **已逐层剥出的 4 个"确认真凶"**
+- **给后来者的建议**：在**写者侧**下断（而非 `free`/`realloc` 侧）、
+  硬件 watchpoint 监控 chunk 头、注意多线程共享结构、UIPC 栈是当前最可疑方向
+
+**⇒ 这类"负面结果"对社区的边际价值最高** —— 能让别人跳过几十小时的重复劳动。
+
+### 111.2 仓库现状
+
+```
+https://github.com/cokeenet/zve10-qemu    （公开 / MIT / main）
+  29 个文件
+  ├── README.md
+  ├── LICENSE / NOTICE.md
+  ├── docs/  （10 篇，含 EXCLUDED_HYPOTHESES.md）
+  ├── patches/  （内核 4 + QEMU 2）
+  ├── scripts/  （引导 / 安全构建 / 桩库生成）
+  └── data/  （分区表 / IMDB 表 / 机型对照）
+```
+
+### 111.3 A 的当前状态与判断
+
+**已经彻底变成"纯 App 逆向调试"**：环境侧（内核/模型/镜像/数据/设备/库/符号）
+**该做的都做了，16 类环境假设全部排除**。
+
+**⇒ 剩下的是 App/UIPC 内部状态被写坏。**
+
+**⇒ 最优解是社区协作**（正好是开源项目的意义）：
+找熟悉 Sony stella/UIPC 架构的人，可能一眼看出。
+
+**⇒ 我建议把 A 挂起，除非有新的输入（社区反馈 / 你的新想法）。**
+
+---
+
+## 一百一十二、★★★★★★★★ Round 84-85：**突破 —— 拿到交互式 ROOT SHELL！**
+
+### 112.1 关键：真机 CRAMFS initrd 的 `/sbin/init` 是**脚本**
+
+`nflasha1/boot/initrd.img`（4,943,872 B，**CRAMFS**，md5 `bb50bfb5…` 与 `p1chksum` 吻合）
+才是真机启动链用的 initrd —— **我之前用的 `handoff_p0/initrd.img`（2.1MB ext2）是另一个东西。**
+
+该 initrd 的 `/sbin/init` 是 **POSIX shell 脚本**，结尾就是：
+
+```sh
+while true
+do
+    if [ -f /root/IAMLDUDWRT ] ; then
+        read -p LOGIN: hoge
+        if [ ! -z $hoge ] ; then
+            if [ $hoge = "xylitol5" ] ; then /bin/ash --login ; fi
+        fi
+    else
+        /bin/ash --login          # ★ 只要这个文件不存在，就直接给 root shell
+    fi
+    sleep 1
+done
+```
+
+**⇒ 只要 `/root/IAMLDUDWRT` 不存在，init 就自动开一个 `/bin/ash`（root）！**
+
+### 112.2 一条命令启动交互式 shell
+
+```sh
+/root/fw/shell_zve10.sh "mount" "cat /proc/partitions" "ls /"
+```
+
+**实测输出（干净可用）：**
+```
+BusyBox v1.29.3 built-in shell (ash)
+/ # mount
+rootfs on / type rootfs (rw)
+/dev/root on / type cramfs (ro,noatime)
+proc on /proc type proc (rw,relatime)
+none on /sys type sysfs (rw,relatime)
+tmpfs on /tmp_updater type tmpfs (rw,relatime,size=32768k)
+/dev/nflasha2 on /setting type vfat (rw,sync,noatime,...)
+/ #
+```
+
+**⇒ 这彻底改变了调试方式：不再需要每次等 4 分钟看日志，而是**直接在客机里敲命令**。**
+
+### 112.3 ★★★ 该路径**当场复现了备份子系统的问题**
+
+```
+mount /dev/nflasha2
+backup_init() error (file_load)
+insmod: can't insert '/usr/kmod/backup.ko': Input/output error
+<4>osal_ulogio: Unknown symbol Backup_read (err 0)
+<4>dmm: Unknown symbol Backup_read_4Byte (err 0)
+[UFUNC:get_power_IC_type] Backup_read() error -1
+Power IC type : 255
+```
+（本次未传 `-device loader,file=BACKUP.BIN.fixed` ⇒ `backup.ko` 拿不到数据；
+`shell_zve10.sh` 已默认加上该 loader。）
+
+### 112.4 ★★★★★ **备份数据缺失 ⇒ 异常尺寸 ⇒ 很可能就是堆损坏源头**
+
+带上 BACKUP loader 后，`IMCMN`（IM Common）的参数子系统报告：
+
+```
+< d5:: 1>[IMCMN][PARAM] invaid data size. bksize = 31071, size = 256, desc = DEVICELOG
+< d5:: 1>[IMCMN][PARAM] invaid data size. bksize = 0,     size = 512, desc = DRIVERLOG
+< d5:: 1>[IMCMN][PARAM] not exit bkid. bkid = 0x00d50099, desc = RM_PCIEWAIT1MS_POWERON
+< d5:: 1>[IMCMN][PARAM] not exit bkid. bkid = 0x00d50098, desc = RM_PCIEWAIT1MS_POWEROFF
+…（一大批 not exit bkid）
+< d5:: 1>[IMCMN][DRV] ??? : err = 80000004  src = MediaCommon_Drv_RM.c(423)
+```
+
+**⇒ 两个要点：**
+
+1. **大量备份 key 在真机备份数据里**不存在**（"not exit bkid"）**
+   ⇒ 与 App 的 `InhInfo::Initialize` 读备份参数是**同一类问题**
+2. **出现了 `bksize = 31071` 这种异常尺寸**
+   ⇒ **这正是"尺寸被夸大"的特征** —— 与 §102/§104 推断的
+     "arena 里出现尺寸被夸大的块"**高度吻合**！
+
+**⇒ 新假设（H17）：备份数据不完整 ⇒ 参数系统拿到无效尺寸/未初始化数据
+⇒ 某处按错误尺寸分配或写入 ⇒ 堆被写坏。**
+
+**⇒ 这条线索可以直接用 shell **交互式验证**（不再需要 4 分钟一轮）。**
+
+### 112.5 新增交付
+
+| 文件 | 说明 |
+| --- | --- |
+| `shell_zve10.sh` | **一条命令进交互式 root shell**（含 BACKUP loader，输出已过滤） |
+| `realinitrd.log` | 真机 CRAMFS initrd 的完整引导日志 |
+| `shellout.log` | shell 会话原始日志 |
+
+### 112.6 ★★★★★ 在相机自己的 rootfs 里拿到 shell（chroot）
+
+`/sbin/init` 脚本把根设为 CRAMFS（**只读**），但 busybox **带 `chroot`**：
+
+```sh
+# 1) 用真机 CRAMFS initrd 启动 → 自动得到 /bin/ash
+# 2) 在 shell 里：
+mount -t ext2 -o ro /dev/nflasha7  /mnt
+mount -t ext2 -o ro /dev/nflasha15 /mnt/usr
+mount -t vfat       /dev/nflasha2  /mnt/setting
+mount -t proc proc /mnt/proc
+mount -t sysfs none /mnt/sys
+busybox chroot /mnt /bin/ash        # ★ 进入相机 rootfs
+```
+
+**实测成功：**
+```
+/ # busybox chroot /mnt /bin/ash -c 'ls /'
+bin  kmod  network  sys  tmp_ipsec  version.txt
+dev  lib   root     tmp  tmp_updater
+etc  log   sbin     tmp_bt  usr
+```
+
+**⇒ 封装成 `shell_camera.sh`（一条命令进入相机 rootfs 的 root shell）。**
+
+### 112.7 ★★★ 由此可直接**手动运行相机 App** 并观察崩溃
+
+```
+/ # busybox chroot /mnt /bin/ash -c 'cd /; export LD_LIBRARY_PATH=/lib:/usr/lib; \
+       /usr/bin/im.elf debug s g r u l i a lazy-global'
+```
+（`im.elf debug s g r u l i a lazy-global` 正是真机 init 的启动参数，见交接清单 §8。）
+
+**⇒ 这给出了**比之前强得多的调试能力**：可以逐条命令试、可以边跑边看。**
+
+### 112.8 ★★★★★ 手动运行暴露的两条关键线索
+
+**(a) 备份参数子系统报"尺寸异常"**
+
+```
+< d5:: 1>[IMCMN][PARAM] invaid data size. bksize = 31071, size = 256, desc = DEVICELOG
+< d5:: 1>[IMCMN][PARAM] invaid data size. bksize = 0,     size = 512, desc = DRIVERLOG
+< d5:: 1>[IMCMN][PARAM] not exit bkid. bkid = 0x00d50099, desc = RM_PCIEWAIT1MS_POWERON
+…（一大批 not exit bkid）…
+< d5:: 1>[IMCMN][DRV] ??? : err = 80000004  src = MediaCommon_Drv_RM.c(423)
+```
+
+**⇒ `bksize = 31071` 正是"尺寸被夸大"的特征 —— 与 §102/§104 推断的
+「arena 里出现尺寸被夸大的块」**高度吻合**。**
+
+**(b) ★ `Backup_nread` 在内核 `backup.ko` 里跳到 NULL**
+
+```
+[<5f06ad18>] (osal_printf+0x98c/0xdd8 [backup]) from [<5f06b4e8>] (Backup_nread+0x44/0x5c [backup])
+[<5f06b4a4>] (Backup_nread+0x0/0x5c [backup])   from [<5f0719b8>] (backup_osal_call_func+0x200/0x9e8 [backup])
+program: /usr/bin/im.elf(im.elf) (pid: 149)
+address: 00000000, trap_no: 00000006        ← ★ 跳到 NULL（取指异常）
+```
+
+**⇒ `lsmod` 确认**全部模块已加载**（含 `osal_ulogio`）：
+```
+backup       92493  5  usbg_sen,usb_portMonitor,i2c,dmm,osal_ulogio
+osal_ulogio  29815  0
+osal_uipc    38257 11  ...
+osal_utm      2139  6  usb_portMonitor,i2c,dmm,osal_ulogio,utimer,osal_uipc
+```
+**⇒ 所以**不是缺模块**，而是 `osal_printf` 内部走的某个回调/函数指针为空。**
+
+### 112.9 新增交付
+
+| 文件 | 说明 |
+| --- | --- |
+| `shell_zve10.sh` | 真机 CRAMFS initrd → root shell（一键） |
+| `shell_camera.sh` | **挂载 + chroot → 相机 rootfs 里的 root shell**（一键） |
+
+---
+
+## 一百一十三、Round 86-88：**交互式 shell 能力打通 + 排除"备份键缺失"假设**
+
+### 113.1 ★ 一键进相机 rootfs 的 root shell
+
+| 工具 | 作用 |
+| --- | --- |
+| `shell_zve10.sh` | 用真机 CRAMFS initrd 启动 → init 脚本自动开 `/bin/ash`（root） |
+| `shell_camera.sh` | 再自动挂载 nflasha7/15/2 + proc/sys，并 `busybox chroot /mnt` 进相机 rootfs |
+
+**实测可用：**
+```
+/ # busybox chroot /mnt /bin/ash -c 'ls /'
+bin kmod network sys tmp_ipsec version.txt
+dev lib root tmp tmp_updater
+etc log sbin tmp_bt usr
+```
+
+### 113.2 手动跑 App 抓到的崩溃（新）
+
+```
+[<5f06ad18>] (osal_printf+0x98c/0xdd8 [backup]) from [<5f06b4e8>] (Backup_nread+0x44/0x5c [backup])
+[<5f06b4a4>] (Backup_nread+0x0/0x5c [backup])   from [<5f0719b8>] (backup_osal_call_func+0x200/0x9e8 [backup])
+program: /usr/bin/im.elf(im.elf) (pid: 149)
+address: 00000000, trap_no: 00000006      ← 跳到 NULL
+```
+
+**`lsmod` 确认所有模块（含 `osal_ulogio`）都已加载**，且模块实参正确：
+```
+/sys/module/osal_ulogio/parameters/ulogio_initfile = /setting/ulogio.bin   ✓
+/sys/module/dmm/parameters/DmmConfig              = /etc/DmmConfig.bin    ✓
+```
+**⇒ 所以不是缺模块、也不是缺参数。**
+
+### 113.3 ❌ **排除假设 H17：备份数据缺 key 导致尺寸异常**
+
+**动机**：更新器环境里 `IMCMN` 大量报
+```
+[IMCMN][PARAM] invaid data size. bksize = 31071, size = 256, desc = DEVICELOG
+[IMCMN][PARAM] not exit bkid. bkid = 0x00d50099, desc = RM_PCIEWAIT1MS_POWERON
+```
+
+**做法**：把真机 `/setting/Backup.bin`（由真机 dump 提取，md5 `20b79fce…`）
+与我们的 `BACKUP.BIN.real`（md5 `76e7ccfa…`）、`BACKUP.BIN.fixed` 做**键级对比**。
+
+**结果（用 §104 逆向出的格式解析）：**
+
+| key | `BACKUP.BIN.fixed` | **真机 `Backup.bin`** |
+| --- | --- | --- |
+| `0x00d50099` | 不存在 | **不存在** |
+| `0x00d50098` | 不存在 | **不存在** |
+| `0x00fa0028` | 不存在 | **不存在** |
+| `0x00fa005d` | 不存在 | **不存在** |
+| `0x00010001` | `0x04031e40` | `0x04031e40`（一致） |
+
+**⇒ 结论：这些 key **在真机数据里本来就不存在** ⇒ `not exit bkid` / `bksize` 是
+**正常行为（可选键缺失）**，**不是**堆损坏的源头。❌ 假设排除。**
+
+### 113.4 顺带打通的构建能力（未采用但有价值）
+
+- 把真机 CRAMFS initrd 解包 → 改成**可写 ext2**（14MB）→ 可自由增删文件
+  - ⚠️ 坑 1：解包会**丢失可执行位与符号链接**，必须 `chmod 755` +
+    为 busybox 重建 `sh/ash/mount/...` 符号链接
+  - ⚠️ 坑 2：老内核（3.0.27）对现代 e2fsprogs 写的特性敏感，必要时用 `-O none`
+  - ⚠️ 坑 3：`ramdisk_size` 必须 ≥ 镜像大小（13MB 镜像需 `ramdisk_size=16384`）
+- 也可打包成 cpio.gz initramfs（本内核下未验证成功，暂用 CRAMFS 原版最稳）
