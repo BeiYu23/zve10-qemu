@@ -165,8 +165,21 @@ data/                    派生技术数据（分区表、IMDB 表、机型对�
 - 现象：`libObj.so` 某线程内 `free(): invalid next size`
 - 已定位到机制：glibc `_int_malloc` 用"尺寸被夸大的块"满足了 3.16MB 请求 ⇒ chunk split 越界
 - 已排除：内存压力、`brk`、`mmap`、dlopen 缺库、size 计算、jemalloc、`MALLOC_OPTIONS`
-- 建议下一步：注入 `mcheck(NULL)`（本 libc 支持）在**首个 `malloc` 之前**，
-  让 glibc 在**越界写发生的那一刻**就抓人
+
+**已试过但行不通的路（详见 [docs/HANDOFF.md](docs/HANDOFF.md) §十）：**
+
+- ✗ **`mcheck()` 注入** —— `mcheck` 必须在任何 `malloc` 之前调用，
+  而动态库构造函数跑在 `ld.so` 重定位之后 ⇒ **静默失效**。
+  （另：本 libc 未编译进 `MALLOC_CHECK_` 支持。）真要生效只能重写 ELF 入口点。
+- ✗ **逐层分析崩溃点上游** —— glibc 报的 `free/realloc` 位置几乎总是**发现者**，
+  不是写者。例如 `libObj.so+0x78ba2a` 上游的循环经分析逻辑是安全的。
+
+**目前唯一验证有效的定位手段**：在物理内存快照里找**被越界写进去的残留内容**
+（本项目靠这招在堆里读到一批 `dlopen` 错误消息，从而定位到 `libJiritsu.so`）。
+
+**另外一个值得注意的观察**：启用全局 `mcheck` 时，连引导阶段的 `bootin.elf`
+也报了 `munmap_chunk(): invalid pointer` ⇒ **堆损坏不止发生在 `im.elf`，
+而是多个程序都可能中招** ⇒ 提示根因可能是**共享的初始化逻辑或环境差异**。
 
 **B. 显示链路需要 Mali**
 ```

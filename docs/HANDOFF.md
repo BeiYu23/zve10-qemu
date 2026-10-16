@@ -244,3 +244,74 @@ App → /dev/dmpgles2 (248,29) → grm_gles.ko「SUGILITE Driver」(DMP/Sony)
 | `sony_qemu_*.patch` | QEMU 补丁（2 项） |
 | `stubs/gen_all_stubs.py` + `stubs/generated/` | 批量桩库生成器（102 个） |
 | `<build>/snp/` | 崩溃瞬间物理快照（192MB） |
+
+
+---
+
+## 十、★ 负面结果记录（2026-10 更新）——请勿重复踩坑
+
+以下两条路**已经试过并确认行不通**，写在这里是为了让后来者少走几天弯路。
+
+### 10.1 ✗ 用 `mcheck()` 定位堆损坏 —— 不可行
+
+**思路很自然**：这份 `libc-2.11.2.so` **导出**了 `mcheck` / `mcheck_check_all` /
+`mcheck_pedantic`，理论上开启后 glibc 会在**每次 malloc/free** 做一致性检查，
+从而在**越界写发生的那一刻**报错（而不是等 `free` 才发现）。
+
+**试过的两种注入方式：**
+
+| 方式 | 结果 |
+|------|------|
+| `/etc/ld.so.preload` 全局预加载 | 会让引导阶段的 `bootin.elf` 也 abort ⇒ **中断引导** |
+| 预加载库用 `__progname` **只对 `im.elf` 生效** | 库确实被加载（能在 App 的 maps 里看到），App 也能跑到 `MonDrv::Init`，**但 `mcheck` 没有生效** |
+| 同上，去掉 `mcheck_check_all()`（避免误判） | 仍然无效 |
+
+**⇒ 根本原因：`mcheck()` 必须在**任何 malloc 之前**调用。
+而动态库的 `.init_array` 构造函数跑在 `ld.so` 完成重定位**之后**
+（ld.so 早已调用过 malloc）⇒ **`mcheck()` 静默失效，变成空操作。**
+
+**⇒ 真要生效只能改 ELF 入口点（`_start`）——而 `im.elf` 已被 strip、没有 `_start` 符号，
+需要手工重写入口。代价与风险都很大。**
+
+**另外**：这份 libc **没有**编译进 `MALLOC_CHECK_` 环境变量支持
+（`nm` 里没有 `__malloc_check_init`，字符串表里也没有 `MALLOC_CHECK_`），
+所以那条常见的路子在这里也走不通。
+
+### 10.2 ✗ 逐层分析"崩溃点的上游代码" —— 找到的多是"发现者"而非"写者"
+
+例如 `libObj.so+0x78ba2a` 处反汇编出来是一个循环：
+
+```asm
+78b9d4: ldr  r3, [r7, #48]        ; A
+78b9d8: ldr.w ip, [r7, #152]      ; B
+78b9e2: cmp  r3, ip
+78b9e6: movge r3, ip              ; count = min(A, B)   ← 数学上不会溢出
+78b9f2: ldr.w r6, [r7, #156]      ; 输出数组
+78ba16: str.w r0, [r6], #4        ; 写入
+```
+
+**⇒ 这个循环逻辑是安全的。它只是**第一个遇到损坏堆块**的地方。**
+
+**⇒ 教训：glibc 报出的 `free/realloc` 位置通常是**发现者**。
+不要在那里停下，要去**更早**找写者。**
+
+### 10.3 ✓ 目前唯一有效的定位手段（推荐）
+
+**"在物理内存快照里找笔迹"** —— 本项目多次靠它破案：
+
+1. 在崩溃瞬间用 QEMU monitor 的 `pmemsave` 抓物理内存
+   *（坑：文件名**不能用绝对路径**，`/` 会被当表达式解析）*
+2. 在宿主机上搜**损坏区域附近的残留内容** —— 被越界写进去的东西往往能直接认出写者
+3. 例：本项目就是靠这招在堆里读到一批 `dlopen` 错误消息
+   （`cannot open shared object file` 等），从而定位到 `libJiritsu.so` 的
+   `jiritsu_init` 会写坏堆
+
+### 10.4 另一个值得注意的观察
+
+**启用全局 `mcheck` 时，连引导阶段的 `bootin.elf` 也报了
+`munmap_chunk(): invalid pointer`。**
+
+**⇒ 说明堆损坏**不只发生在 `im.elf`**，而是**多个程序都可能中招**。**
+
+**⇒ 这提示根因可能是**某段被多个程序共享的初始化逻辑或环境差异**，
+而不是单个程序的局部 bug。**（已确认的一个例子是 `libJiritsu.so` 的 `jiritsu_init`。）
