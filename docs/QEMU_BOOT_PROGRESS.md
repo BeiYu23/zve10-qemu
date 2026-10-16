@@ -10344,3 +10344,76 @@ EXECVE /usr/bin/im.elf
 - 或看 `/proc/osal/uipc` 的内容（可能列出已注册的处理器 id）
 
 **注意**：`bash` 的 `timeout` 在 busybox 里不可用（`rc=127`），需改用 `&` + `sleep`。
+
+---
+
+## 一百二十二、★★★★★★★ Round 99-100：**重大更正 —— LD_PRELOAD 追踪会污染被观测对象**
+
+### 122.1 ★ 发现的污染
+
+用"只追踪 sen.elf 的所有打开"的内核追踪，发现：
+
+```
+SENOPEN OK /etc/ld.so.preload      ← ★ 我的 ld.so.preload 对 sen.elf 也生效
+SENOPEN OK //lib/libguard.so        ← ★★ sen.elf 加载了我的哨兵库！
+```
+
+**⇒ 之前为了做 UIPC 流量分析，我把 `libguard.so` 通过 `/etc/ld.so.preload`
+装进了系统 —— 而 `ld.so.preload` 是**全局**的，**sen.elf 也被迫加载了它**。
+
+**⇒ 于是 `ab_guard.img` / `ab_sen.img` 上做的观测**都被污染了**。**
+
+### 122.2 ★ 用内核侧追踪得到的干净数据（`ab_sen_clean.img`）
+
+把 UIPC 追踪从用户态库**搬进内核**（`do_vfs_ioctl` 里按 `current->comm` 过滤），
+不再需要任何 `LD_PRELOAD`：
+
+```
+sen.elf (pid 115)：共 254 次 UIPC 调用
+    82 × 0x8000000a (valloc_msg_wait)
+    42 × 0x80000005 (snd_sync_msg)
+    41 × 0x8000000b (free_msg)
+    40 × 0x80000006 (snd_sync_direct)
+    39 × 0x80000004 (snd_msg)
+  ★  8 × 0x80000008 (reg_msg_queue_cb)   ← sen.elf 确实在注册！
+
+im.elf (pid 140)：共 1041 次 UIPC 调用
+   232 × 0x8000000a
+   222 × 0x8000000b
+   222 × 0x80000005
+   138 × 0x80000002 / 0x80000001
+    54 × 0x8000000c
+  ★ 12 × 0x80000008 (reg_msg_queue_cb)
+```
+
+**⇒ ★ 更正 §120.3 的结论**：之前说"注册 8 次 vs 90 次失败"，
+那个"8 次"和"90 次失败"都是**在 guard 库污染下测到的**。
+**干净数据下 im.elf 自己注册 12 次、sen.elf 注册 8 次。**
+
+### 122.3 ★★★ 重要方法论教训（已写入开源文档）
+
+**用 `LD_PRELOAD` 观测系统时，被观测者本身也被改变了行为。**
+
+- `ld.so.preload` 是**全局**的：所有程序都会加载它
+- 即使库内部用 `__progname` 只对目标程序"启用"，
+  **被加载这件事本身**（额外代码段、符号 interposition、内存布局变化）仍然改变时序与行为
+- **⇒ 需要"零侵入观测"时，务必把追踪放进内核（`printk` + `current->comm` 过滤）**
+
+### 122.4 当前状态（干净镜像 `ab_sen_clean.img`）
+
+```
+进程序列：bootin.elf → sen.elf ✓ → net_cmdd.elf → launch_shell.elf → /bin/ash → im.elf
+App 进度：FixedArea / Mon Buf Size ✓（跑到 MonDrv::Init）
+崩溃：    pc=0x106, THREAD_INFRA2 (pid 140), trap_no=0xe
+```
+
+**⇒ smode 修复有效（sen.elf 会启动并注册），但 App 仍崩在原处
+⇒ 还剩**另一条**独立原因待查。**
+
+### 122.5 新增交付
+
+| 文件 | 说明 |
+| --- | --- |
+| `ab_sen_clean.img` | **干净镜像**：ab_sym + `/setting/sen/smode`（无 guard 库、无 ld.so.preload） |
+| `uipc_kernel_trace.log` | **内核侧 UIPC 追踪**（零侵入）的原始日志 |
+| `fs_ioctl_trace.c` | 内核侧 UIPC 追踪的源码 |
