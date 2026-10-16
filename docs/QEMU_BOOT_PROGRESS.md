@@ -11642,3 +11642,93 @@ MODARGS im.elf len=65212 args= adr=0x35c6000        ← 仍然没有 fn=/system/
 | `<build>/safeW/` | 安全构建的工作目录（解包树 + 重打包镜像） |
 | `ab_sf.img` | 安全构建法 + 标志补丁的测试镜像 |
 | `sf.log` | 在安全镜像上引导的日志（7,523 行，证明镜像未损坏） |
+
+---
+
+## 一百三十一、🎉🎉🎉 Round 126：**崩溃彻底消失 —— App 稳定运行！**
+
+### 131.1 完整修复链（四处，缺一不可）
+
+| # | 修复 | 位置 | 作用 |
+| --- | --- | --- | --- |
+| 1 | `/setting/sen/smode` = `UU` | nflasha2 | 让 `sen.elf` 启动（UIPC 处理器注册） |
+| 2 | UIPC 长度错位 | `libosal_uipc.so` 偏移 `0x26c0`（`3a1c`→`7a68`） | 消除 ~9.5MB 的 `copy_to_user` 写穿 |
+| 3 | **备份 key `0x00FA007C` = `0x035C6000`** | `BACKUP.BIN.fixed` 偏移 `0xbdb90` | 让 `liro` 拿到固件物理地址 |
+| 4 | **`im.elf` 的 QEMU 检测旁路** | `im.elf` 偏移 `0x3646`（`10b9`→`00bf`） | 让 `fn=/system/av-cam.bin load=1 debug=1` 传下去 |
+
+**★ 第 4 项的发现过程（本轮）：**
+
+**在 `im.elf` 里找到标志字 `0x154f4`（`0x154d8+0x1C`）的写入者（`0xaf14` 函数）：**
+```asm
+af14: f(arg0=字符串, arg1=flags)
+af1c: mov  r8, r0
+af20: blx  IMDB_find_target_bit
+af36: ldr  r0, ='qemu'            ; ★★★★★ 字符串 "qemu"
+af40: str  r6, [r5, #28]          ; 写标志字
+af42: blx  strncmp(r8, "qemu", 4)
+af46: cbnz r0, af4e               ; ★ 不等就跳过
+af48: orr.w r6, r6, #4096         ; 等于 "qemu" ⇒ 置 bit 0x1000
+af4c: str  r6, [r5, #28]
+```
+**⇒ bit `0x1000` 正是 `fn=/system/av-cam.bin load=1 debug=1` 的门（`0xaec4` → `0xb678` → `r3`）。**
+
+**⇒ 把 `0xaf46` 的 `cbnz`（`b910`）改成 `nop`（`bf00`）⇒ 恒置该位。**
+
+### 131.2 ★★★ 修复后的实测结果
+
+```
+MODARGS im.elf len=65212 args= adr=0x35c6000  fn=/system/av-cam.bin load=1 debug=1   ← ★ 参数齐了
+LIRO (liro) rev:4-MUSASHI
+Param:adrs=035c6000, debug=1, delay=0
+entry point:635c6000
+tsk_entry
+tsk_entry - 48
+Load firmware /system/av-cam.bin to 635c6000        ← ★★★ 固件加载！
+（"Magic unmatched" 消失 ⇒ 魔法数匹配）
+end entry_pre
+start entry_main(635c6058)                          ← ★★★ 固件主程序运行
+end entry_main
+EXIT liro_entry pid=138 code=0                      ← ★★★★ **成功！**
+```
+
+**崩溃指标（对照修复前）：**
+
+| 指标 | 修复前 | **修复后** |
+| --- | --- | --- |
+| `glibc detected` | 1 | **0** ✓ |
+| `invalid next size` | 1 | **0** ✓ |
+| `address: 00000106` | 1 | **0** ✓ |
+| `Exception Syndrome` | 1 | **0** ✓ |
+| `program:`（崩溃转储） | 1 | **0** ✓ |
+
+**⇒ ★★★ App 一直运行到 700s 超时**都没有崩溃** ⇒ **稳定运行，不再崩**。**
+
+### 131.3 这彻底验证了 §129 的综合判断
+
+**⇒ "im.elf 的堆损坏"确实是 **liro 固件未加载的下游后果**：
+固件一旦真正加载，堆损坏与崩溃**同时消失**。**
+
+### 131.4 当前状态与下一步
+
+**已达成：**
+- ✅ 目标 1（启动/模块/init）
+- ✅ **App 稳定运行、不再崩溃**（本 session 的核心难题解决）
+- ✅ 4-MUSASHI（Spica 图像处理器）固件加载并运行
+
+**仍待推进：**
+- ⏳ **`/dev/dmpgles2` 的 ioctl 仍为 0** ⇒ App 还没走到显示初始化
+  （liro 成功后 `im.elf` 暂无后续 UIPC 活动，疑似在**等待传感器/ISP 就绪**）
+- ⏳ 显示链路（Mali/grm_gles）与输入链路
+
+**⇒ 下一步方向：**
+1. 看 liro 成功后 App 在等什么 —— 可能缺**传感器初始化**（`sen.elf` 已跑，
+   但 ISP 可能还需要别的握手）
+2. 或查 `im.elf` 的"下一个状态"需要什么条件（IMSSI 状态机）
+
+### 131.5 ★ 交付
+
+| 文件 | 说明 |
+| --- | --- |
+| **`ab_qf.img`** | **修复后的镜像（App 不再崩溃）** ★ |
+| `qf.log` | 修复后的完整引导日志（5,859 行，零崩溃） |
+| `<build>/safeW/` | 安全构建工作目录 |
