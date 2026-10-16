@@ -1,0 +1,40 @@
+--- a/drivers/tty/serial/amba2.c
++++ b/drivers/tty/serial/amba2.c
+@@ -120,6 +120,8 @@
+ }
+ #endif /* AMBAUART_SOFTIRQ */
+ 
++static void pl011_tx_chars(struct uart_amba_port *uap);
++
+ static void pl011_start_tx(struct uart_port *port)
+ {
+ 	struct uart_amba_port *uap = (struct uart_amba_port *)port;
+@@ -129,6 +131,13 @@
+ #ifdef AMBAUART_SOFTIRQ
+ 	pl011_softirq(uap);
+ #endif /* AMBAUART_SOFTIRQ */
++#if defined(CONFIG_CXD900X0_QEMU)
++	/* QEMU: 直接把 xmit 缓冲推出去。
++	 * 原实现只开 TX 中断、依赖中断把数据泵出；在 QEMU 下这条链没走通，
++	 * 导致用户态写 /dev/console、/dev/ttyAM0 完全看不到输出。
++	 * 这里同步排空，保证用户态输出可见（便于调试相机 App）。 */
++	pl011_tx_chars(uap);
++#endif
+ }
+ 
+ static void pl011_stop_rx(struct uart_port *port)
+@@ -936,7 +945,14 @@
+ 	if (uap->port.dev == NULL)
+ 		return -ENODEV;
+ 	uap->is_console = 1;
++#if defined(CONFIG_CXD900X0_QEMU)
++	/* QEMU 调试便利：真机上 AMBAUART_CONSOLE_ENABLE_DEFAULT=0 是**故意**的
++	 * （console=ttynull，用户态输出走 klog/em_console）。
++	 * 这里在 QEMU 下强制打开，好让我们能看到相机 App 的 stderr/printf。 */
++	uap->txrx_enable = 1;
++#else
+ 	uap->txrx_enable = ambauart_console_enable;
++#endif
+ 
+ 	uap->port.uartclk = clk_get_rate(uap->clk);
+ 

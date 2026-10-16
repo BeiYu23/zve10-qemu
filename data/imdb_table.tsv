@@ -1,0 +1,223 @@
+# libIMDB.so module table of ZV-E10 gen1 (CXD90045), 220 records x 44 B from .data.rel.ro
+# source: <repo>/ref_e10/usr/lib/libIMDB.so  (extracted from nflasha15 = /usr)
+idx	section	kind	flags	enable	bitmask	target	path	init	exit	suspend	resume	inact_act	on_zve10
+0	meta	meta	0x00020000		default	qemu	sim	nfs	set	usbj	resub	adjust|test	-
+1	meta	meta	0x00000000										-
+2	meta	meta	0x00000000										-
+3	meta	meta	0x00000001	0x00000001	0x00000001		IMDB:default						-
+4	meta	meta	0x00000001	0x00000001	0x00000006		IMDB:qemu						-
+5	meta	meta	0x00000001	0x00000001	0x00000008		IMDB:nfs						-
+6	meta	meta	0x00000001	0x00000001	0x00000010		IMDB:set						-
+7	meta	meta	0x00000001	0x00000001	0x00000020		IMDB:USBJ						-
+8	meta	meta	0x00000001	0x00000001	0x00000040		IMDB:RE-SUB						-
+9	sec1	group-header									0x08000001	-
+10	sec1	kernel-module	0x10000001	0x00000001	0x7fffffff	0x00000061	/kmod/dmm.ko	DmmConfig=/usr/share/dmm/DmmConfig.bin	dmm				yes
+11	sec1	kernel-module	0x10000001	0x00000001	0x7fffffff	0x00000092	/kmod/upm.ko		upm				yes
+12	sec2	group-header									0x08000002	-
+13	sec2	kernel-module	0x10000001	0x00000001	0x7fffffff	0x0000003b	/kmod/stream.ko		stream				yes
+14	sec2	kernel-module	0x10000001	0x00000001	0x7fffffff	0x000000c3	/kmod/stream2.ko		stream2				yes
+15	sec2	kernel-module	0x10000001	0x00000001	0xfffffff9	0x000000d9	/kmod/mcmn_drv.ko		mcmn_drv				yes
+16	sec2	kernel-module	0x10000001	0x00000001	0xfffffff9	0x000000c4	/kmod/ms_drv.ko		ms_drv				yes
+17	sec2	kernel-module	0x10000001	0x00000001	0xfffffff9	0x000000d6	/kmod/mmc_drv.ko		mmc_drv				yes
+18	sec2	kernel-module	0x10000001	0x00000001	0xfffffff9	0x000000d7	/kmod/sata_drv.ko		sata_drv				NO
+19	sec2	kernel-module	0x10000001	0x00000001	0xfffffff9	0x000000d8	/kmod/msen_drv.ko		msen_drv				NO
+20	sec2	kernel-module	0x10000001	0x00000001	0x7fffffff	0x0000009b	/kmod/hdmi.ko		hdmi				yes
+21	sec2	kernel-module	0x10000001	0x00000001	0x7fffffff	0x0000009d	/kmod/cec.ko		cec				yes
+22	sec3	group-header									0x08000003	-
+23	sec3	library	0x20000001	0x00000001	0x7fffffff	0x0000003f	libosal_uipc.so						yes
+24	sec3	library	0x20000001	0x00000001	0x7fffffff	0x000007fd	libosal_utm.so						yes
+25	sec3	library	0x20000001	0x00000001	0x7fffffff	0x000007fe	libosal_ulogio.so			ulogio_so_suspend	ulogio_so_resume		yes
+26	sec3	library	0x20000002	0x00000001	0x7fffffff	0x00000282	libInfraInterchipDatatrans.so	interchip_transfer_user_init					NO
+27	sec3	library	0x20000002	0x00000001	0x7fffffff	0x000001e3	libNVM.so	NVM_Initialize		NVM_Suspend	NVM_Resume		NO
+28	sec3	library	0x20000001	0x00000001	0x7fffffff	0x0000003e	libbackup.so			backup_user_suspend	backup_user_resume		yes
+29	sec3	library	0x20000001	0x00000001	0x7fffffff	0x000002dd	libSaveLoadSettings.so	infra_saveLoadSettings_init		infra_saveLoadSettings_sus	infra_saveLoadSettings_res		NO
+30	sec3	library	0x20000001	0x00000001	0x7fffffff	0x000002cd	libbkdmn.so	BkDmn_init	BkDmn_exit	BkDmn_suspend	BkDmn_resume		NO
+31	sec3	library	0x20000001	0x00000001	0x7fffffff	0x000000bd	libOnDemandLoader.so	odl_init		odl_sus	odl_res		yes
+32	sec3	library	0x20000001	0x00000001	0x7fffffff	0x00000110	libInfraKikiLogGenerator.so	KikiLogGenerator_init		KikiLogGenerator_sus	KikiLogGenerator_res		yes
+33	sec3	library	0x20000001	0x00000001	0x7fffffff	0x00000331	libInfraAccessLog.so	AccessLogInfra_init		AccessLogInfra_sus	AccessLogInfra_res		yes
+34	sec3	library	0x20000002	0x00000001	0x7fffffff	0x000000f7	libSysDef.so						yes
+35	sec3	library	0x20000002	0x00000001	0x7fffffff	0x00000097	libMWF.so	MWF_Init					yes
+36	sec3	library	0x20000002	0x00000001	0xffffffbf	0x00000052	libi2cuipc.so	i2cu_user_init	i2cu_user_exit	i2cu_user_sus	i2cu_user_res		NO
+37	sec3	library	0x20000001	0x00000001	0xffffffbf	0x00000270	libI2CRight.so	i2c_right_init	i2c_right_exit	i2c_right_sus	i2c_right_res		NO
+38	sec3	library	0x20000001	0x00000001	0xffffffbf	0x07fb007a	libInfraInput.so	infra_input_init		infra_input_sus	infra_input_res		NO
+39	sec3	library	0x20000001	0x00000001	0xffffffbf	0x0000027a	libInfraError.so	infra_error_init	infra_error_exit	infra_error_sus	infra_error_res		NO
+40	sec3	library	0x20000001	0x00000001	0xffffff9f	0x0000016f	libJiritsu.so	jiritsu_init		jiritsu_sus	jiritsu_res		yes
+41	sec3	library	0x20000001	0x00000001	0x7fffffff	0x00000266	libAtn.so	Atn_init		Atn_sus	Atn_res		NO
+42	sec3	library	0x20000001	0x00000001	0x7fffffff	0x0000020f	libGetLog.so	GetLog_init	GetLog_exit	GetLog_sus	GetLog_res		yes
+43	sec3	library	0x20000001	0x00000001	0x7fffffff	0x00000278	libread_refresh.so	read_refresh_init	read_refresh_exit	read_refresh_suspend	read_refresh_resume		NO
+44	sec3	library	0x20000001	0x00000001	0x00000100	0x000002b6	libTestDriver.so	TestDriver_Init					NO
+45	sec4	group-header									0x08000004	-
+46	sec4	kernel-module	0x10000002	0x00000001	0x7fffffff	0x00000048	/usr/kmod/liro.ko		liro				yes
+47	sec5	group-header									0x08000005	-
+48	sec5	library	0x20000001	0x00000001	0xffffffdf	0x07fb0131	libCoreSync.so	core_sync_user_init		core_sync_user_sus	core_sync_user_res		NO
+49	sec5	library	0x20000001	0x00000001	0xffffffdf	0x07fb0080	libgrm.so	grm_init		grm_sus	grm_res		NO
+50	sec5	library	0x20000001	0x00000001	0xffffffdf	0x00000082	libgpe.so	GpeInit		GpeSus	GpeRes		NO
+51	sec5	library	0x20000001	0x00000001	0x7fffffff	0x07fa005c	libDDS.so	DDSUserInit		DDSUserSus	DDSUserRes		NO
+52	sec5	library	0x20000001	0x00000001	0xffffff9f	0x07fb007f	libuxengine.so	uxengine_init		uxengine_sus	uxengine_res		NO
+53	sec5	library	0x20000002	0x00000001	0xffffff9f	0x07fb004e	libInfraIndctr.so	infra_indctr_init		infra_indctr_sus	infra_indctr_res		NO
+54	sec5	library	0x20000002	0x00000001	0xffffff9f	0x07fb007b	libInfraTp.so	infra_tp_init		infra_tp_sus	infra_tp_res		NO
+55	sec5	library	0x20000002	0x00000001	0xffffff9f	0x0000016c	libRsrcHotshoe.so	rsrc_hotshoe_init		rsrc_hotshoe_sus	rsrc_hotshoe_res		yes
+56	sec5	library	0x20000002	0x00000001	0xffffff9f	0x07fb007c	libInfraHotshoe.so	infra_hotshoe_init		infra_hotshoe_sus	infra_hotshoe_res		NO
+57	sec5	library	0x20000002	0x00000001	0xffffff9f	0x07fb007d	libInfraSircs.so	infra_sircs_init		infra_sircs_sus	infra_sircs_res		NO
+58	sec5	library	0x20000002	0x00000001	0xffffff9f	0x07fb011b	libInfraDial.so	infra_dial_init		infra_dial_sus	infra_dial_res		NO
+59	sec5	library	0x20000002	0x00000001	0xffffff9f	0x07fb0119	libInfraLanc.so	infra_lanc_init		infra_lanc_sus	infra_lanc_res		NO
+60	sec5	library	0x20000001	0x00000001	0xffffff9f	0x07fb0063	libInfraSelector.so	Selector_init		Selector_sus	Selector_res		NO
+61	sec5	library	0x20000002	0x00000002	0xffffff9f	0x07fb0090	libosal_udate.so	udate_init		udate_sus	udate_res		NO
+62	sec5	library	0x20000002	0x00000002	0xffffff9f	0x07fb0055	libInfraAvbbc.so	InfraAvbbc_Init		InfraAvbbc_Sus	InfraAvbbc_Res		NO
+63	sec5	library	0x20000002	0x00000002	0xffffff9f	0x07fb00cf	libInfraMediaConfig.so	InfraMediaConfig_Init		InfraMediaConfig_Suspend	InfraMediaConfig_Resume		NO
+64	sec5	library	0x20000002	0x00000002	0xffffff9f	0x000000d5	libInfraMediaCommon.so	mcmn_init		mcmn_suspend	mcmn_resume		yes
+65	sec5	library	0x20000002	0x00000002	0xffffff9f	0x000000c5	libInfraFsys.so	InfraFsys_Init					yes
+66	sec5	library	0x20000002	0x00000002	0xffffff9f	0x00000128	CameraOnDemandSaver.so	cam_ondemand_saver_init	cam_ondemand_saver_exit				yes
+67	sec5	library	0x20000002	0x00000002	0xffffff9f	0x000002ef	libFsysPosixWrapper.so	FsysPosix_Init	FsysPosix_Exit				NO
+68	sec5	library	0x20000002	0x00000002	0xffffff9f	0x00000277	libInfraOptionInstall.so	infra_option_install_init		infra_option_install_sus	infra_option_install_res		NO
+69	sec5	library	0x20000002	0x00000002	0xffffff9f	0x000001ae	libInfraOptionInstaller.so	infra_option_installer_init		infra_option_installer_sus	infra_option_installer_res		NO
+70	sec5	library	0x20000002	0x00000002	0xffffff9f	0x07fb0104	libInfraEyeFiControl.so	InfraEyeFiControl_Init		InfraEyeFiControl_Suspend	InfraEyeFiControl_Resume		NO
+71	sec5	library	0x20000002	0x00000002	0xffffff9f	0x000000b0	libInfraMediaMount.so	InfraMediaMount_Init					yes
+72	sec5	library	0x20000002	0x00000002	0xffffff9f	0x000000af	libInfraMediaDetect.so	InfraMediaDetect_Init		InfraMediaDetect_Suspend	InfraMediaDetect_Resume		yes
+73	sec5	library	0x20000002	0x00000002	0xffffff9f	0x000000c6	libmprdummy.so						yes
+74	sec5	library	0x20000002	0x00000002	0xffffff9f	0x00000195	libdiablo.so						NO
+75	sec5	library	0x20000002	0x00000002	0xffffff9f	0x00000127	libclema.so						yes
+76	sec5	library	0x20000002	0x00000002	0xffffff9f	0x0000003c	libmpr.so						yes
+77	sec5	library	0x20000002	0x00000002	0xffffff9f	0x000000c7	libmprctrl.so	InfraMprCtrl_Init					yes
+78	sec5	library	0x20000002	0x00000002	0xffffff9f	0x000001c0	libMprSeq.so	MprSequencerIf_Init		MprSequencerIf_Suspend	MprSequencerIf_Resume		NO
+79	sec5	library	0x20000002	0x00000002	0xffffff9f	0x00000276	libInfraIPTC.so	InfraIPTC_init		InfraIPTC_sus	InfraIPTC_res		yes
+80	sec5	library	0x20000002	0x00000004	0xffffff9f	0x00000208	libInfraSystemProperty.so	InfraSystemProperty_init	InfraSystemProperty_exit				NO
+81	sec5	library	0x20000002	0x00000004	0xffffff9f	0x000002ec	libInfraCrypt.so	iCrypt_init	iCrypt_exit	iCrypt_sus	iCrypt_res		NO
+82	sec5	library	0x20000002	0x00000004	0xffffff9f	0x000001de	libInfraSetupFile.so	InfraSetupFile_init	InfraSetupFile_exit	InfraSetupFile_sus	InfraSetupFile_res		NO
+83	sec5	library	0x20000002	0x00000004	0xffffff9f	0x00000209	libInfraSystemAdjust.so	InfraSystemAdjust_init	InfraSystemAdjust_exit				NO
+84	sec5	library	0x20000002	0x00000002	0xffffff9f	0x07fb0135	libInfraStillPool.so	InfraStillPool_Init					NO
+85	sec5	library	0x20000002	0x00000002	0xffffff9f	0x07fb0037	libInfraDatabase.so	InfraDatabase_Init					NO
+86	sec5	library	0x20000002	0x00000002	0xffffff9f	0x07fb00ae	libInfraSalvageStatus.so	InfraSalvageStatus_Init					NO
+87	sec5	library	0x20000002	0x00000002	0xffffff9f	0x00000038	libInfraCacheMgr.so	InfraCacheMgr_Init					yes
+88	sec5	library	0x20000002	0x00000004	0xffffffbf	0x000001a2	libResourceBluetooth.so	ResourceBluetooth_init		ResourceBluetooth_sus	ResourceBluetooth_res		yes
+89	sec5	library	0x20000002	0x00000004	0xffffffbf	0x00000121	libUsbBusPower.so	UsbBusPower_Init		UsbBusPower_Suspend	UsbBusPower_Resume		yes
+90	sec5	library	0x20000002	0x00000004	0x7fffffff	0x000000e7	libInfraUsbCmn.so	InfraUsbLib_init					yes
+91	sec5	library	0x20000002	0x00000004	0x7fffffff	0x07fb003d	libsensapi.so	senser_init		senser_sus	senser_res		NO
+92	sec5	library	0x20000002	0x00000004	0xffffff9f	0x000000ca	libUsbControl.so	UsbControl_Init		UsbControl_Suspend	UsbControl_Resume		yes
+93	sec5	library	0x20000002	0x00000004	0xffffff9f	0x00000122	libBusPower.so	BusPower_Init		BusPower_Suspend	BusPower_Resume		yes
+94	sec5	library	0x20000002	0x00000004	0xffffff9f	0x07fb00c8	libHotplug.so	Hotplug_Init		Hotplug_Suspend	Hotplug_Resume		NO
+95	sec5	library	0x20000002	0x00000004	0xffffffdf	0x0000009a	libInfraHdmi.so	HDMI_init		HDMI_sus	HDMI_res		yes
+96	sec5	library	0x20000002	0x00000004	0xffffff9f	0x07fb009c	libInfraCec.so	CEC_init		CEC_sus	CEC_res		NO
+97	sec5	library	0x20000002	0x00000004	0xffffff9f	0x0000014d	libInfraAirplaneMode.so	infra_airplane_mode_init		infra_airplane_mode_sus	infra_airplane_mode_res		yes
+98	sec5	library	0x20000002	0x00000004	0xffffff9f	0x00000181	libInfraNfc.so	infra_nfc_init		infra_nfc_sus	infra_nfc_res		NO
+99	sec5	library	0x20000002	0x00000004	0xffffff9f	0x0000019e	libInfraBluetooth.so	InfraBluetooth_init		InfraBluetooth_sus	InfraBluetooth_res		yes
+100	sec5	library	0x20000002	0x00000004	0xffffffdf	0x07fb004b	libupdater0604.so	udtr_senser_init	udtr_senser_exit				NO
+101	sec5	library	0x20000002	0x00000004	0xffffffdf	0x07fb0115	libInfraAdjMedia.so	InfraAdjMedia_Init	InfraAdjMedia_Exit				NO
+102	sec5	library	0x20000002	0x00000004	0xffffff9f	0x00000294	libInfraNetInitializer.so	InfraNetInitializer_Init		InfraNetInitializer_Sus	InfraNetInitializer_Res		yes
+103	sec5	library	0x20000002	0x00000004	0xffffff9f	0x000000a5	libWlanResource.so	wlanResource_init		wlanResource_sus	wlanResource_res		yes
+104	sec5	library	0x20000002	0x00000004	0xffffff9f	0x00000157	libWlanAdjust.so	WlanAdjust_Init		WlanAdjust_Sus	WlanAdjust_Res		yes
+105	sec5	library	0x20000002	0x00000004	0xffffff9f	0x000001d5	libWiredLanResource.so	WiredLanResource_Init		WiredLanResource_Sus	WiredLanResource_Res		NO
+106	sec5	library	0x20000002	0x00000004	0xffffff9f	0x000001d6	libWiredLanAdjust.so	WiredLanAdjust_Init		WiredLanAdjust_Sus	WiredLanAdjust_Res		NO
+107	sec5	library	0x20000002	0x00000004	0xffffff9f	0x00000293	libNetServiceEther.so	netserviceether_init		netserviceether_sus	netserviceether_res		NO
+108	sec5	library	0x20000002	0x00000004	0xffffff9f	0x000002ad	libInfraNetConnectionManagerEther.so	NetConnectionManagerEther_init		NetConnectionManagerEther_sus	NetConnectionManagerEther_res		yes
+109	sec5	library	0x20000002	0x00000004	0xffffff9f	0x00000223	libInfraEthernetService.so	EthernetService_Init		EthernetService_Sus	EthernetService_Res		NO
+110	sec5	library	0x20000002	0x00000004	0xffffff9f	0x0000013e	libNetService.so	netservice_init		netservice_sus	netservice_res		yes
+111	sec5	library	0x20000002	0x00000004	0xffffff9f	0x000002ba	libInfraIPsec.so	InfraIPsec_init	InfraIPsec_exit	InfraIPsec_sus	InfraIPsec_res		yes
+112	sec5	library	0x20000002	0x00000002	0xffffff9f	0x07fb012c	libCameraStillDate.so	CameraStillDate_init					NO
+113	sec5	library	0x20000002	0x00000002	0xffffff9f	0x0000012f	libdig_level.so	dig_level_init		dig_level_sus	dig_level_res		yes
+114	sec5	library	0x20000002	0x00000004	0xffffff9f	0x00000147	libInfraNetDeviceInfo.so	InfraNetDeviceInfo_Init		InfraNetDeviceInfo_Sus	InfraNetDeviceInfo_Res		yes
+115	sec5	library	0x20000002	0x00000004	0xffffffbf	0x00000142	libWirelessPower.so	WirelessPower_Init		WirelessPower_Suspend	WirelessPower_Resume		NO
+116	sec5	library	0x20000002	0x00000004	0xffffffdf	0x000001db	libHandleRsrc.so	handle_rsrc_init		handle_rsrc_sus	handle_rsrc_res		NO
+117	sec5	library	0x20000002	0x00000004	0xffffffdf	0x00000108	libgps_rsrc.so	gps_rsrc_init		gps_rsrc_sus	gps_rsrc_res		yes
+118	sec5	library	0x20000002	0x00000004	0xffffff9f	0x07fb00a1	libgps.so	gps_init		gps_sus	gps_res		NO
+119	sec5	library	0x20000002	0x00000004	0xffffff9f	0x07fb00a2	libcompass.so	compass_init		compass_sus	compass_res		NO
+120	sec5	library	0x20000002	0x00000004	0xffffff9f	0x07fb00a0	libgeo.so	geo_init		geo_sus	geo_res		NO
+121	sec5	library	0x20000002	0x00000004	0x00000020	0x00000124	libUsbChargingApp.so	UsbChgApp_Init	UsbChgApp_Exit				yes
+122	sec5	library	0x20000002	0x00000004	0x00000020	0x0000019e	libInfraBluetoothWoLEBoot.so	libInfraBluetoothWoLEBoot_init					yes
+123	sec5	library	0x20000002	0x00000004	0xffffff9f	0x00000179	libInfraHdmiInput.so	HDMI_Input_init	HDMI_Input_exit	HDMI_Input_sus	HDMI_Input_res		NO
+124	sec5	library	0x20000002	0x00000004	0xffffff1f	0x00000210	libLccDaemon.so	Lcc_Daemon_Init					NO
+125	sec5	library	0x20000002	0x00000001	0x7fffffff	0x00000217	libAdjModule.so	AdjModule_Init		AdjModule_Sus	AdjModule_Resume		NO
+126	sec5	library	0x20000002	0x00000001	0x7fffffff	0x000001e0	libDpro_EVF.so	evf_init		evf_sus	evf_res		NO
+127	sec5	library	0x20000002	0x00000001	0x7fffffff	0x00000260	libInfraUpmPro.so	InfraUpmPro_init	InfraUpmPro_exit	InfraUpmPro_sus	InfraUpmPro_res		NO
+128	sec5	library	0x20000002	0x00000001	0xffffffdf	0x00000238	libfan.so	fan_infra_init		fan_infra_sus	fan_infra_res		NO
+129	sec5	library	0x20000002	0x00000004	0x7fffffff	0x00000263	libInfraUsb.so	InfraUsb_init	InfraUsb_exit	InfraUsb_sus	InfraUsb_res		NO
+130	sec5	library	0x20000002	0x00000001	0x7fffffff	0x0000028e	libEMG.so	emg_init		emg_sus	emg_res		yes
+131	sec5	library	0x20000002	0x00000004	0x7fffffff	0x00000286	libAdjustUIProxy.so	AdjustUIProxy_init	AdjustUIProxy_exit	AdjustUIProxy_sus	AdjustUIProxy_res		NO
+132	sec5	library	0x20000002	0x00000004	0x7fffffff	0x000002cb	libTetheringResource.so	TetheringResource_Init		TetheringResource_Sus	TetheringResource_Res		NO
+133	sec5	library	0x20000002	0x00000004	0x7fffffff	0x000002ca	libNetServiceTethering.so	netservicetethering_init		netservicetethering_sus	netservicetethering_res		NO
+134	sec5	library	0x20000002	0x00000004	0x7fffffff	0x000002e0	libJiritsuUIView.so	JiritsuUIView_init		JiritsuUIView_sus	JiritsuUIView_res		NO
+135	sec5	library	0x20000002	0x00000004	0x7fffffff	0x000002f3	libJiritsuSlave.so	JiritsuSlave_init		JiritsuSlave_sus	JiritsuSlave_res		NO
+136	sec5	library	0x20000002	0x00000004	0x7fffffff	0x000000a9	libInfraHttpClient.so	InfraHttpClient_Init		InfraHttpClient_Sus	InfraHttpClient_Res		yes
+137	sec6	group-header									0x08000006	-
+138	sec6	library	0x20000003	0x00000002	0xffffff9f	0x07fb00f8	libInfraMediaPwrMgr.so	InfraMediaPwrMgr_init				InfraMediaPwrMgr_inact|InfraMediaPwrMgr_act	NO
+139	sec6	library	0x20000003	0x00000004	0xffffffdf	0x07fb0102	libInfraCameraBackground.so	CameraBackground_init				CameraBackground_inact|CameraBackground_act	NO
+140	sec7	group-header									0x08000007	-
+141	sec7	library	0x20000002	0x00000001	0x7fffffff	0x00000258	libBizInitializer.so	BIZ_Init		BIZ_Suspend	BIZ_Resume		NO
+142	sec8	group-header									0x08000008	-
+143	sec8	library	0x20000004	0x00000001	0xffffff9f	0x07fb0083	appFw.so	Application_System_Init				AdjChkConfig.so|AppConfig.so	NO
+144	sec8	library	0x20000004	0x00000001	0x00000040	0x00000083	subapp.so	subapp_init	subapp_exit			AdjChkConfig.so|AppConfig.so	NO
+145	sec8	library	0x20000004	0x00000001	0xffffff9f	0x000001a9	/usr/local/lib/libVssApp.so	vssapp_init	vssapp_exit			/usr/local/lib/AdjChkConfig.so|/usr/local/lib/libVssAppMain.so	NO
+146	sec8	library	0x20000002	0x00000001	0x7fffffff	0x000001cf	gui.so	DPro_App_UI_init		DPro_App_UI_sus	DPro_App_UI_resume		NO
+147	sec9	group-header									0x08000009	-
+148	sec9	library	0x20000002	0x000000ff	0x7fffffff	0x000000cb	libJetControl.so	JetControl_init	JetControl_exit				NO
+149	sec9	library	0x20000002	0x000000ff	0x7fffffff	0x000000ee	libInfraUsbHostStorage.so	UsbHostStorage_Init	UsbHostStorage_Exit				yes
+150	sec9	library	0x20000002	0x000000ff	0x7fffffff	0x000000e0	libInfraMtpServer.so	MtpServer_Init	MtpServer_Exit				yes
+151	sec9	library	0x20000002	0x000000ff	0x7fffffff	0x000000df	libInfraMscServer.so	MscServer_Init	MscServer_Exit				yes
+152	sec9	library	0x20000002	0x000000ff	0x7fffffff	0x000000e1	libInfraExtCmdSvc.so	ExtCmdSvc_Init	ExtCmdSvc_Exit				yes
+153	sec9	library	0x20000002	0x000000ff	0x7fffffff	0x000000e2	libusbcmd.so	UsbCmd_ExtCmdSvcWrap_Init	UsbCmd_ExtCmdSvcWrap_Exit				yes
+154	sec9	library	0x20000002	0x000000ff	0x7fffffff	0x000000e4	libInfraDevInfoSender.so	DevInfoSender_Init	DevInfoSender_Exit				yes
+155	sec9	kernel-module	0x10000001	0x000000ff	0x7fffffff	0x000000cc	/usr/kmod/usbg_storage.ko		usbg_storage				yes
+156	sec9	kernel-module	0x10000001	0x000000ff	0x7fffffff	0x000000eb	/usr/kmod/usbg_stillimage.ko		usbg_stillimage				yes
+157	sec9	kernel-module	0x10000001	0x000000ff	0x7fffffff	0x000000ea	/usr/kmod/usbg_sen.ko		usbg_sen				yes
+158	sec9	kernel-module	0x10000001	0x000000ff	0x7fffffff	0x000000ce	unified_jet.ko		unified_jet				NO
+159	sec9	library	0x20000002	0x000000ff	0x7fffffff	0x000000f5	libInfraJetScsiServer.so	JetScsiServer_init	JetScsiServer_exit				NO
+160	sec9	library	0x20000002	0x000000ff	0x7fffffff	0x000000e4	libInfraDevInfoSender.so	DevInfoSender_Init	DevInfoSender_Exit				yes
+161	sec9	library	0x20000002	0x000000ff	0x7fffffff	0x000000dc	libtestcmd_scn.so	testcmd_scn_init	testcmd_scn_exit				yes
+162	sec9	library	0x20000002	0x000000ff	0x7fffffff	0x0000010f	libInfraKikiLogSender.so	KikiLogSender_init	KikiLogSender_exit				yes
+163	sec9	library	0x20000002	0x000000ff	0x7fffffff	0x0000011d	libupdaterufp.so	udtr_ufp_init	udtr_ufp_exit				yes
+164	sec9	library	0x20000002	0x000000ff	0x7fffffff	0x000000e3	libInfraPtpExtCmd.so	PtpExtCmd_Init	PtpExtCmd_Exit				yes
+165	sec9	library	0x20000002	0x000000ff	0x7fffffff	0x0000012e	libInfraAppDlUsbCommunication.so	AppDlUsbCommunication_Init	AppDlUsbCommunication_Exit				NO
+166	sec9	library	0x20000002	0x000000ff	0x7fffffff	0x00000146	libInfraExtBackupCommunicator.so	ExtBackupCommunicator_Init	ExtBackupCommunicator_Exit				yes
+167	sec9	library	0x20000002	0x000000ff	0x7fffffff	0x00000141	libInfraDlnaControl.so	DlnaControl_init	DlnaControl_exit				yes
+168	sec9	library	0x20000002	0x000000ff	0x7fffffff	0x000000e6	libInfraPtpControl.so	InfraPtpControl_Init	InfraPtpControl_Exit				yes
+169	sec9	library	0x20000002	0x000000ff	0x7fffffff	0x0000015f	libInfraMDnsControl.so	MDnsControl_init	MDnsControl_exit				NO
+170	sec9	library	0x20000002	0x000000ff	0x7fffffff	0x0000015b	libInfraCameraProfile.so	infra_cameraProfile_init	infra_cameraProfile_exit				yes
+171	sec9	library	0x20000002	0x000000ff	0x7fffffff	0x0000016a	libInfraRemote.so	InfraRemote_Init	InfraRemote_Exit				yes
+172	sec9	library	0x20000002	0x000000ff	0x7fffffff	0x00000171	libInfraStreamingServer.so	InfraStreamingServer_init	InfraStreamingServer_exit				NO
+173	sec9	library	0x20000002	0x000000ff	0x7fffffff	0x00000172	libInfraRemoteControlNet.so	InfraRemoteControlNet_Init	InfraRemoteControlNet_Exit				NO
+174	sec9	library	0x20000002	0x000000ff	0x7fffffff	0x00000176	libInfraWebApi.so	InfraNetWebApi_init	InfraNetWebApi_exit				NO
+175	sec9	library	0x20000002	0x000000ff	0x7fffffff	0x0000017d	libInfraLensCommunicator.so	LensCommunicator_Init	LensCommunicator_Exit				yes
+176	sec9	library	0x20000002	0x000000ff	0x7fffffff	0x00000188	libInfraNetConnectionManager.so	NetConnectionManager_init	NetConnectionManager_exit				yes
+177	sec9	library	0x20000002	0x000000ff	0x7fffffff	0x00000187	libInfraNetFunctionManager.so	NetFunctionManager_init	NetFunctionManager_exit				yes
+178	sec9	library	0x20000002	0x000000ff	0x7fffffff	0x00000191	libInfraLiveViewClient.so	LiveViewClient_init	LiveViewClient_exit				NO
+179	sec9	library	0x20000002	0x000000ff	0x7fffffff	0x00000190	libInfraWebApiClient.so	InfraWebApiClient_init	InfraWebApiClient_exit				NO
+180	sec9	library	0x20000002	0x000000ff	0x7fffffff	0x00000193	libInfraNetworkServiceInfo.so	InfraNetworkServiceInfo_Init	InfraNetworkServiceInfo_Exit				yes
+181	sec9	library	0x20000002	0x000000ff	0x7fffffff	0x00000199	libInfraHighlight.so	InfraHighlight_Init	InfraHighlight_Exit				yes
+182	sec9	library	0x20000002	0x000000ff	0x7fffffff	0x0000019b	libInfraMakeScenario.so	InfraMakeScenario_Init	InfraMakeScenario_Exit				yes
+183	sec9	library	0x20000002	0x000000ff	0x7fffffff	0x0000019d	libInfraBGMMeta.so	InfraBGMMeta_Init	InfraBGMMeta_Exit				yes
+184	sec9	library	0x20000002	0x000000ff	0x7fffffff	0x0000019c	libInfraMetaSupplier.so	InfraMetaSupplier_Init	InfraMetaSupplier_Exit				yes
+185	sec9	library	0x20000002	0x000000ff	0x7fffffff	0x000001a4	libInfraActionDetect.so	InfraActionDetect_Init	InfraActionDetect_Exit				NO
+186	sec9	library	0x20000002	0x000000ff	0x7fffffff	0x000001b1	libInfraNetLiveStreaming.so	InfraNetLiveStreaming_Init	InfraNetLiveStreaming_Exit				NO
+187	sec9	library	0x20000002	0x000000ff	0x7fffffff	0x000001af	libInfraFtpClient.so	InfraFtpClient_Init	InfraFtpClient_Exit				NO
+188	sec9	library	0x20000002	0x000000ff	0x7fffffff	0x000001b0	libInfraCertificate.so	InfraCertificate_Init	InfraCertificate_Exit				NO
+189	sec9	library	0x20000002	0x000000ff	0x7fffffff	0x000001a0	libInfraBluetoothLowEnergy.so	InfraBluetoothLowEnergy_init	InfraBluetoothLowEnergy_exit				yes
+190	sec9	library	0x20000002	0x000000ff	0x7fffffff	0x000001fd	libInfraCCMClient.so	InfraCCMClient_Init	InfraCCMClient_Exit				NO
+191	sec9	library	0x20000002	0x000000ff	0x7fffffff	0x000001fe	libInfraSavonaServer.so	InfraSavonaServer_Init	InfraSavonaServer_Exit				NO
+192	sec9	library	0x20000002	0x000000ff	0x7fffffff	0x0000020d	libInfraOpusLiveStreaming.so	InfraOpusLiveStreaming_Init	InfraOpusLiveStreaming_Exit				NO
+193	sec9	library	0x20000002	0x000000ff	0x7fffffff	0x000002d6	libInfraRtmpLiveStreaming.so	InfraRtmpLiveStreaming_Init	InfraRtmpLiveStreaming_Exit				NO
+194	sec9	library	0x20000002	0x000000ff	0x7fffffff	0x00000211	libInfraUstream.so	InfraUstream_Init	InfraUstream_Exit				NO
+195	sec9	library	0x20000002	0x000000ff	0x7fffffff	0x00000255	libInfraMonitoring.so	InfraMonitoring_Init	InfraMonitoring_Exit				NO
+196	sec9	library	0x20000002	0x000000ff	0x7fffffff	0x00000256	libInfraRemoteCtrlProxy.so	InfraRemoteCtrlProxy_Init	InfraRemoteCtrlProxy_Exit				NO
+197	sec9	library	0x20000002	0x000000ff	0x7fffffff	0x0000024f	libInfraFileTransfer.so	InfraFileTransfer_Init	InfraFileTransfer_Exit				NO
+198	sec9	library	0x20000002	0x000000ff	0x7fffffff	0x0000025b	libInfraRemoteCtrlCGI.so	InfraRemoteCtrlCGI_Init	InfraRemoteCtrlCGI_Exit				NO
+199	sec9	library	0x20000002	0x000000ff	0x7fffffff	0x0000025f	libOptionInstallerUSB.so	option_installer_usb_init	option_installer_usb_exit				NO
+200	sec9	library	0x20000002	0x000000ff	0x7fffffff	0x00000269	libInfraUpdaterDPro.so	InfraUpdaterDPro_init	InfraUpdaterDPro_exit				NO
+201	sec9	library	0x20000002	0x000000ff	0x7fffffff	0x0000027b	libInfraMultiIF.so	InfraMultiIF_Init	InfraMultiIF_Exit				NO
+202	sec9	library	0x20000002	0x000000ff	0x7fffffff	0x0000025d	libInfraCellularService.so	InfraCellular_Init	InfraCellular_Exit				NO
+203	sec9	library	0x20000002	0x000000ff	0x7fffffff	0x00000272	libInfraTcsync.so	InfraTcsync_Init	InfraTcsync_Exit				NO
+204	sec9	library	0x20000002	0x000000ff	0x7fffffff	0x00000259	libInfraSKD.so	SKData_Init	SKData_Exit				yes
+205	sec9	library	0x20000002	0x000000ff	0x7fffffff	0x000002a7	libInfraOptionInstallUSB.so	option_install_usb_init	option_install_usb_exit				NO
+206	sec9	library	0x20000002	0x000000ff	0x7fffffff	0x000002a9	libInfraNetIncom.so	InfraNetIncom_Init	InfraNetIncom_Exit				NO
+207	sec9	library	0x20000002	0x000000ff	0x7fffffff	0x000002b5	libInfraMCBClient.so	InfraMCBClient_Init	InfraMCBClient_Exit				NO
+208	sec9	library	0x20000002	0x000000ff	0x7fffffff	0x000002bc	libInfraExtTransferApp.so	ExtTransferApp_Init	ExtTransferApp_Exit				yes
+209	sec9	library	0x20000002	0x000000ff	0x7fffffff	0x0000019f	libInfraBluetoothClassic.so	InfraBluetoothClassic_init	InfraBluetoothClassic_exit				NO
+210	sec9	library	0x20000002	0x000000ff	0x7fffffff	0x000002d9	libInfraStreamingUsb.so	UsbInfraStreaming_Init	UsbInfraStreaming_Exit				yes
+211	sec9	program	0x40000001	0x000000ff	0x7fffffff	0x0000017c	/usr/bin/WebApiLauncher.sh						NO
+212	sec9	program	0x40000001	0x000000ff	0x7fffffff	0x000001da	/usr/bin/startBTCore.sh						yes
+213	sec9	program	0x40000001	0x000000ff	0xfffffff9	0x000000d3	/usr/bin/qsi.elf	noevent0					NO
+214	sec9	program	0x40000001	0x000000ff	0x00000006	0x000000d3	/usr/bin/qsi.elf						NO
+215	sec9	program	0x40000001	0x000000ff	0x7fffffff	0x000007ed	/usr/bin/network.sh						NO
+216	sec9	library	0x20000003	0x000000ff	0x7fffffff	0x000007ee	libIMStress.so	IM_STRESS_SO_init	IM_STRESS_SO_exit	IM_STRESS_SO_sus	IM_STRESS_SO_res	IM_STRESS_SO_inact|IM_STRESS_SO_act	NO
+217	sec9	library	0x20000003	0x000000ff	0x7fffffff	0x000007ec	libIMStress2.so	IM_STRESS_SO_init	IM_STRESS_SO_exit	IM_STRESS_SO_sus	IM_STRESS_SO_res	IM_STRESS_SO_inact|IM_STRESS_SO_act	NO
+218	sec9	library	0x20000003	0x000000ff	0x7fffffff	0x000007ef	libIMSample.so	IM_SAMPLE_SO_init	IM_SAMPLE_SO_exit	IM_SAMPLE_SO_sus	IM_SAMPLE_SO_res	IM_SAMPLE_SO_inact|IM_SAMPLE_SO_act	NO
+219	sec9	meta	0x00000028	0x00000001									-

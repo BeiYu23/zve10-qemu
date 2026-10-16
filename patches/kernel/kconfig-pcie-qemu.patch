@@ -1,0 +1,11 @@
+--- a/arch/arm/mach-cxd900x0/Kconfig
++++ b/arch/arm/mach-cxd900x0/Kconfig
+@@ -27,7 +27,7 @@
+ 
+ config CXD900X0_PCIE2_DME
+ 	bool
+-	depends on PCI && !CXD900X0_QEMU
++	depends on PCI
+ 	default y
+ 	help
+ 	  Support for pcie2_dme driver.

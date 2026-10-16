@@ -1,0 +1,85 @@
+--- a/arch/arm/mach-cxd900x0/adrs_conv.c
++++ b/arch/arm/mach-cxd900x0/adrs_conv.c
+@@ -100,7 +100,7 @@
+ unsigned long arch_va_to_phys(unsigned long va)
+ {
+ 	if (pass_through(va))
+-		return va;
++		return va ? va : VA_DDR0;
+ 	if (likely(va < VA_DDR1)) {
+ 		if (likely(va >= VA_DDR0))
+ 			return va - VA_DDR0;
+@@ -117,7 +117,7 @@
+ unsigned long arch_va_to_noncache(unsigned long va)
+ {
+ 	if (pass_through(va))
+-		return va;
++		return va ? va : VA_DDR0;
+ 	if (likely(va_uc[0] <= va && va < VA_DDR1)) {
+ 		return va;
+ 	} else if (likely(va_uc[1] <= va && va < VA_DDR1_END)) {
+@@ -133,7 +133,7 @@
+ unsigned long arch_va_to_cache(unsigned long va)
+ {
+ 	if (pass_through(va))
+-		return va;
++		return va ? va : VA_DDR0;
+ 	if (likely(VA_DDR0 <= va && va < va_uc[0])) {
+ 		return va;
+ 	} else if (likely(VA_DDR1 <= va && va < va_uc[1])) {
+@@ -147,7 +147,7 @@
+ unsigned long arch_phys_to_va(unsigned long pa)
+ {
+ 	if (pass_through(pa))
+-		return pa;
++		return pa ? pa : VA_DDR0;   /* QEMU: 0 会害调用方解引用 NULL */
+ 	if (likely(pa < DDR0_END)) {
+ 		return pa + VA_DDR0;
+ 	} else if (likely(DDR1_BASE <= pa && pa < DDR1_END)) {
+@@ -157,13 +157,15 @@
+ 	}
+ 	printk(KERN_ERR "ERROR:%s:pa=0x%08lx\n", __func__, pa);
+ 	show_info();
+-	return PA2NC_ERR;
++	/* QEMU: 兜底为已映射的 DDR0 虚拟地址，避免调用方解引用 NULL。
++	 * 真机上（数据正确时）这些分支不会走到。 */
++	return VA_DDR0;
+ }
+ 
+ unsigned long arch_phys_to_noncache(unsigned long pa)
+ {
+ 	if (pass_through(pa))
+-		return pa;
++		return pa ? pa : VA_DDR0;   /* QEMU: 0 会害调用方解引用 NULL */
+ 	if (likely(pa_uc[0] <= pa && pa < DDR0_END)) {
+ 		return pa + VA_DDR0;
+ 	} else if (likely(pa_uc[1] <= pa && pa < DDR1_END)) {
+@@ -173,13 +175,15 @@
+ 	}
+ 	printk(KERN_ERR "ERROR:%s:pa=0x%08lx\n", __func__, pa);
+ 	show_info();
+-	return PA2NC_ERR;
++	/* QEMU: 兜底为已映射的 DDR0 虚拟地址，避免调用方解引用 NULL。
++	 * 真机上（数据正确时）这些分支不会走到。 */
++	return VA_DDR0;
+ }
+ 
+ unsigned long arch_phys_to_cache(unsigned long pa)
+ {
+ 	if (pass_through(pa))
+-		return pa;
++		return pa ? pa : VA_DDR0;   /* QEMU: 0 会害调用方解引用 NULL */
+ 	if (likely(DDR0_BASE <= pa && pa < pa_uc[0])) {
+ 		return pa + VA_DDR0;
+ 	} else if (likely(DDR1_BASE <= pa && pa < pa_uc[1])) {
+@@ -187,7 +191,9 @@
+ 	}
+ 	printk(KERN_ERR "ERROR:%s:pa=0x%08lx\n", __func__, pa);
+ 	show_info();
+-	return PA2NC_ERR;
++	/* QEMU: 兜底为已映射的 DDR0 虚拟地址，避免调用方解引用 NULL。
++	 * 真机上（数据正确时）这些分支不会走到。 */
++	return VA_DDR0;
+ }
+ 
+ int arch_phys_to_memtype(unsigned long pa)

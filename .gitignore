@@ -1,0 +1,32 @@
+# 固件与二进制 —— 绝不入库
+*.img
+*.bin
+*.dat
+*.DAT
+*.p12
+*.pem
+*.crt
+*.cer
+*.key
+*.ko
+*.so
+*.elf
+*.zip
+*.tar
+*.gz
+zImage*
+vmlinux*
+BACKUP*
+nflasha*
+*.log
+
+# 构建产物
+build/
+out/
+*.o
+*.a
+
+# 编辑器
+.vscode/
+.idea/
+*.swp

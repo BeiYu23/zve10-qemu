@@ -1,0 +1,133 @@
+diff --git a/hw/sd/sd.c b/hw/sd/sd.c
+index 6b2b32f..0a92c6a 100644
+--- a/hw/sd/sd.c
++++ b/hw/sd/sd.c
+@@ -380,6 +380,31 @@ static void sd_set_scr(SDState *sd)
+ 
+ static void sd_set_cid(SDState *sd)
+ {
++    if (sd->emmc) {
++        /* eMMC 的 CID 布局与 SD 不同：PNM 是 6 字节（SD 是 5 字节），
++         * 后面 PRV/PSN/MDT 整体后移一字节。原实现按 SD 布局写，
++         * 导致索尼 emmc.ko 解析出的 PRV/PSN/MDT 全部错位，型号永远匹配不上。
++         * 这里给出 Samsung KLM8G1WEPD 的 CID：
++         *   MID=0x15 OID=0x0001 -> emmc.ko 计算的 cid_id = 0x0115
++         *   PNM = "R3DPW8"      -> 命中型号表 [0]
++         */
++        static const uint8_t pnm[6] = { 'R', '3', 'D', 'P', 'W', '8' };
++        int i;
++        sd->cid[0] = 0x15;	/* MID: Samsung */
++        sd->cid[1] = 0x00;	/* OID[15:8] */
++        sd->cid[2] = 0x01;	/* OID[7:0] */
++        for (i = 0; i < 6; i++) {
++            sd->cid[3 + i] = pnm[i];
++        }
++        sd->cid[9] = PRV;		/* PRV */
++        sd->cid[10] = 0xde;		/* PSN */
++        sd->cid[11] = 0xad;
++        sd->cid[12] = 0xbe;
++        sd->cid[13] = 0xef;
++        sd->cid[14] = ((MDT_YR % 10) << 4) | MDT_MON;
++        sd->cid[15] = (sd_crc7(sd->cid, 15) << 1) | 1;
++        return;
++    }
+     sd->cid[0] = MID;		/* Fake card manufacturer ID (MID) */
+     sd->cid[1] = OID[0];	/* OEM/Application ID (OID) */
+     sd->cid[2] = OID[1];
+@@ -422,7 +447,14 @@ static void sd_set_ext_csd(SDState *sd, uint64_t size)
+     sd->ext_csd[214] = (sectcount >> 16) & 0xff; /* ... */
+     sd->ext_csd[213] = (sectcount >> 8) & 0xff;  /* ... */
+     sd->ext_csd[212] = (sectcount & 0xff);       /* ... */
+-    sd->ext_csd[196] = 0x3f; /* Device type */
++    /* Device type (EXT_CSD[196]):
++     *   bit0 HS(26/52MHz)  bit1 DDR52  bit2 HS200  bit3 HS400  bit4 HS400ES
++     * 原实现写 0x3f 把所有模式都声明支持，索尼 emmc.ko 于是选择 HS200，
++     * 而 HS200 需要 CMD21 总线调优（tuning），QEMU 的 SD 模型不实现，
++     * 结果是 "tuning failed over max retries limit : 40" → eMMC 通信失败
++     * → WBI 分区读不出来 → 分区表认领失败。
++     * 只保留 HS + DDR52，避免走 tuning 路径。 */
++    sd->ext_csd[196] = 0x03; /* Device type: HS(26/52) + DDR52 */
+     sd->ext_csd[194] = 0x2; /* CSD Structure version */
+     sd->ext_csd[192] = 0x6; /* Extended CSD revision */
+     sd->ext_csd[179] = 0x8; /* Partition config */
+@@ -1190,6 +1222,13 @@ static sd_rsp_type_t sd_normal_command(SDState *sd, SDRequest req)
+         return sd_illegal;
+ 
+     case 6:	/* CMD6:   SWITCH_FUNCTION */
++        if (sd->emmc && sd->state != sd_transfer_state) {
++            /* 真机在非 transfer 状态也回 R1（带错误状态位），而不是完全无响应。
++             * 原来直接 break 会返回 rlen=0，导致索尼驱动的 wait_cmd_done 超时
++             * （EIS CMD_TIMEOUT），进而 eMMC 初始化中断、分区表读不出来。 */
++            sd->card_status |= SWITCH_ERROR;
++            return sd_r1;
++        }
+         switch (sd->state) {
+         case sd_transfer_state:
+             if (sd->emmc) {
+@@ -1270,18 +1309,26 @@ static sd_rsp_type_t sd_normal_command(SDState *sd, SDRequest req)
+ 
+     case 8:	/* CMD8:   SEND_IF_COND / SEND_EXT_CSD */
+         if (sd->emmc) {
+-            switch (sd->state) {
+-            case sd_transfer_state:
+-                sd->state = sd_sendingdata_state;
+-                memcpy(sd->data, sd->ext_csd, 512);
+-                sd->data_start = addr;
+-                sd->data_offset = 0;
+-                return sd_r1;
+-
+-            default:
+-                break;
+-            }
+-            break;
++            fprintf(stderr, "ZZCMD8: emmc state=%d addr=0x%x\n", sd->state, addr);
++            /* eMMC 的 CMD8 是 SEND_EXT_CSD。原实现只在 transfer 状态返回响应，
++             * 其它状态直接 break（rlen=0，完全不响应）。真机在任何状态都会回
++             * R1（非 transfer 时带错误状态位），而索尼 emmc.ko 在 pre-idle
++             * 阶段就发 CMD8 探测，于是 wait_cmd_done 一直等到超时，
++             * 报 "Error on Response Timeout" + EIS CMD_TIMEOUT(0x00018000)，
++             * 连带数据命令失败 (exec_emmc_data_cmd, -110)，最终分区表读不出来。
++             * 这里保证任何状态都回 R1，仅在 transfer 状态才搬 EXT_CSD 数据。 */
++            /* eMMC 的 CMD8 恒为数据命令：无论当前状态（实测驱动在 pre-idle
++             * 就发它），都必须交付 512 字节 EXT_CSD 数据，否则驱动读到全 0，
++             * 会在 fixup_part_conf 里因 PARTITION_CONFIG==0 直接 panic。 */
++            /* eMMC 的 CMD8 恒为数据命令。实测索尼驱动在 pre-idle 状态就发它，
++             * 且那一次就是真正的 EXT_CSD 读；若只在 transfer 状态交付数据，
++             * 驱动会读到全 0 并在 fixup_part_conf 里因 PARTITION_CONFIG==0 直接 panic。
++             * 因此任何状态都交付 512 字节 EXT_CSD。 */
++            sd->state = sd_sendingdata_state;
++            memcpy(sd->data, sd->ext_csd, 512);
++            sd->data_start = addr;
++            sd->data_offset = 0;
++            return sd_r1;
+         }
+ 
+         if (sd->spec_version < SD_PHY_SPECv2_00_VERS) {
+@@ -1467,7 +1514,13 @@ static sd_rsp_type_t sd_normal_command(SDState *sd, SDRequest req)
+         }
+         switch (sd->state) {
+         case sd_transfer_state:
+-            sd->multi_blk_cnt = req.arg;
++            /* JEDEC: CMD23 的块数只在 bit15:0；高位是标志
++             * （bit31 = Reliable Write，bit30 = 不自动发 CMD12，
++             *  bit25/24 = packed 等）。
++             * 原实现直接存 req.arg，导致块数被 "或" 成 0x80000005 之类，
++             * 自动终止条件 --multi_blk_cnt==0 永远不成立
++             * ⇒ 卡停在 receivingdata ⇒ 索尼驱动 CMD13 轮询超时。 */
++            sd->multi_blk_cnt = req.arg & 0xFFFF;
+             return sd_r1;
+ 
+         default:
+@@ -2422,7 +2475,11 @@ static void sd_realize(DeviceState *dev, Error **errp)
+         }
+ 
+         blk_size = blk_getlength(sd->blk);
+-        if (blk_size > 0 && !is_power_of_2(blk_size - 2 * sd->boot_size)) {
++        /* eMMC 的容量由 EXT_CSD(SEC_COUNT) 给出，不依赖 CSD 的幂次约束；
++         * 真机 eMMC 是 1888MiB（非 2 的幂），这里对 eMMC 放行，
++         * 以便直接使用真机整盘镜像。 */
++        if (blk_size > 0 && !sd->emmc &&
++            !is_power_of_2(blk_size - 2 * sd->boot_size)) {
+             int64_t blk_size_aligned = pow2ceil(blk_size - 2 * sd->boot_size);
+             char *blk_size_str;
+ 
