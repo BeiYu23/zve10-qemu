@@ -13444,3 +13444,94 @@ libbackup.so 的 PLT
 - ❌ 输入链路
 
 **⇒ 这是一份"基础设施完整、只差最后两层"的状态，可直接交接给其他人继续。**
+
+---
+
+## 一百五十七、🏆🏆🏆 Round 184：**发现 chocotan/a7c2-re —— 完整的技术蓝图 + 砖机结论的独立验证**
+
+### 157.1 仓库概况
+
+**`github.com/chocotan/a7c2-re`**（a7C II / ILCE-7CM2，固件 2.01）—— 441 个文件，两大成果：
+1. **2026-10-16 整机固件转储**（19 分区 / 1.80 GiB，三重验证）
+2. **2026-10-17 原生 QEMU 相机实验**（原固件菜单 + 原生窗口 + 9 项操作）
+
+### 157.2 ★★★★★ 他们已打通的显示链（六步）
+
+```
+1. 原厂内核/initrd/应用在隔离 QEMU 运行
+2. 通过固件已有的完整生命周期入口创建菜单
+3. ★ 显式【软件 GPE】模型执行绘图请求；【Sony LZ77】用 CPU 解码替代
+4. ★ AP 输出消费者：冻结元数据 → 真实位图租期内复制像素
+        → 完整写入并读回校验单一 HOSDAP02 容器 → 才发完成通知
+5. ★ 独立 ramfb-viewer：读取已提交 inode → 校验 → RGBA4444 合成 XRGB8888
+6. ★ 通过 QEMU 标准 fw_cfg DMA 配置 etc/ramfb → QEMU GTK 真正显示
+```
+
+**源码中的关键组件（`runtime/analysis/`）：**
+| 文件 | 作用 |
+| --- | --- |
+| `gpe-raster.c` | ★ 软件 GPE 光栅化器 |
+| `gpe-sprite.c` | ★ GPE 精灵绘制 |
+| `sony-lz77.c` | ★ Sony LZ77 CPU 解码（带边界检查，同格式替代硬件） |
+| `dmm-service.c` | ★ 显示内存管理器服务 |
+| `hdmi-format-service.c` | ★ HDMI 格式服务 |
+| `headless-osd.c` / `headless-osd-export.c` | OSD 队列 |
+| `ramfb-viewer.c` | ★ 帧缓冲消费者 → XRGB8888 |
+| `menu-observe.c` | 主观察者 |
+| `mutex-trace.c` / `file-media-config.c` / `fsys-file-test.c` / `input-table.c` / `menu-readmem.c` / `menu-regs.c` / `menu-scanmem.c` / `seed-date-clock.c` | 各类观测/服务 |
+| `capid-service.c` / `sa-address-service.c` | 相机服务模拟 |
+
+**虚拟 scanout 用 `[0x41e100000, 0x41e600000)` 预留区（两个缓冲槽 + DMA/config 区）**
+**输入码：MENU=0x1ab, 确认=0x1ac, 上=0x3, 下=0x30, 左=0x15, 右=0x1af, 删除/C2=0x1f8, 后拨盘=0x10000013**
+
+### 157.3 ★★★★★★ 他们对"砖机"的结论 —— 独立验证了我们的判断
+
+**他们的 `RECOVERY-AND-LESSONS.md` 原文：**
+```
+相机的 /tmp、/etc、/var 是同一块 12 MiB vfat 分区（nflasha10）。
+往里写大文件会把它填满 → 之后任何写入都失败 0x10000009
+→ 连"把 /etc/ld.so.preload 置为中性"的清理写入也失败
+
+★ /bin/busybox 是【动态链接】的，/bin/sh 是它的符号链接
+  ⇒ 一个【致命损坏】的 preload 库（undefined symbols / failed relocations）
+    会阻止 busybox 启动，进而 /sbin/init 无法启动
+  ⇒ 这种情况【只能预防，无法救援】
+```
+
+**⇒ 这与我们的独立分析完全一致：**
+```
+我们用户相机的状态：gotdump.so（12,652 B）覆盖了 /etc/zve10_agent.so
+  ⇒ /etc/ld.so.preload 仍指向它
+  ⇒ 若该库有 undefined symbol / relocation 失败 ⇒ 所有动态 exec 失败
+  ⇒ busybox 起不来 ⇒ /sbin/init 起不来 ⇒ 开机循环、无数据模式
+  ⇒ 【软件层无解】✓ 与他们的结论一致
+```
+
+**⇒ ⇒ 我们的 BootROM 串行启动 + eMMC 直写方案是**唯一路径**，且已在 QEMU 端到端验证（1-2 字节修复）**
+
+### 157.4 他们的修复工具（供参考）
+
+**`jiritsu_preload_clear.py`（4,440 B）—— 中和 preload：**
+```python
+PRELOAD_WIRE_PATH = "/tmp/jiritsu/../../etc/ld.so.preload"   # 路径穿越
+NEUTRAL_CONTENT = b"\n" * 512    # ★ glibc 按空白分割 ⇒ 512 换行 = 零库
+# 重要经验：固件覆盖只在【已有文件大小内】可行（对 0 字节文件写失败 0x10000009）
+```
+
+**⇒ 但他们的工具**需要相机能启动并跑 JIRITSU 链** ⇒ 对已经 boot-loop 的相机无效**
+**⇒ 而我们的方案（BootROM 串行 → ARMv7 payload → 改 FAT 目录项 1-2 字节）不依赖任何用户态** ✓
+
+### 157.5 对 ZV-E10 工作的直接价值
+
+**⇒ 他们的显示配方是**可移植的方法论**（不含 Sony 资产）：**
+1. **软件 GPE（gpe-raster/sprite）+ Sony LZ77 CPU 解码** —— 替代缺失的 GPU
+2. **DMM/HDMI 服务模拟** —— 显示内存管理
+3. **ramfb + fw_cfg DMA** —— 标准 QEMU 显示通路
+4. **HOSDAP02 容器 + 校验** —— 帧提交协议
+
+**⇒ 我们的 ZV-E10 工作可以直接借鉴：**
+- **CXD90045 与 CXD90057 同属 Sony 图形架构（GPE/OSD/LIRO）**
+- **我们的 liro 固件已能完整运行（280 线程）✓**
+- **我们缺的正是 GPE 软件模型 + ramfb 通路**
+
+**⇒ 但前提：我们的 App init 必须先跑完（当前卡在 valloc 输出指针）**

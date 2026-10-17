@@ -76,3 +76,44 @@ $Q -M cxd90045 -display none -serial file:/tmp/run.log -monitor none \
 <build>/qemu-build/                   QEMU 构建目录（源码 <build>/src/qemu-sony）
 <build>/ab_v3b.img                    ★ 最优镜像
 ```
+
+---
+
+## 🔗 重要参考：chocotan/a7c2-re（a7C II 逆向 + 原生 QEMU）
+
+**仓库**：`https://github.com/chocotan/a7c2-re`（441 文件）
+
+### 他们已打通的显示链（可直接借鉴）
+```
+软件 GPE 模型（gpe-raster.c / gpe-sprite.c）
++ Sony LZ77 CPU 解码（sony-lz77.c）
++ DMM/HDMI 服务模拟（dmm-service.c / hdmi-format-service.c）
++ OSD 队列（headless-osd.c）
++ ramfb-viewer.c 读帧缓冲 → RGBA4444 → XRGB8888
++ QEMU fw_cfg DMA 配 etc/ramfb → GTK 显示
+虚拟 scanout: [0x41e100000, 0x41e600000)
+```
+
+### ★ 他们对"砖机"的结论（与我们的分析一致）
+```
+/bin/busybox 是动态链接的，/bin/sh 是它的符号链接
+⇒ 致命损坏的 preload 库会阻止 busybox 启动 → /sbin/init 起不来
+⇒ 【只能预防，无法救援】
+⇒ 我们的 BootROM 串行启动 + eMMC 直写是唯一路径 ✓
+```
+
+### 他们的修复工具
+```
+jiritsu_preload_clear.py : 用 512 个换行中和 preload（glibc 按空白分割）
+  PRELOAD_WIRE_PATH = "/tmp/jiritsu/../../etc/ld.so.preload"
+  经验：固件覆盖只在已有文件大小内可行（对 0 字节文件写失败 0x10000009）
+⇒ 但需要相机能启动并跑 JIRITSU 链 ⇒ 对 boot-loop 相机无效
+```
+
+### 关键教训（对我们写 eMMC 有直接价值）
+```
+/tmp、/etc、/var 是同一块 12 MiB vfat 分区（nflasha10）
+写满后【所有】写入都失败（0x10000009）
+⇒ 我们的"1-2 字节修复"是最优方案（不写大文件）
+⇒ 若必须写 12MB，要一次性写完整个分区（不是追加）
+```
