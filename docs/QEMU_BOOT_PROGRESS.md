@@ -13210,3 +13210,68 @@ fault: pc = 0x106 (跳到 0x106)
 | ZZTGKILL / ZZSTACK | kernel/signal.c | abort + 用户栈 |
 | ZZEXCSTACK | exception.c em_show_syndrome() | 页错误用户栈 |
 | **ZZGOT** | 同上 | **页错误时 dump GOT** |
+
+---
+
+## 一百五十三、Round 171~174：**重大修正 —— 这是数据访问异常，不是指令跳转**
+
+### 153.1 ★★★ 误读纠正
+
+**此前我一直把 `pc = 0x00000106` 理解成"CPU 跳到了 0x106"。**
+**但异常现场的真实数据是：**
+```
+trap_no: 0x0e = 14  ⇒ ★ data abort（数据访问异常），不是 6（illegal instruction）
+address: 0x00000106  ⇒ 故障【数据地址】= 0x106
+error_code: 0x80000017
+r0: 0x00000107       ⇒ = 0x106 + 1
+```
+
+**⇒ 正确理解：某条指令用 `r0 = 0x107` 做了**内存访问**（很可能是 `[r0, #-1]` 或 `[r0]`）
+⇒ **不是**"跳转到 0x106"**
+
+### 153.2 调用链的精确确认
+
+**`libbackup.so` 符号表：**
+```
+0x11a4  Backup_get_datasize_multi
+0x11d4  Backup_get_attribute
+0x1204  Backup_read              ← ★ 0x1222 在此函数内
+```
+**`Backup_read` 反汇编：**
+```asm
+1204: push {r7, lr}
+...
+121e: ldr r1, [pc, #16]
+1220: movs r3, #2
+1222: blx backup_sync_msg@plt     ← LR = 0x1227（返回地址）
+1226: ldr r0, [r7, #4]
+...
+```
+**⇒ 崩溃时 LR = 0x1227 ⇒ 说明**还在 `backup_sync_msg` 内部，且尚未调用 `osal_snd_sync_msg`**（否则 LR 会变成 0x100e）**
+**⇒ 故障发生在其前半段（0xf64 ~ 0x100a 的缓冲区构建代码）**
+
+### 153.3 `backup_sync_msg` 前半段的反汇编（无间接调用）
+
+```asm
+0xf64: ...（构建消息缓冲区）
+0xf9a-0xfd2: 一连串 strb（逐字节写 msg 结构）
+0xfd4: ldr r2, [r7, #12]
+0xfd6: b.n 0xffe
+0xfd8: ldrb.w lr, [r1]        ← 循环拷贝
+...
+0x1002: blt.n 0xfd8
+0x1004: mov r1, r3
+0x1006: mov r0, r4
+0x1008: str r3, [r7, #4]
+0x100a: str r2, [r7, #12]
+0x100c: blx osal_snd_sync_msg@plt   ← 尚未执行到
+```
+**⇒ 前半段只有 `strb`/`ldrb`/`ldr` ⇒ 故障指令很可能是某条 `strb`/`ldrb` 用了坏指针**
+
+### 153.4 下一步（方向明确）
+
+1. **在 `backup_sync_msg` 的第一条指令前下断（gdb），单步到 `0x100a`，观察哪条内存访问用了 0x107**
+2. **检查 `Backup_read` 传进来的参数（r0/r1/r2/r3）是否正确**
+   —— `Backup_read` 在 0x1218 `stmia.w sp, {r0, r1}` 把入参存栈，0x121c 起构造 msg
+3. **`0x0107` 作为数据值** 出现在用户栈的 `01070e85/01070e87` 模式里
+   ⇒ 可能是 msg 结构里的一个长度/类型字段，被错误地当作指针传递
