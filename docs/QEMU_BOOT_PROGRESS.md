@@ -12301,3 +12301,93 @@ ZVE10_QEMU_BOOT_PROGRESS.md      全证据链
 - ✅ 我无真机访问能力，全程只操作 QEMU 与镜像副本
 - ✅ 所有真机写入必须由用户确认后执行
 - ✅ 原镜像（`ZVE10_EMMC_FULL.img` / `zve10_delivery/*.img`）全程**只读未改**
+
+---
+
+## 一百三十九、🎉 Round 136：**liro 关卡打通 —— App 从"停滞"推进到 30s、1037 次 UIPC**
+
+### 139.1 根因：`liro.ko` 在"resume 路径"上**故意跳过 complete**
+
+**现象（修复前）：**
+```
+im.elf:   insmod(liro) → udif_driver_register → wait_for_completion_timeout(5min)
+udm_liro: liro_init → wait_for_completion()    ← 永久阻塞（r4=0x7fffffff = MAX_SCHEDULE_TIMEOUT）
+⇒ App 永远停在 insmod 里，日志 29s 后完全静止
+```
+
+**反汇编 `liro.ko`（`.init.text`，file off 0x84ac）：**
+```asm
+liro_init:  spawn tsk_entry (kthread) → wait_for_completion   @+0xd0
+tsk_entry:  ... 调用固件入口 ...
+  28c: ldr  r3, [r4,#44]
+  2a8: ldr  r1, [r3,#8]
+  2ac: cmp  r1, #4
+  2b0: beq  2e0        ; ★ 走 0x2e0 = resume 流程（起 thread_resume）
+                       ;   ⇒ 【跳过 0x2d4 的 complete()】
+  2d4: bl   complete   ; 正常 init 路径才走这里
+```
+
+**⇒ **根因：固件返回结构里某字段 == 4 ⇒ `tsk_entry` 走 resume 分支，永不 complete**
+**⇒ `udm_liro` 永久阻塞 ⇒ `liro_init` 永不返回 ⇒ App 卡死**
+
+### 139.2 修复：`beq 2e0` → `nop`（只改 3 字节）
+
+```
+文件偏移 0x875c（.init.text 内 tsk_entry+0x168）
+  0a00000a (beq 2e0) → 0000a0e1 (nop)
+⇒ 无论哪条路都 fallthrough 到 0x2d4 的 complete() ✓
+⇒ 元数据完好（vermagic ✓、depends=osal_uipc,backup,osal_utm,dma330 ✓、331 符号 ✓）
+```
+
+### 139.3 ★★★ 修复后实测（`ab_v3.img`）
+
+| 指标 | 修复前 | **修复后** |
+| --- | --- | --- |
+| `EXIT udm_liro` | **0** | **2** ✓ |
+| `complete()` 被调用 | 0 | **4** ✓ |
+| `timeout: driver register` | 有 | **0** ✓ |
+| **App 恢复活动** | 停滞 | **★ 1037 次 UIPC** ✓ |
+| 日志推进 | 29s 静止 | **推进到 30.8s** ✓ |
+| 新处理器出现 | 无 | `f0=0x9401c3`、`f0=0x946019` 等 ✓ |
+
+**⇒ liro 固件加载成功（`Load firmware /system/av-cam.bin to 635c6000` ✓、`entry_main` ✓）
+⇒ **App 跨过了最大的一个关卡 ✓**
+
+### 139.4 剩余卡点：堆损坏（`realloc(): invalid next size`）
+
+```
+崩溃序列（确定性复现）:
+  QMMAP 2MB anon ×N（加载库）
+  MISSSO //lib/libInfraSystemProperty.so (err=-2)    ← 探测失败（随后从 /usr/lib 加载成功 ✓）
+  ZZFUTEX op=0x0 (FUTEX_WAIT)
+  MISSDEV /dev/tty (err=-6)                          ← /dev/tty 节点存在，ENXIO=无控制终端（正常）
+  *** glibc detected *** realloc(): invalid next size
+  Backtrace: libc.so.6(vasprintf+0xab) ← realloc     ← ★ vasprintf 只是【探测器】
+```
+
+**排查结论：**
+- ✅ **不缺库**：所有库都从 `/usr/lib` 加载成功（只有 2 个"从未加载"条目，都是日志伪影 + `ld.so.cache`）
+- ✅ **已打全部已知补丁**：`backup.ko`（73,764 B 版）、`libosal_uipc.so`（0x26c0=7a68）、`im.elf`（0x2f46=00bf）
+- ❌ **堆守卫 `libguard.so` 预加载后【未抓到越界】** ⇒ 不是普通 malloc 越界
+  ⇒ 疑似：App 自用 arena（日志里大量 2MB `QMMAP`）越界，或内核 `copy_to_user` 写穿
+  （笔记 §Round 18 曾定位为内核 UIPC `snd_sync_direct` 的 `arg[0]` 长度问题）
+- ⚠️ 对比 `zve10_safe_emmc.img`：**无堆损坏，但也没加载 liro 固件、只推进到 15.7s**
+  ⇒ 两者是不同阶段的状态；**新镜像（含 liro 修复）更先进**
+
+### 139.5 本轮产出的镜像
+
+| 镜像 | 内容 | 状态 |
+| --- | --- | --- |
+| `ab_liro.img` | ab_qf + liro 补丁 | liro 通过 ✓ |
+| `ab_liro2.img` | + UIPC 补丁 | 同上 |
+| **`ab_v3.img`** | **+ backup.ko 补丁（四合一）** | **App 推进到 30.8s ✓** |
+| `ab_guard.img` | + libguard.so 预加载 | 守卫未触发 |
+
+**构建方法（安全版，全部可复现）：**
+```sh
+# 1) 从 ab_qf.img 抽 nflasha15（用户区 0x2D800000 ⇒ .img 0x2DC00000）
+# 2) rdump / → 树；替换 kmod/liro.ko（补丁版）、kmod/backup.ko（73764B 版）、
+#    打 libosal_uipc.so @0x26c0=7a68
+# 3) truncate -s 300M + mke2fs -d + e2fsck
+# 4) 写回 ab_qf.img 的 0x400000+0x2D800000
+```
