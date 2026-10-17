@@ -12636,3 +12636,61 @@ debugfs -w -R "write <patched> /lib/libc-2.11.2.so" n7_libc.img
 2. **给低堆区加哨兵**：在 `0x2b000~0x2e000` 的 chunk header 上加保护字节（需要 hook 早期分配）
 3. **patch glibc `dlerror` 用静态缓冲**（移除探测器）⇒ 看 App 继续跑到哪里、是否暴露更明确的现场
 4. **继续逐点修复**：每消除一个崩溃点，App 都前进一段（已反复验证）
+
+---
+
+## 一百四十三、🏆 Round 140：**全修复合一 ⇒ 堆损坏/页错误全部消除**
+
+### 143.1 ★★★ 关键教训：装 libc 时把 `/dev/tty` 符号链接覆盖回了字符设备
+
+```
+ab_fix7 的 rootfs /dev/tty = symlink ✓（堆损坏已消除）
+但 n7_libc.img / n7_sym.img 是从【ab_v3 的旧 n7.img】建的
+  ⇒ 装入 ab_fix7 时把 /dev/tty 符号链接【覆盖回 character special】
+  ⇒ MISSDEV /dev/tty 重现 ⇒ 堆损坏路径回归
+```
+
+**⇒ 修正：从 **ab_fix7**（含符号链接的正确 rootfs）重新抽取，再叠加 libc 补丁 + 68 个库符号链接。**
+
+### 143.2 最终合一的 `ab_all.img`（7 项修复叠加）
+
+| # | 修复 | 位置 |
+| --- | --- | --- |
+| 1 | liro：`b 2e0` + 固件前注入 complete | nflasha15:/kmod/liro.ko |
+| 2 | backup.ko 补丁版（73,764 B） | nflasha15:/kmod/backup.ko |
+| 3 | libosal_uipc.so @0x26c0 = 7a68 | nflasha15:/lib/ |
+| 4 | im.elf @0x2f46 = 00bf（QEMU 门控旁路） | nflasha15:/bin/ |
+| 5 | **`/dev/tty` → `/dev/null` 符号链接** | rootfs(nflasha7):/dev/ |
+| 6 | **libc `__assert_fail` → `bx lr`**（0x1f98c: 80b5→7047） | rootfs:/lib/libc-2.11.2.so |
+| 7 | **68 个库符号链接 `/lib/X → /usr/lib/X`** | rootfs:/lib/ |
+
+**校验：`/dev` 696 条设备节点保留 ✓、libc 读回 md5 一致 ✓、e2fsck 通过 ✓**
+
+### 143.3 ★★★ 实测（`ab_all.img`）
+
+| 指标 | 之前（ab_fix7） | **ab_all** |
+| --- | --- | --- |
+| `glibc detected`（堆损坏） | 0（被 abort 掩盖）→ 1（暴露） | **0** ✓ |
+| `page translation fault` | 1 | **0** ✓ |
+| `MISSDEV /dev/tty` | 0 → 重现 | **0** ✓ |
+| `MISSSO`（dlopen 探测失败） | 183 | **30** ✓ |
+| `IMOPEN OK` | 130 | 130 |
+| **UIPC 处理器种类** | — | **38 种** ✓ |
+| UIPC 调用 | 1037 | 1037 |
+| 运行到 | 29.8s | **31.8s** |
+| 剩余问题 | 堆损坏 + 页错误 | **仅 ZZTGKILL=2（THREAD_INFRA0 abort）** |
+
+**⇒ 堆损坏与页错误【全部消除】，只剩一个 Infra 框架线程的 abort。**
+
+### 143.4 剩余 abort 的定位
+
+```
+ZZTGKILL THREAD_INFRA0 pid=124 tgid=139 sig=6 pc=libc+0x15796 lr=libc+0x24d8f
+栈: [01] libc raise / [04] libc abort / [09] libpthread+0x509c
+    [03] 0x000d0fea  ← 不在任何映射表中（im.elf text 只到 0xd000）
+⇒ 该栈值可能是假阳性（非真实返回地址）
+⇒ __assert_fail 已 patch 成直接返回，但仍有 abort
+   ⇒ 说明 abort 来自【其他路径】：__libc_message / malloc 检测 / 显式 abort() 调用
+```
+
+**⇒ 下一步：追踪 `abort()` 的直接调用者（可在 libc 的 `abort` 入口加内核追踪，或 patch `abort` 本身让它返回）。**
