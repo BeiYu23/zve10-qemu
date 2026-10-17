@@ -14204,3 +14204,21 @@ debugfs -w -R "write im.elf.real /bin/im.elf.real" n15.img
 # 3) 写回镜像；并把 probe 库放到 rootfs 的 /lib/libgrmlog.so
 dd if=n15.img of=<img> bs=1M seek=$((0x2DC00000/1048576)) conv=notrunc
 ```
+
+### 164.7 调试用小技巧：关掉客机 ASLR
+
+内核本来就带 `norandmaps` 启动参数（`mm/memory.c` 里 `__setup("norandmaps", disable_randmaps)`），
+**不需要改内核**，只要在内核命令行追加即可：
+
+```
+-append "... norandmaps"
+```
+
+实测（`fnoaslr.log`）：
+```
+guest 70.4s，App 正常跑到 32.5s（HDMI 初始化后停住），无崩溃
+与开 ASLR 时行为一致，但【库加载地址固定】
+⇒ 以后可以用 QEMU gdb 设固定地址断点 / watchpoint
+```
+另有内核侧改动（本次已打，备用）：`mm/memory.c` 里
+`int randomize_va_space = 2;` → `= 0;`（ZZQEMU 标记）。
