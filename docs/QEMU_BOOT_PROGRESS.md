@@ -12878,3 +12878,76 @@ lr = 0x040bb227 → libbackup.so + 0x1227
 3. **排查 `libbackup.so` 的初始化顺序**（是否有一个 `Backup_init` 没被调用）
 
 **⇒ 具体动作：在 libosal_uipc.so 的 `osal_snd_sync_msg` 入口加 trace，打印回调表指针，找出哪个槽位是 NULL。**
+
+---
+
+## 一百四十七、Round 144~147：**HDMI/CEC 驱动加载成功 + NULL 回调的 GOT 级定位**
+
+### 147.1 ★★★ App 实际跑到 **52.5s**（此前统计偏低）
+
+```
+真实最后时间戳: 52.522s（此前用 tail 统计只有 49.7s，漏了交错行）
+MODLOAD: 70 次
+```
+
+### 147.2 ★★★ 关键：THREAD_INFRA2 加载的是 **hdmi.ko + cec.ko**，且都成功
+
+```
+MODARGS THREAD_INFRA2 len=238788   ← hdmi.ko
+ZZCOMPLETE udm_hdmi pid=158 → EXIT code=0    ✅
+MODARGS THREAD_INFRA2 len=79240    ← cec.ko
+ZZCOMPLETE udm_cec  pid=167 → EXIT code=0    ✅
+```
+**⇒ **显示相关内核驱动（HDMI + CEC）全部初始化成功** ✓
+**⇒ App 已进入「显示/多媒体驱动加载」阶段，距 `dmpgles2` 只剩最后几步**
+
+### 147.3 NULL 回调的 GOT 级定位
+
+**故障现场：**
+```
+pc = 0x00000106      ← 跳到了 0x106
+r0 = 0x00000107      ← pc+1（Thumb 位）
+r1 = 0x8000000b      ← UIPC cmd 0x0b
+r3 = 0x0404612c      ← libosal_uipc.so .got 基址（VMA 0xe12c）
+ip = 0x040461cc      ← ★ VMA 0xe1cc = `ioctl@GLIBC_2.4` 的 GOT 条目
+lr = 0x040bb227      ← libbackup.so+0x1227（`blx backup_sync_msg@plt` 的返回地址）
+```
+
+**调用链（完整确认）：**
+```
+libbackup.so +0x1222  blx backup_sync_msg@plt
+  └ backup_sync_msg @0xf64
+      0x100c  blx osal_snd_sync_msg@plt
+        └ libosal_uipc.so: osal_snd_sync_msg @0x3ec8
+             → 内部通过 GOT(ioctl 所在区域) 调用后跳到 0x106
+```
+
+**RW 段映射（关键）：**
+```
+LOAD RW:  VMA 0xe000-0xefd4  ← 运行时映射到 0x04046000-0x04047000
+  .got   : VMA 0xe12c-0xe2b4   (GOT, 含所有 PLT/GLOB_DAT 条目)
+  .data  : VMA 0xe2b4-0xe2e8
+  .bss   : VMA 0xe300-0xefd4
+⇒ 0xe1cc = ioctl@GLIBC_2.4 的 JUMP_SLOT 条目
+```
+
+### 147.4 ★ 关键推断
+
+**`r0 = 0x107` 是一个「小整数」（263），不像地址 ⇒ 最可能：**
+**某个**结构体里的回调函数指针字段被存成了小整数**（如状态码/长度/类型），而不是函数地址**
+**⇒ 结构体布局不一致（不同库编译自不同头文件版本）或该字段**未初始化****
+
+**⇒ 这不是单纯的环境问题，而是 App 侧的初始化顺序/结构体兼容问题。**
+
+### 147.5 累计修法（9 项）+ 确认
+
+| 补丁 | 状态 |
+| --- | --- |
+| liro `b 2e0` + 固件前注入 complete | ✅ 必需 |
+| backup.ko 补丁版 | ✅ 必需 |
+| libosal_uipc.so 0x26c0=7a68 | ✅ **有益**（撤销后 49.7→37.6s） |
+| im.elf 0x2f46=00bf | ✅ 必需 |
+| `/dev/tty` → `/dev/null` 符号链接 | ✅ 必需（消除堆损坏） |
+| libc `__assert_fail` → `bx lr` | ✅ 安全 |
+| 68 个库符号链接 | ✅ 有益（MISSSO 183→30） |
+| libc `abort` → `b .` 自旋 | ✅ 安全（**不能改成返回**） |
