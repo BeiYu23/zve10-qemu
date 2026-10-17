@@ -117,3 +117,44 @@ jiritsu_preload_clear.py : 用 512 个换行中和 preload（glibc 按空白分�
 ⇒ 我们的"1-2 字节修复"是最优方案（不写大文件）
 ⇒ 若必须写 12MB，要一次性写完整个分区（不是追加）
 ```
+
+---
+
+## 2026-10-17 追加：三个重要进展与一个换算规则
+
+### 1) ★ 分区偏移换算规则（已验证）
+```
+镜像偏移 = PARTITION_TABLE.txt 里的表内偏移 + 0x400000   （boot0 2MB + boot1 2MB）
+例：nflasha2 /setting 表 0x00800000 → 镜像 0x00C00000 ✓ 实测 FAT 在此
+```
+完整表见 `zve10_delivery/PARTITION_TABLE.txt`。
+
+### 2) ★★ /log 分区（nflasha11）修复 —— 效果显著
+```
+问题：镜像里 nflasha11（500MB，镜像偏移 0x0BC00000）整块全零
+      ⇒ FAT-fs (nflasha11): bogus number of reserved sectors ⇒ /log 挂不上
+修复：mkfs.vfat -F 32 出 500MiB 镜像，dd 到 0x0BC00000 (bs=512 seek=385024)
+效果：/log 挂载成功；guest 时间 52.5s → 70.6s；page fault 1 → 0
+```
+**⇒ 新镜像：`<build>/ab_log.img`（= ab_mode.img + /log 修复）**
+
+### 3) ★★ 更正：UI 主库 libObj.so **是被加载的**
+```
+[16.858105] IMOPEN OK /usr/lib/libObj.so    ← 16.85s 就加载了
+（之前用 IMOPEN OK //usr/lib 双斜杠 grep 漏掉了它）
+App 打开的设备只有：/dev/uipc、/dev/mem、/dev/usb/kikilog
+⇒ 还没打开任何显示设备
+```
+
+### 4) 已排除的假设
+- `dmode=3` 写入 `/setting/mode/dmode` ⇒ 行为无变化（启动已在默认档位）
+- `/setting/mode/cmode` 缺失 ⇒ 属工厂调整模式（InfraAdjMediaBase），缺失正常
+- `qsi.elf` 不在镜像里（bootin 想启动它）⇒ 待评估影响
+
+### 5) 下一步最该做的事（按价值排序）
+1. **内核侧转储 klog/alog 环缓冲到串口**
+   `alog.addr=0x03524FC0 size=0x60040` / `klog.addr=0x035A5000 size=0x20000`
+   —— 这是唯一能看到 App 内部日志的通道（QEMU monitor 的 HMP 回显会打乱命令，
+   改用内核 kthread 或 `-qmp`）
+2. 定位 App 在 ~33s 后停止产生 console 活动的原因（但进程仍活到 70s）
+3. 评估 qsi.elf 缺失的影响

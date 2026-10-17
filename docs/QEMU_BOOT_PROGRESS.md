@@ -13705,3 +13705,124 @@ GRM（图形驱动接口）
 | 渲染 | 软件 GPE | **`andromeda::Render2DWalker`（纯软件）** |
 | 屏幕创建 | `view::create_screen` | 待找（`ux::gfxeng::Screen` 相关） |
 | 符号 | 部分 | **★ 完整 C++ mangled 符号（更易逆向）** |
+
+---
+
+## 一百六十、🏆 Round 187：**libObj.so 确实被加载 + /log 分区修复让 App 跑到 70.6s**
+
+### 160.1 ★★★ 更正之前的错误结论：UI 主库**是被加载的**
+
+**之前我用 `IMOPEN OK //usr/lib/...`（双斜杠）grep，漏掉了单斜杠的那条。实际日志：**
+```
+[   16.858105] IMOPEN OK /usr/lib/libObj.so      ← ★ 16.85s，UI 主库已加载
+```
+**⇒ libObj.so 是最先加载的库**，随后依次是 InfraFsys / mprctrl / mpr / sencore /
+BizFw / BizFw2 / InfraMediaCommon / InfraMediaDetect ... 共 60+ 个
+**⇒ 所以 App 的 UI 层是活的，问题不在"UI 库没加载"**
+
+**App 实际打开的设备（全部）：**
+```
+/dev/uipc        ×2
+/dev/mem         ×2
+/dev/usb/kikilog ×2
+⇒ 【没有】打开任何显示设备（无 dmpgles2 / 无 osd / 无 fb）
+⇒ App 尚未进入显示初始化
+```
+
+### 160.2 ★★★★ /log 分区修复（本轮最大工程收获）
+
+**问题：** 启动日志里
+```
+FAT-fs (nflasha11): bogus number of reserved sectors
+FAT-fs (nflasha11): Can't find a valid FAT filesystem
+init mount_partition: mounting1 /dev/nflasha11 -> /log as vfat failed. errno(22)
+```
+
+**根因：** 我们的 eMMC 镜像里 **nflasha11（/log，500MB）整块是全零** ——
+真实的 /log 分区内容没有被复制进镜像 ⇒ 内核读到全零引导扇区 ⇒ 无法挂载。
+
+**修复：**
+```bash
+truncate -s 524288000 <build>/logfat.img
+mkfs.vfat -F 32 -n LOG <build>/logfat.img
+dd if=<build>/logfat.img of=<build>/ab_log.img bs=512 seek=385024 conv=notrunc
+# 0xBC00000 / 512 = 385024
+```
+
+**效果（决定性）：**
+| 指标 | 修复前 | **修复后** |
+| --- | --- | --- |
+| FAT-fs nflasha11 报错 | 有 | **无** ✓ |
+| /log 挂载 | 失败 | **成功** ✓ |
+| guest 时间 | 52.5s（最好） | **70.6s**（新高）✓ |
+| page fault | 1 | **0** ✓ |
+| 堆损坏 | 0 | **0** ✓ |
+
+### 160.3 ★★★ 拿到完整分区表（`zve10_delivery/PARTITION_TABLE.txt`）
+
+**换算关系（已验证）：`镜像偏移 = 表内偏移 + 0x400000`（boot0+boot1 各 2MB）**
+
+| 分区 | 表内偏移 | 大小 | 镜像偏移 | 用途 |
+| --- | --- | --- | --- | --- |
+| nflasha1 | 0x00010000 | 8MB | 0x00410000 | (FAT) |
+| nflasha2 | 0x00800000 | 20MB | **0x00C00000** | /setting ✓实测一致 |
+| nflasha3 | 0x01C00000 | 48MB | 0x02000000 | /system（LZP 压缩） |
+| nflasha4 | 0x04C00000 | 12MB | 0x05000000 | |
+| nflasha5 | 0x05800000 | 60MB | 0x05C00000 | |
+| nflasha6 | 0x09400000 | 16MB | 0x09800000 | |
+| nflasha7 | 0x0A400000 | 8MB | 0x0A800000 | /rootfs |
+| nflasha10 | 0x0AC00000 | 12MB | 0x0B000000 | /tmp /etc |
+| **nflasha11** | 0x0B800000 | **500MB** | **0x0BC00000** | **/log ← 本轮修复** |
+| nflasha12 | 0x2AC00000 | 40MB | 0x2B000000 | |
+| nflasha13 | 0x2D400000 | 4MB | 0x2D800000 | |
+| nflasha15 | 0x2D800000 | 300MB | 0x2DC00000 | /usr |
+| nflasha16 | 0x40400000 | 140MB | 0x40800000 | （镜像里全零） |
+| nflasha17 | 0x49000000 | 100MB | 0x49400000 | |
+| nflasha18 | 0x4F400000 | 20MB | 0x4F800000 | |
+| nflasha23 | 0x50800000 | 64MB | 0x50C00000 | |
+
+### 160.4 排除的两个假设
+
+**① `dmode`（启动档位文件）不是闸门**
+```
+change_mode.sh: dmode=3 = "kernel boot -> global infra -> LIRO boot -> appFw boot (默认)"
+⇒ 写入 /setting/mode/dmode = "3" 后行为【无变化】（libObj 仍加载、无新日志）
+⇒ 说明启动已在其默认档位，dmode 缺失不影响
+```
+
+**② `cmode` 属于【工厂调整模式】，缺失是正常的**
+```
+libObj.so 里 /setting/mode/cmode 的邻居字符串：
+  InfraAdjMediaBase.cpp / /setting/sen / /setting/sen/smode / /setting/mode
+⇒ cmode 由 InfraAdjMediaBase（调整模式）使用
+⇒ 该文件在镜像里是删除项（LFN 残留 "cmode"，3 字节）
+⇒ 缺失 = 非调整模式 = 正常
+```
+
+### 160.5 另一个发现：`qsi.elf` 在镜像里不存在
+
+```
+bootin.elf 字符串: /usr/bin/qsi.elf & 、 /usr/bin/qsi.elf noevent0 &
+实测: 日志里 qsi.elf 出现 0 次；三个候选路径 stat 均不存在
+⇒ bootin 想启动它的辅助进程，但该文件不在镜像中
+⇒ 待查：是否影响 UI 初始化
+```
+
+### 160.6 未成功的尝试（记录以免重复）
+
+**QEMU monitor 转储内存日志缓冲（klog/alog）失败：**
+- HMP 的 readline 回显把命令打乱，报 `invalid char 'm' in expression`
+- 结论：改用**内核侧**方案（在内核里加 kthread 定期把 0x035A5000 的 klog 环缓冲
+  以可读形式 printk 到串口），或把 `-monitor` 换成 `-qmp`（JSON 无回显干扰）
+
+**内核 ZZPART 追踪未命中：**
+- `add_mtd_partitions` / `mtd_add_partition` 都加了 printk，但 nflasha 分区不是走
+  MTD 接口注册的（由 emmc.ko 模块自己创建块设备），故无输出
+
+### 160.7 下一步优先级
+
+1. **内核侧 klog/alog 环缓冲转储**（唯一能看到 App 内部日志的通道）
+   —— alog.addr=0x03524FC0 size=0x60040、klog.addr=0x035A5000 size=0x20000
+2. **为什么 App 在 ~33s 后不再产生任何 console 可见活动**（但仍运行到 70s）
+   —— 若 klog 转储可用，可直接看到它卡在哪一步
+3. **`/setting/mode/cmode` / `qsi.elf` 缺口是否影响**（已排除 dmode）
