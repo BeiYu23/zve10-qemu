@@ -11894,3 +11894,69 @@ platsmp.c:133   ncores = scu_get_core_count(VA_SCU);     /* ARM A9 SCU ✓ */
 **已通过对话桥发回**：①`0xF0304000` ②别用 `0xF8000000`、且第一版不碰时钟
 ③没有 BootROM dump，建议 payload 第一版"**只读探测**"（读 SDHCI `+0x40 CAPABILITIES`/`+0xFE HOST_VERSION`
 验证基址 + 把 BootROM 48KB 经串口回吐）⇒ **一次上机同时完成验证、dump 与最终修复**。
+
+---
+
+## 一百三十三、★★★ Round 130：**在 QEMU 里成功运行裸 ARMv7 payload（为真机串行启动验证铺路）**
+
+### 133.1 背景
+
+隔壁对话（真机改造）写了一份**第一阶段只读 ARMv7 payload**
+（`<repo>/a7m4_fastboot/armv7_payload/`，2,404 B，入口 `0xFE020000`，
+纯只读：UART 打印 + 读 SDHCI 四寄存器 + 回吐 BootROM 48KB）。
+请我在 QEMU 模型里验证 —— **这样上真机前就能把 payload 本身验完 ✓**
+
+### 133.2 验证方法（已固化为脚本）
+
+```sh
+# <repo>/run_armv7_payload.sh
+qemu-system-arm -M cxd90045 -display none -serial file:$OUT -monitor none \
+  -S -gdb tcp::1235 -device loader,file=<payload.bin>,addr=0xFE020000,force-raw=on &
+gdb-multiarch -batch -ex "target remote :1235" \
+  -ex "set \$pc = 0xFE020000" -ex "set \$sp = 0xFE100000" -ex "continue"
+```
+**⇒ 关键点：`-S` 冻结 + `-device loader` 灌到 ESRAM(`0xfe000000-0xfeffffff`) + gdb 设 PC/SP。
+这与"串行启动成功后 payload 开始执行"**等价**，足以验证 payload 本身 ✓**
+
+### 133.3 实测结果（payload 完全跑通 ✓）
+
+```
+==== ZV10 ARMv7 payload alive ====          ← ★ UART 通路 ✓（PL011 不初始化即可用）
+SDHCI  @0x0xf0304000
+  CAPABILITIES(+0x40) = 0x057834b4
+  HOST_VERSION(+0xFE) = 0x00002401
+  emmc0      (+0x124) = 0x00000000
+  emmc1      (+0x130) = 0x00001fff
+  => base clock = 52 MHz
+  => 判定: CAP 像样（基址大概率正确 ✓）
+BOOTROM @0xffff0000 len=49152 → 全 0x00（12288 个 32 位字，非零 0 个）
+```
+
+**⇒ 结论：**
+| 项 | 结果 |
+| --- | --- |
+| **ARMv7 代码能否执行** | ✅ 能（模型 CPU = cortex-a9 / ARMv7-A，无异常） |
+| **UART0 是否可用** | ✅ 可用，**且不需要初始化**（轮询 FR.TXFF + 写 DR） |
+| **SDHCI 基址 `0xF0304000` 可访问** | ✅ 非 0、非 `0xFFFFFFFF`，CAP 解析出 base clock=52MHz（说明位域解读正确） |
+| **BootROM 内容** | ❌ 模型里全 0（没填）⇒ **对 BootROM 逆向无帮助** |
+
+### 133.4 ⚠️ 必须记录的 caveat：这些值是**模型合成值**，不是真机实测值
+
+```
+CAPABILITIES = 0x057834b4  ← QEMU 通用 SDHCI 模型按 property 合成 ⚠️
+HOST_VERSION = 0x00002401  ← 同上 ⚠️
+emmc0(+0x124) = 0x00000000 ← ★ 这是我自己改的！原始模型是 0x1000000（猜"支持 HS200"），
+                              为让真机固件跑 SDR 模式我置 0 ⇒ 真机更可能是 0x1000000 ⚠️
+emmc1(+0x130) = 0x00001fff ← 模型常量（来自对真机驱动的逆向）⚠️
+```
+**⇒ 因此"值像样"只证明：基址可访问 + 返回非平凡值 + payload 读取代码正确；
+**具体数值必须在真机上读一次才有意义 ✗**
+
+### 133.5 交付
+
+| 文件 | 说明 |
+| --- | --- |
+| **`<repo>/run_armv7_payload.sh`** | ★ **一条命令跑任意裸 ARMv7 payload**（QEMU + gdb + 抓 UART） |
+| `/tmp/pl.log` | 本次 payload 的完整 UART 输出（3,085 行，含 BootROM 全零 hex） |
+
+**⇒ 下一步：对面编好"读/写 eMMC"版本后，用这个脚本即可在 VM 里完整验证。**
