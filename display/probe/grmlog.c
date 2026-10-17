@@ -16,7 +16,7 @@ static long sys_open(const char *p,int f,int m)
   register long r1 __asm__("r1")=f; register long r2 __asm__("r2")=m;
   __asm__ volatile("svc 0":"+r"(r0):"r"(r1),"r"(r2),"r"(r7):"memory"); return r0; }
 
-extern void *dlsym(void *h, const char *s);
+extern void *dlsym(void *h, const char *s) __attribute__((weak));
 #define RTLD_NEXT ((void *)-1l)
 
 static int con=-1;
@@ -43,7 +43,7 @@ __attribute__((constructor)) static void ini(void)
 void *dlopen(const char *name, int flag)
 {
     static void *(*real)(const char*,int);
-    if(!real) real=(void*(*)(const char*,int))dlsym(RTLD_NEXT,"dlopen");
+    if(!real && dlsym) real=(void*(*)(const char*,int))dlsym(RTLD_NEXT,"dlopen");
     void *r = real ? real(name,flag) : (void*)0;
     ps("GRMLOG dlopen "); pstr(name); ps(" -> "); hx((unsigned long)r); ps("\n");
     return r;
@@ -55,7 +55,7 @@ void *dlopen64(const char *name, int flag)
 void *_ZN2ux6gfxeng14GraphicsEngine15sys_getInstanceEv(void)
 {
     static void *(*real)(void);
-    if(!real) real=(void*(*)(void))dlsym(RTLD_NEXT,"_ZN2ux6gfxeng14GraphicsEngine15sys_getInstanceEv");
+    if(!real && dlsym) real=(void*(*)(void))dlsym(RTLD_NEXT,"_ZN2ux6gfxeng14GraphicsEngine15sys_getInstanceEv");
     void *r = real ? real() : (void*)0;
     ev2("GRMLOG GraphicsEngine", (unsigned long)r, 0);
     return r;
@@ -65,7 +65,7 @@ void *_ZN2ux6gfxeng14GraphicsEngine15sys_getInstanceEv(void)
 unsigned _ZN17OBJAVBBCBASECLASS13SeqController20CreateAndAddSequenceEjPN3MWF6ObjMsgE(void *self, unsigned id, void *msg)
 {
     static unsigned (*real)(void*,unsigned,void*);
-    if(!real) real=(unsigned(*)(void*,unsigned,void*))dlsym(RTLD_NEXT,
+    if(!real && dlsym) real=(unsigned(*)(void*,unsigned,void*))dlsym(RTLD_NEXT,
         "_ZN17OBJAVBBCBASECLASS13SeqController20CreateAndAddSequenceEjPN3MWF6ObjMsgE");
     unsigned r = real ? real(self,id,msg) : 0;
     ev3("GRMLOG CreateAndAddSequence id=", (unsigned long)id, (unsigned long)r, (unsigned long)self);
@@ -98,4 +98,41 @@ int _ZN10WlanAdjust9wlanStartEP10OsalPacket(void *self, void *pkt)
     if(!real) real=(int(*)(void*,void*))dlsym(RTLD_NEXT,"_ZN10WlanAdjust9wlanStartEP10OsalPacket");
     ev3("GRMLOG WlanAdjust::wlanStart", (unsigned long)self, (unsigned long)pkt, (unsigned long)real);
     return 0;
+}
+
+/* ---- 等待类探针 ---- */
+struct pollfd_ { int fd; short events; short revents; };
+int poll(struct pollfd_ *fds, unsigned long n, int timeout)
+{
+    static int (*real)(struct pollfd_*, unsigned long, int);
+    if(!real) real=(int(*)(struct pollfd_*,unsigned long,int))dlsym(RTLD_NEXT,"poll");
+    static int cnt; int r = real ? real(fds,n,timeout) : 0;
+    if (cnt < 150) { cnt++;
+        ps("GRMLOG poll n="); hx(n); ps(" tmo="); hx((unsigned long)timeout);
+        ps(" fd0="); hx(fds && n ? (unsigned long)fds[0].fd : 0);
+        ps(" ev0="); hx(fds && n ? (unsigned long)fds[0].events : 0);
+        ps(" r="); hx((unsigned long)r); ps("\n");
+    }
+    return r;
+}
+int select(int nfds, void *rd, void *wr, void *ex, void *tv)
+{
+    static int (*real)(int,void*,void*,void*,void*);
+    if(!real) real=(int(*)(int,void*,void*,void*,void*))dlsym(RTLD_NEXT,"select");
+    static int cnt; int r = real ? real(nfds,rd,wr,ex,tv) : 0;
+    if (cnt < 60) { cnt++;
+        ps("GRMLOG select nfds="); hx((unsigned long)nfds); ps(" r="); hx((unsigned long)r); ps("\n");
+    }
+    return r;
+}
+int epoll_wait(int epfd, void *ev, int maxev, int timeout)
+{
+    static int (*real)(int,void*,int,int);
+    if(!real) real=(int(*)(int,void*,int,int))dlsym(RTLD_NEXT,"epoll_wait");
+    static int cnt; int r = real ? real(epfd,ev,maxev,timeout) : 0;
+    if (cnt < 150) { cnt++;
+        ps("GRMLOG epoll epfd="); hx((unsigned long)epfd); ps(" tmo="); hx((unsigned long)timeout);
+        ps(" r="); hx((unsigned long)r); ps("\n");
+    }
+    return r;
 }
