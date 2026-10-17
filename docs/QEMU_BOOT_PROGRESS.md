@@ -13053,3 +13053,45 @@ PC = 0x00000106（两次相同）
    （r3=2 是 msg type；r1=0x8000000b 是尺寸/类型 —— 需在调试器里单步确认）
 2. **或：patch `backup_sync_msg` 让它在调用 `osal_snd_sync_msg` 前做 NULL 检查**
 3. **或：QEMU gdb 在 `libbackup.so+0x100c`（`blx osal_snd_sync_msg@plt`）下断，单步进 `osal_snd_sync_msg` 看 r0 来源**
+
+---
+
+## 一百五十、Round 154：**libbackup 补丁实验（负面结果，已撤销）**
+
+### 150.1 尝试
+
+**把 `libbackup.so` 的 `backup_sync_msg` 里对 `osal_snd_sync_msg` 的调用 patch 掉：**
+```
+libbackup.so +0x100c: blx osal_snd_sync_msg@plt  →  movs r0,#0 ; nop
+⇒ backup_sync_msg【直接返回成功】，不再走 UIPC
+```
+
+### 150.2 结果：**更糟**
+
+| 镜像 | 崩溃时间 | 崩溃形式 | MODLOAD | UIPC handler |
+| --- | --- | --- | --- | --- |
+| `ab_v3b`（原始） | **52.5s** | `page fault 0x106`（backup 路径） | 70 | **43** |
+| `ab_bk`（补丁版） | **16.6s** | **`page fault 0x0`**（更早！） | 64 | 29 |
+
+**⇒ `backup_sync_msg` 返回"成功"但**输出数据是垃圾**（缓冲区未填充）
+⇒ 下游使用这些垃圾数据 ⇒ 更早的 NULL 解引用 ⇒ **副作用大于收益**
+
+### 150.3 结论
+
+**⇒ 该 patch **已撤销**（`ab_bk.img` 不采用，继续用 `ab_v3b.img`）**
+**⇒ 说明 `backup_sync_msg` 的 UIPC 往返是**必需的**，不能简单跳过
+⇒ 必须找到 UIPC 路径里那个"数据被当函数指针"的真正原因**
+
+### 150.4 累计 10 轮的关键状态
+
+```
+✅ 固件完整启动 / 33 模块 / init chroot
+✅ liro 图像处理器固件完整运行（280 线程）
+✅ 堆损坏/mutex assert/abort 全部消除
+✅ App 跑到 52.5s，70 模块，HDMI/CEC 驱动 OK
+✅ /dev/dmpgles2 节点 + grm_gles.ko 都已就位
+✅ 43 种 UIPC 处理器
+✅ 诊断工具 3 件（ZZTGKILL/ZZSTACK/ZZEXCSTACK）全部验证有效
+❌ 唯一剩余：backup_sync_msg 路径中"数据当函数指针"（路径已 100% 确定）
+⇒ 显示链路的第一道门仍是 App init 走完；GPU 建模在其后
+```
