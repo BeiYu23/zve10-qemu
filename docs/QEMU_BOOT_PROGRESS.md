@@ -12996,3 +12996,60 @@ osal_reg_sync_msg_queue_cb @0x3ae0 T
 1. **多次运行直到触发页错误 ⇒ 用 ZZEXCSTACK 拿到完整用户栈**
 2. **若栈仍不足以定位 ⇒ 用 QEMU gdb 在 `osal_snd_sync_msg` 下断，单步到 `blx` 看 r0 来源**
 3. **同时留意：App 在 41s 后"静止"（无输出无崩溃）也是一种状态，值得单独分析（是否卡在某处等待）**
+
+---
+
+## 一百四十九、🏆 Round 153：**ZZEXCSTACK 成功抓现场 —— 崩溃路径完全确定性**
+
+### 149.1 ★★★ 工具生效：两次并行运行都抓到崩溃 + 用户栈
+
+```
+run1: sp=091d7ce0 pc=00000106 lr=040bc227
+run2: sp=092fece0 pc=00000106 lr=040b9227
+```
+
+**★ 关键：两次运行的 `lr` 绝对值不同，但**库内偏移完全一致**：**
+```
+run1: 0x040bc227 在 libbackup.so (base 0x040bb000) ⇒ 偏移 0x1227
+run2: 0x040b9227 在 libbackup.so (base 0x040b8000) ⇒ 偏移 0x1227  ★ 同一处！
+PC = 0x00000106（两次相同）
+线程 = THREAD_INFRA2（两次相同）
+```
+**⇒ **崩溃路径完全确定性**：`libbackup.so+0x1227` → `backup_sync_msg` → `osal_snd_sync_msg` → 跳 0x106
+⇒ 非确定性只体现在"何时触发"（33s / 41s / 52s），不在"何处触发"**
+
+### 149.2 ★★★ 用户栈内容揭示：sp 区域是【结构化数据】不是返回地址
+
+```
+[00] 01070e85
+[01] 0e860000
+[03] 01070e87
+[04] 0e880000
+[06] 01070e89
+...
+⇒ 0x0107 每项 +2，0x0e85/0x0e87 每项 +2 ⇒ 规律的数组/链表结构
+⇒ 不是返回地址链 ⇒ 说明 sp 指向的是一块【数据缓冲区】
+⇒ 且 0x0107 = 263（与 r0=0x107 对应）⇒ 该数据被当成函数指针使用
+```
+
+**⇒ 结论：**某处把结构化数据（含 0x0107 这样的字段值）当作函数指针调用**
+**⇒ 根因是**结构体偏移/布局不匹配**或**数据/代码指针混淆****
+
+### 149.3 ★★★★ 关键战略认识：显示链路的第一道门是 App init，不是 GPU 模型
+
+```
+实测: /dev/dmpgles2 在 rootfs /dev 里【存在】（静态节点）
+      grm_gles.ko 注册同名 miscdevice（strings 里 "dmpgles2"）
+      udm_grm_ma EXIT code=0、grm_gles 在模块表中
+⇒ 设备节点与驱动【都已就位】
+⇒ 但 App 从未 open("/dev/dmpgles2")（ioctl 计数 = 0）
+⇒ 原因：App 的 init 还没走到显示初始化那一步（被 NULL 回调崩溃打断）
+⇒ 【所以：GPU 建模是之后的事；当前必须先把 App init 走完】
+```
+
+### 149.4 下一步（明确）
+
+1. **在 `libbackup.so` 的 `backup_sync_msg` 里定位那个被误当函数指针的字段**
+   （r3=2 是 msg type；r1=0x8000000b 是尺寸/类型 —— 需在调试器里单步确认）
+2. **或：patch `backup_sync_msg` 让它在调用 `osal_snd_sync_msg` 前做 NULL 检查**
+3. **或：QEMU gdb 在 `libbackup.so+0x100c`（`blx osal_snd_sync_msg@plt`）下断，单步进 `osal_snd_sync_msg` 看 r0 来源**
