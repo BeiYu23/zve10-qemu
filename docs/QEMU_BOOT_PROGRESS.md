@@ -12102,3 +12102,75 @@ wait_int(IS_XFERCPL, 2000);
 1. **W2 每批抽检第 1 块**（48 次读回）—— VM 全过 ✓，真机建议保留（成本低、能早停）
 2. **SRAM 布局**：payload `0xFE020000`，镜像 `0xFE100000`，12MB 到 `0xFED00000` ✓ 不冲突
 3. **真机执行必须由用户确认接线/拆机**（不可逆物理操作）
+
+---
+
+## 一百三十六、🏆🏆 Round 133：**最小修复方案（只改 2 字节）完整验证通过**
+
+### 136.1 原理：改 FAT 目录项的删除标记
+
+```
+/etc/ld.so.preload 在 FAT 根目录里 = 【LFN 项 + 8.3 短名项 "LDSO~1.PRE"】
+FAT 删除标记 = 目录项第一个字节改成 0xE5
+⇒ 修复 = 读根目录扇区 → 找到项 → 标 0xE5 → 写回
+⇒ 写入量 512B（实际变化 2 字节）
+```
+
+### 136.2 FAT 参数（从 nflasha10 引导扇区解析）
+
+```
+BytesPerSector=512  SectorsPerCluster=32  ReservedSectors=1  NumFATs=1
+RootEntries=512     SectorsPerFAT=3       FS=FAT12   TotalSectors16=24576
+★ 根目录起始扇区(分区内) = 1 + 1×3 = 4    ⇒ eMMC 块 0x56004
+★ 根目录占 32 个扇区 (512 项 × 32B)
+```
+
+### 136.3 VM 实测（`<repo>/minimal_fix/`，4,476 B payload）
+
+```
+==== ZV10 MINIMAL FIX: delete /etc/ld.so.preload ====
+ [1] mmc init OK
+ [2] read blk 0x56008 ret=0
+   [2] first=0x41 attr=0x0f name=Al.d...s.o.      ← LFN 项
+   [3] first=0x4c attr=0x20 name=LDSO~1  PRE      ← 8.3 短名项
+ [3] FOUND ld.so.preload at entry 3
+ [4] mark LFN entry 2  +  mark short entry 3
+ [5] write back ret=0
+ [6] readback ret=0
+     短名项 first=0xe5  ✓✓ 已删除！
+```
+
+### 136.4 ★★★ 主机侧验证（决定性）
+
+| 检查项 | 结果 |
+| --- | --- |
+| `mdir` 里 `ld.so.preload` | **已消失** ✓ |
+| 文件数 | 33 → **32**（正好少 1 个）✓ |
+| 其他文件（config.spec/images/kikilog.dat/nsswitch.conf/…） | **全部完好** ✓ |
+| **字节级对比（整个 12MB 分区）** | **只有 2 个字节变化** ✓✓✓ |
+
+```
+offset 0x001040: 0x41 -> 0xE5   (LFN 项)
+offset 0x001060: 0x4C -> 0xE5   (短名项)
+```
+
+### 136.5 与"写 12MB"方案对比
+
+| 项 | 最小修复（B'） | 写 12MB（A） |
+| --- | --- | --- |
+| 写入量 | **512 B（实际 2 B）** | 12,582,912 B |
+| 需 SRAM 放 12MB | ❌ 不需要 | ✅ 需要 |
+| 真机耗时 | **几秒** | 约 35 分钟 |
+| payload 大小 | **4,476 B** | 9,896 B |
+| 风险 | 写错 1 扇区 | 写错 12MB |
+| VM 验证 | ✅ **字节级仅 2 处变化** | ✅ md5 完全一致 |
+
+**⇒ 建议抢救包以**方案 B'**为首选，方案 A 作后备。**
+
+### 136.6 真机执行注意点（实测踩到的）
+
+1. **文件是「LFN 项 + 8.3 短名项」成对出现** ⇒ 两项都标 `0xE5` 更干净
+   短名是 **`LDSO~1.PRE`**（不是 `LD.SO.PRE`）⇒ 判定用 `name[0..3]=="LDSO"` ✓
+2. **根目录有 32 个扇区，文件项可能在任一扇区**
+   ⇒ 真机 payload 应**扫描 `0x56004` ~ `0x56023` 全部 32 个扇区**，找到就停
+3. 只标短名项也能"删除"，但两项都标更彻底
