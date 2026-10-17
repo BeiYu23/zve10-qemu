@@ -127,21 +127,32 @@ GRM_*                  ── 图形驱动接口（Fill / Rectblit / BitmapWrite
 
 ### C3. 显示链路：现状与路线
 
-现状（实测）：
+**实测结论（进程内探针，见 [`display/probe/`](display/probe/)）：**
+
 ```
-App 打开的设备: /dev/uipc, /dev/mem, /dev/usb/kikilog
-⇒ 尚未 open("/dev/dmpgles2")，即还没进入显示初始化
+探针注入                    5 个进程       ← 已可执行任意代码（LD_PRELOAD）
+GRM_* 绘图接口调用次数        0             ← ★ 从未绘图
+GraphicsEngine 初始化次数     0             ← ★ 图形引擎从未启动
+屏幕/序列创建次数             0             ← ★ 从未创建 UI
+viewUnified*.so 加载          0             ← ★ View 层从未加载
+dlopen 失败项                0             ← 库加载全部成功
 ```
 
-三条可行路线：
+**⇒ 「没有画面」的根因不是缺少 GPU/Mali 模型，而是【UI 从未被创建】。**
+App 的初始化按序加载基础设施库，停在网络栈（`libWlanResource`/`libWlanAdjust`）后
+不再前进。给 `WlanAdjust::start` 打"返回成功"的半桩能再推进 6 个库，
+但会崩在 `uipc` 共享区（桩未建立真实状态）。
 
-1. **软件 GPE + ramfb**（推荐的移植路线）
-   参考社区 a7C II 工作（见致谢）的思路：用 CPU 实现 GPE 光栅/精灵 + LZ77 解码，
-   把帧提交到 QEMU 的 `ramfb`。本机型的对应物是 `GRM_gpermFillrect` /
-   `GRM_gpermRectblit` / `GRM_bitmapWriteLockBits`。
-2. **直接驱动场景图**
-   `andromeda::Render2DWalker` 是纯软件遍历器，可绕过 GPU 直接把 `Node2D` 树光栅化。
-3. **建模 Mali / SUGILITE**（研究级工作量，不推荐起步）
+三条可选路线：
+
+| 路线 | 做法 | 评价 |
+|------|------|------|
+| **1（推荐）** | **强制创建屏幕**（照社区 a7C II 的思路）：在 preload 里直接调用屏幕/序列创建入口 | 只需"能调一个函数"，不必理解整个网络栈 |
+| 2 | 完整模拟 WiFi/以太网服务 | 要理解 UIPC 服务协议，且仍可能卡在传感器/CP |
+| 3 | 建模 Mali / SUGILITE | 研究级；且 `andromeda::Render2DWalker` 是纯软件遍历器，**未必需要** |
+
+对本机型而言，路线 1 的落点是 `GRM_gperm*`（GPE 原语）与
+`ux::gfxeng::Screen` / `AbstractSequenceFactory::CreateSequence`。
 
 ### C4. 路线图与工期预估（诚实估计）
 

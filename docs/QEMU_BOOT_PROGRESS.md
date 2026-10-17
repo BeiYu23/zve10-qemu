@@ -13826,3 +13826,92 @@ bootin.elf 字符串: /usr/bin/qsi.elf & 、 /usr/bin/qsi.elf noevent0 &
 2. **为什么 App 在 ~33s 后不再产生任何 console 可见活动**（但仍运行到 70s）
    —— 若 klog 转储可用，可直接看到它卡在哪一步
 3. **`/setting/mode/cmode` / `qsi.elf` 缺口是否影响**（已排除 dmode）
+
+---
+
+## 一百六十一、🏆 Round 188：**进程内探针建立 + 决定性结论「UI 从未被创建」**
+
+### 161.1 关键技术前提：GRM_* 与 UI 入口可被 LD_PRELOAD 拦截
+
+```
+libObj.so 中：
+  GRM_gpermFillrect      R_ARM_JUMP_SLOT ✓
+  GRM_gpermRectblit      R_ARM_JUMP_SLOT ✓
+  GRM_bitmapWriteLockBits R_ARM_JUMP_SLOT ✓
+  ux::gfxeng::GraphicsEngine::sys_getInstance  R_ARM_JUMP_SLOT ✓
+  SeqController::CreateAndAddSequence          R_ARM_JUMP_SLOT ✓
+⇒ 全部走 PLT ⇒ 可被 preload 拦截（本机型可做进程内探针）
+```
+
+### 161.2 ★ 注入点排查（三次尝试）
+
+| 注入方式 | 结果 |
+| --- | --- |
+| `/setting/mode/preload`（bootin 会设 LD_PRELOAD） | ❌ 未生效（有条件判断） |
+| rootfs `/etc/ld.so.preload` | ❌ 未生效（rootfs 的 `/etc` 被覆盖） |
+| **nflasha10 根目录放 `ld.so.preload`** | ✅ **生效（5 个进程加载）** |
+
+**⇒ 真机的 `/etc` 实际来自 nflasha10（vfat），不是 rootfs** —— 这是一个重要事实更正。
+
+探针库：零依赖（只用 `svc 0`），10~11 个 hook，构建 6.8~7.1 KB。
+
+### 161.3 ★★★★ 决定性结论
+
+```
+GRMLOG alive            : 5      ← 探针注入成功
+GRMLOG GRM_*            : 0      ← ★ 从未调用任何绘图接口
+GraphicsEngine          : 0      ← ★ 图形引擎从未初始化
+CreateAndAddSequence    : 0      ← ★ 从未创建任何屏幕/序列
+viewUnified*.so         : 0      ← ★ View 层从未加载
+dlopen                  : 55 次，全部成功（无失败项）
+```
+
+**⇒ 「没有画面」的根因不是缺少 GPU/Mali 模型，而是【UI 从未被创建】。**
+之前在 `dmpgles2 ioctl=0` 上的推断被完全证实并细化。
+
+### 161.4 App 的初始化顺序（dlopen 序列，实测）
+
+```
+libsencore → libosal_uipc → libosal_utm → libosal_ulogio → libInfraInterchipDatatrans
+→ libNVM → libbackup → libSaveLoadSettings → libbkdmn → libOnDemandLoader
+→ libInfraKikiLogGenerator → libInfraAccessLog → libSysDef → libMWF → libi2cuipc
+→ libI2CRight → /usr/lib/libObj.so（反复 dlopen，句柄复用）→ libInfraError
+→ libJiritsu → libAtn → libGetLog → libread_refresh
+→ libInfraSystemProperty → libInfraCrypt → libInfraSetupFile → libResourceBluetooth
+→ libUsbBusPower → libInfraUsbCmn → libUsbControl → libBusPower
+→ libInfraMediaCommon → libInfraHdmi → libInfraFsys → CameraOnDemandSaver
+→ libFsysPosixWrapper → libInfraOptionInstall → libInfraOptionInstaller
+→ libInfraAirplaneMode → libInfraNfc → libInfraBluetooth → libInfraNetInitializer
+→ libWlanResource → libWlanAdjust   ← ★ 停在这里（WiFi）
+```
+
+### 161.5 WiFi 桩实验（部分成功，但暴露"半桩"问题）
+
+**给 `WlanAdjust::start` 返回 0 后：**
+- App 越过 WiFi，**又加载 6 个库**：
+  `libWiredLanResource` / `libWiredLanAdjust` / `libNetServiceEther` /
+  `libInfraNetConnectionManagerEther` / `libInfraEthernetService` /
+  `libNetService` / `libInfraIPsec`
+- guest 时间 **34.9s → 39.1s**
+
+**但随后崩溃：**
+```
+page permission fault (0x8000001f) at 0x0479c800
+该地址落在 【uipc】 映射 (0x046c6000-0x047c6000 rw-)
+⇒ 桩只返回 0、未建立真实 UIPC 状态 ⇒ 后续用到未初始化数据
+```
+**⇒ 结论：「半桩」不是正确方向。要么完整模拟该服务，要么改走「强制创建屏幕」路线。**
+
+### 161.6 下一步（两条路，优先级明确）
+
+**路线 1（推荐，照 a7c2 的做法）：强制创建屏幕**
+- 在 preload 里（已可执行任意代码）调用屏幕/序列创建入口
+- 需要先找到：本机型 libObj.so 里与 a7c2 `apply(manager,&from,&to,&restore,...)`
+  或 `open_screen(this,&id1,&id2,&id3)` 对应的入口
+- 线索：`AbstractSequenceFactory::CreateSequence`、`ux::gfxeng::Screen`、
+  `viewUnified*` 里的 CmnView 类
+
+**路线 2：完整模拟 WiFi/以太网服务**
+- 工作量大（要理解 UIPC 服务协议），且仍可能卡在传感器/CP
+
+**⇒ 优先做路线 1，这只需"能调用一个函数"，不需要理解整个网络栈。**
