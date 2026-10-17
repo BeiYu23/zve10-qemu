@@ -667,3 +667,29 @@ SYSCALL_DEFINE3(ioctl, unsigned int, fd, unsigned int, cmd, unsigned long, arg)
  out:
 	return error;
 }
+
+/* ============================================================================
+ * UIPCRET —— 记录 UIPC ioctl 的返回值（2026-10-18 追加）
+ *
+ * 为什么放在内核：用户态 LD_PRELOAD 拦 ioctl 会让 App 在 0xc 处提前崩溃
+ * （ioctl 太中心化，早期启动阶段 dlsym 未就绪 ⇒ 全部 ioctl 返回 -1）。
+ *
+ * 位置：SYSCALL_DEFINE3(ioctl) 里 do_vfs_ioctl() 之后：
+ *
+ *     error = do_vfs_ioctl(filp, fd, cmd, arg);
+ *     if ((cmd & 0xff000000U) == 0x80000000U) {
+ *         char c0 = current->comm[0], c1 = current->comm[1];
+ *         if ((c0 == 'i' && c1 == 'm') || (c0 == 's' && c1 == 'e'))
+ *             printk(KERN_ERR "UIPCRET %s cmd=0x%08x ret=%d\n",
+ *                    current->comm, cmd, error);
+ *     }
+ *  out_fput:
+ *
+ * 同时把 UIPCARG 的消息头从 2 字扩到 6 字：f0 = 目标队列 id（例：0x8f013a = sen.elf），
+ * f1/f2/... = 该命令 payload 的前几个字。
+ *
+ * 实测结论（ZV-E10）：
+ *   im.elf  cmd=0x80000005 返回 -1020（超时），目标 0x8f013a、消息类型 0xff
+ *   sen.elf 存活，其它类型的消息均成功
+ *   ⇒ App 卡在"等待 sen.elf 对 type 0xff 的同步回复"上，UI 永不初始化
+ * ========================================================================== */

@@ -13915,3 +13915,85 @@ page permission fault (0x8000001f) at 0x0479c800
 - 工作量大（要理解 UIPC 服务协议），且仍可能卡在传感器/CP
 
 **⇒ 优先做路线 1，这只需"能调用一个函数"，不需要理解整个网络栈。**
+
+---
+
+## 一百六十二、Round 189：**UIPC 返回值追踪 —— 找到"在等谁"**
+
+### 162.1 用户态 ioctl 钩子是错误方向（记录以免重复）
+
+给 preload 加 `ioctl` 钩子后，App **在 0xc 处提前崩溃**（`page translation fault at 0x0c`，
+`ZZGOT ip=1 r3=0`）。原因：`ioctl` 太中心化，早期启动阶段就大量调用，
+一旦 `dlsym(RTLD_NEXT,"ioctl")` 尚未解析成功就会让所有 ioctl 返回 -1 ⇒ 全局崩。
+
+**⇒ 规则：`ioctl` 类"基础设施级"调用不要放在用户态 preload 里拦；改在内核里记录。**
+
+### 162.2 内核侧新增 `UIPCRET`（安全）
+
+```c
+/* SYSCALL_DEFINE3(ioctl) 里，do_vfs_ioctl 之后 */
+error = do_vfs_ioctl(filp, fd, cmd, arg);
+if ((cmd & 0xff000000U) == 0x80000000U) {
+    if (comm 是 im/sen)
+        printk("UIPCRET %s cmd=0x%08x ret=%d\n", current->comm, cmd, error);
+}
+```
+同时把 `UIPCARG` 的消息头从 2 字扩到 6 字（`f0..f5`），`f0` 即目标队列 id。
+
+### 162.3 ★★★ 实测：谁在失败、发给谁
+
+**失败分布（按 进程 × 命令）：**
+```
+21  sen.elf cmd=0x80000006 (__k_4u_snd_sync_direct)
+ 7  im.elf  cmd=0x80000005 (__k_4u_snd_sync_msg)   ← 返回 -1020 = 超时
+ 2  sen.elf cmd=0x8000000a (valloc)
+ 2  sen.elf cmd=0x80000004 (snd_msg)
+ 1  sen.elf cmd=0x80000010
+```
+
+**成功分布（同一运行）：**
+```
+38  sen.elf cmd=0x8000000a    19 sen.elf cmd=0x8000000b    19 sen.elf cmd=0x80000005
+19  sen.elf cmd=0x80000004     9 im.elf cmd=0x8000000b      9 im.elf cmd=0x8000000a
+```
+
+**⇒ sen.elf 是活的、且它的多数消息都成功** ⇒ 不是"sen.elf 没起来"。
+
+### 162.4 ★★★ 消息头揭示了目标
+
+```
+UIPCARG im.elf cmd=0x80000005 f0=0x8f013a f1=0x5eb20b54 f2=0xff f3=0x4626ecc f4=0xc291 f5=0x94
+                                ↑ 目标队列           ↑ 消息类型/长度
+```
+- `0x8f013a` = sen.elf 注册的处理器 id
+- **超时的那些消息：目标 = `0x8f013a`，`f2 = 0xff`**
+- 其它消息也发往 `0x8f013a`，但类型不同（`0x4094000`/`0x40`/`0x10`）且**成功**
+
+**⇒ sen.elf 对"类型 0xff"的消息不回 ⇒ 很可能该类消息需要真实传感器/CP 响应**
+**⇒ App 的启动因此停在这里，UI 永远不会被创建**（与本轮 preload 探针结论完全一致）
+
+### 162.5 结论与路线
+
+```
+App boot 停点 = 等待 sen.elf 对 msg type 0xff 的同步回复（1000ms 超时，反复重试）
+              ⇒ 后续的 UI 初始化永不执行
+```
+
+**因此路线 A（强制创建屏幕）依然是正确选择**：
+- 不要试图模拟整条传感器链（那需要真实成像模型）
+- 只要能在 App 进程内把"屏幕创建"这一步直接做掉，就能绕过这个等待
+
+**具体落点（已定位符号）：**
+```
+viewUnified2.so:
+  CmnViewExpMode::openNextShootingView()
+  CmnViewMgrSetSave::initialize(ViewBaseProduct*)
+  CmnViewPbOpenUtil::openPlayback(ViewBaseProduct*, OpenInfo)
+  CmnMenuTableUtil::initMenuData(CmnViewMenuData**, CmnViewMenuItemStruct*, CmnViewMenuExclusiveIF*)
+libObj.so:
+  ux::gfxeng::GraphicsEngine::sys_getInstance()
+  OBJAVBBCBASECLASS::SeqController::CreateAndAddSequence(uint, MWF::ObjMsg*)
+```
+
+**下一步：**先确认 `ViewBaseProduct` 的构造路径（谁 new 它、需要什么参数），
+再在 preload 里的合适时机（App 主循环起来后）调用视图创建入口。
