@@ -12563,3 +12563,76 @@ ZZTGKILL ... sig=6                        ← abort
 2. 反汇编 `libc-2.11.2.so` 的 `0x24d8f`(raise) / `0x25bdf`(abort) 的调用者，看 abort 是否由 `__libc_message` 触发
 3. 用 `MALLOC_CHECK_`/`M_CHECK_ACTION` 预加载（`ab_mchk.img` 已有此能力）确认是否有 libc 内部一致性检查失败
 4. 检查 Infra 框架的线程创建/销毁时序（THREAD_INFRA0 是 Infra 框架的线程）
+
+---
+
+## 一百四十二、Round 139：**assert 移除 + 库符号链接 ⇒ App 推进到 31~40s**
+
+### 142.1 修法①：libc `__assert_fail` → `bx lr`（2 字节）
+
+```
+libc-2.11.2.so @0x1f98c: 80 b5 (push {r7,lr}) → 70 47 (bx lr)
+⇒ __assert_fail 直接返回，不再 abort
+⇒ 背景: __pthread_mutex_lock 的 assert(mutex->__data.__owner==0) 失败
+        （此时 LLL 锁已获取成功，仅 __owner 字段残留 ⇒ 继续执行安全）
+```
+
+**安装方式（原地 debugfs，保留设备节点）：**
+```sh
+cp n7.img n7_libc.img
+debugfs -w -R "rm /lib/libc-2.11.2.so" n7_libc.img
+debugfs -w -R "write <patched> /lib/libc-2.11.2.so" n7_libc.img
+# 校验: 读回 md5 == 补丁版 ✓ ; /dev 仍 696 条 ✓ ; e2fsck 通过 ✓
+```
+
+### 142.2 修法②：rootfs `/lib` 建 68 个符号链接 → `/usr/lib`
+
+```
+背景: App 先探测 //lib/XXX.so（失败）再回退 /usr/lib/XXX.so
+      ⇒ MISSSO 183 次
+修法: debugfs symlink /lib/<name> /usr/lib/<name>（68 个，全部成功）
+效果: MISSSO 183 → 30 ✓
+（但堆损坏仍在 ⇒ 证明与 dlopen 错误路径无关）
+```
+
+### 142.3 ★★★ 堆损坏的精确归因（重要修正）
+
+**之前以为 `/dev/tty` 修复消除了堆损坏 —— 实际是**当时 App 在更早的 mutex assert 处 abort，根本没走到堆损坏点**。
+去掉 assert 后堆损坏复现 ⇒ **堆损坏从未被修复，只是被掩盖。**
+
+**完整 glibc Backtrace（决定性）：**
+```
+*** glibc detected *** realloc(): invalid next size: 0x0002b4f0
+  libc(+0x57998) → libc(+0x5a906) → realloc+0xbd → realloc+0x255
+  → vasprintf+0xab → asprintf+0x13
+  → dlerror+0x9f                    ← ★ dlerror 内部用 asprintf（只是探测器）
+  → libosal_utm.so(+0xb26)          ← ★ 调用 dlerror 的模块
+  → libpthread(+0x509c)
+```
+
+**⇒ `dlerror()` 只是**检测器**；真正的越界写发生在更早。**
+
+**被破坏的块地址（多次运行）：`0x2b7f0` / `0x2b878` / `0x2cd88` / `0x2b4f0`
+⇒ 全在 `0x2b000~0x2e000`（约 170KB 低堆）⇒ **早期分配**（在 libguard 构造器之前）⇒ 所以 guard 抓不到**
+
+### 142.4 本轮实测（`ab_sym.img`）
+
+| 指标 | 值 |
+| --- | --- |
+| `ZZTGKILL`（abort） | **0** ✓ |
+| `Illeagle Instruction` | **0** ✓ |
+| `MISSSO` | **183 → 30** ✓ |
+| `glibc detected`（堆损坏） | 1（**根因仍在**） |
+| `page translation fault` | 1（下游症状） |
+| UIPC 调用 | 1039 |
+| 运行到 | **31.7s**（`ab_na_guard` 里到 **40.5s**） |
+
+**⇒ App 从"永久卡死"推进到 31~40s，但仍未走到 `dmpgles2` 显示初始化。**
+
+### 142.5 下一步（堆损坏根因）
+
+1. **QEMU gdb 硬件观察点**：跑到 29s 暂停 → `watch` 被破坏块的 chunk header → continue → 抓写入者
+   （地址每次略变，需先在同一次运行里定位）
+2. **给低堆区加哨兵**：在 `0x2b000~0x2e000` 的 chunk header 上加保护字节（需要 hook 早期分配）
+3. **patch glibc `dlerror` 用静态缓冲**（移除探测器）⇒ 看 App 继续跑到哪里、是否暴露更明确的现场
+4. **继续逐点修复**：每消除一个崩溃点，App 都前进一段（已反复验证）
