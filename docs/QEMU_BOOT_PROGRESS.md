@@ -12694,3 +12694,62 @@ ZZTGKILL THREAD_INFRA0 pid=124 tgid=139 sig=6 pc=libc+0x15796 lr=libc+0x24d8f
 ```
 
 **⇒ 下一步：追踪 `abort()` 的直接调用者（可在 libc 的 `abort` 入口加内核追踪，或 patch `abort` 本身让它返回）。**
+
+---
+
+## 一百四十四、Round 141：**abort 消除 ⇒ 暴露 NULL 解引用（0x00000006）**
+
+### 144.1 追加修法：libc `abort` → `bx lr`
+
+```
+libc-2.11.2.so @0x25ae0: 68 4d (ldr r5,[pc,#..]) → 70 47 (bx lr)
+⇒ abort() 直接返回，不再杀进程
+```
+
+### 144.2 实测（`ab_final2.img`）
+
+| 指标 | ab_all | **ab_final2** |
+| --- | --- | --- |
+| `glibc detected` | 0 | **0** ✓ |
+| `ZZTGKILL`（abort） | 2 | **0** ✓ |
+| `Illeagle Instruction` | 1 | **0** ✓ |
+| `MISSDEV /dev/tty` | 0 | **0** ✓ |
+| **UIPC 处理器种类** | 38 | **39** ✓ |
+| `page translation fault` | 0 | **1**（新暴露） |
+| 运行到 | 31.8s | 29.5s |
+
+### 144.3 新卡点：NULL 解引用
+
+```
+program: /usr/bin/im.elf(THREAD_INFRA0) (pid: 139)
+address: 00000006, trap_no: 0x0e, error_code: 0x17
+page translation fault (0x017) at 0x00000006
+```
+**⇒ `0x00000006` = NULL + 6 ⇒ 典型的「结构体成员访问，但基址为 NULL」**
+**⇒ App 的某组件返回 NULL 而调用方未检查（Infra 框架线程）**
+
+### 144.4 本轮累计修法清单（8 项，全部在 `ab_final2.img` 里）
+
+| # | 修法 | 层 |
+| --- | --- | --- |
+| 1 | liro `b 2e0` + 固件前注入 complete | nflasha15:/kmod/liro.ko |
+| 2 | backup.ko 补丁版 | nflasha15:/kmod/ |
+| 3 | libosal_uipc.so @0x26c0=7a68 | nflasha15:/lib/ |
+| 4 | im.elf @0x2f46=00bf | nflasha15:/bin/ |
+| 5 | `/dev/tty` → `/dev/null` 符号链接 | rootfs:/dev/ |
+| 6 | libc `__assert_fail` → `bx lr` | rootfs:/lib/libc-2.11.2.so |
+| 7 | 68 个库符号链接 `/lib/X → /usr/lib/X` | rootfs:/lib/ |
+| 8 | **libc `abort` → `bx lr`** | 同上 |
+
+### 144.5 当前整体进度（对 goal 的意义）
+
+```
+✅ 固件完整启动 / 33 模块 / init chroot
+✅ App 稳定运行到 ~30s，39 种 UIPC 处理器可达
+✅ 重大崩溃全部消除：liro 卡死 / 堆损坏 / mutex assert / abort
+❌ 剩余：THREAD_INFRA0 的 NULL 解引用（0x00000006）
+❌ 显示链路 dmpgles2 → grm_gles → Mali（ioctl 仍为 0）
+❌ 输入链路
+```
+
+**⇒ 每消除一个崩溃点，App 都前进一段（已反复验证）。下一步：定位 NULL 来源。**
