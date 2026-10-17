@@ -12391,3 +12391,110 @@ tsk_entry:  ... 调用固件入口 ...
 # 3) truncate -s 300M + mke2fs -d + e2fsck
 # 4) 写回 ab_qf.img 的 0x400000+0x2D800000
 ```
+
+---
+
+## 一百四十、🏆🏆🏆 Round 137：**liro 关卡彻底打通 —— App 从"永久卡死"到"跑完固件初始化"**
+
+### 140.1 完整真相（此前所有推测都被推翻并修正）
+
+**反汇编 `liro.ko` 的 `.init.text`（file 0x84ac，VMA 0）得到确定结论：**
+
+```asm
+liro_init:
+  50: ldr r1, [r4,#0x2c]         ; adr 参数
+  60: addge r1, r1, #0x60000000  ; adr>=0 ⇒ VA = adr+0x60000000
+  68: str r1, [r4,#0x2c]         ; cfg = 固件 VA（0x635C6000）
+  a4: bl kthread_create_on_node   ; 起 tsk_entry(data = 局部 completion)
+  cc: bl wait_for_completion      ; ★ 等 completion
+
+tsk_entry:
+  28c: ldr r4, [->0x468]
+  290: ldr r2, [->0x494]  ; r2 = 0x4c49524f "ORIL"（magic）
+  298: ldr r1, [r3,#4]    ; hdr->magic
+  29c: cmp r1, r2
+  2a4: bne 2bc            ; magic ≠ → 打印 + complete（失败路径）
+  2a8: ldr r1, [r3,#8]    ; hdr->version
+  2ac: cmp r1, #4
+  2b0: beq 2e0            ; ★ version==4 → 跳 0x2e0（★ 正常"跑固件"路径）
+  2b4: (版本不符) → 打印 → complete（失败路径）
+  ; ---- 0x2e0 = 固件路径 ----
+  2e0: 'API support list' + entry 表打印
+  428: 'start entry_pre(%p)' 打印
+  434: ldr r3, [r4,#0x2c]      ; cfg
+  438: mov r0, #0
+  43c: ldr r3, [r3,#0xc]       ; entry_pre
+  440: blx r3                  ; ★★★ 调用固件 entry_pre
+  444: 'entry_pre end' 打印
+  450: 'end entry_pre' 打印
+  454: mov r0, sl
+  458: bl complete             ; ★ complete（但走不到！）
+```
+
+### 140.2 ★★★ 根本原因：**`entry_pre` 不返回**
+
+**实测时间线（原始 liro.ko）：**
+```
+28.273  start entry_pre(635c6044)
+28.28-28.30  固件起了 280 个 liro-kliro_* 内核线程
+28.730  end entry_pre        ← ★ 这是【固件自己】打印的，不是驱动
+28.733  start entry_main(635c6058)
+29.414  end entry_main
+29.47   udm_liro 仍在 wait_for_completion (r4=0x7fffffff)   ← complete 永不执行
+```
+
+**⇒ `entry_pre` 是固件的**主循环**，`blx r3` 永不返回 ⇒ 0x454/0x458 的 `complete()` 永不执行
+⇒ `liro_init` 永久阻塞 ⇒ `im.elf` 卡在 `insmod(liro)` 里，日志静止**
+
+### 140.3 ✅ 修复（两处，共 12 字节）
+
+```
+① file 0x875c (.init.text 0x2b0): 0a00000a (beq 2e0) → 0a0000ea (b 2e0)
+   ⇒ 无条件走固件路径（magic 检查仍生效）
+② file 0x88d4 (.init.text 0x428): e59f1090 (ldr r1,[r6,#0xc]) → e1a0000a (mov r0, sl)
+            0x88d8 (.init.text 0x42c): ebfffffe (bl printk)     → eb000009 (bl complete)
+            0x88dc (.init.text 0x430): ebfffffe (bl printk)     → e1a00000 (nop)
+   ⇒ 在调用 entry_pre **之前**触发 complete（用 0x458 的 bl 编码重算 imm24）
+```
+
+**⇒ 既保证固件完整运行，又让 `complete()` 触发 ✓**
+
+### 140.4 ★★★ 修复后实测（`ab_fix7.img`）
+
+| 指标 | 修复前（原始） | **修复后** |
+| --- | --- | --- |
+| `ZZCOMPLETE udm_liro` | **0** | **2** ✓ |
+| `EXIT udm_liro` | **0** | **2** ✓ |
+| 固件 entry_pre/entry_main | 跑了但不返回 | **完整运行 ✓** |
+| 固件起的线程 | 280 | **280 ✓** |
+| App 状态 | **永久卡在 insmod** | **★ 解锁，推进到 28.5s** |
+| UIPC 调用 | 停滞 | **1036** ✓ |
+
+**⇒ **App 跨过了此前最致命的一个关卡** ✓**
+
+### 140.5 剩余卡点：App 的 Infra 层 abort
+
+```
+program: /usr/bin/im.elf(THREAD_INFRA0) (pid: 139)
+Illeagle Instruction at 0x042c6796   (= libc-2.11.2.so + 0x15796)
+⇒ 即 abort() → tgkill 路径（笔记 §47/§54 记录过的同一处）
+
+abort 前的失败线索:
+  [ulogio] failed to load config from driver!
+  [ulogio] ulogiod init failed
+  [ulogio] __ulogiod_main_thread_entry, __ulogiod_init failed
+  init ko_insmod:(1228): error(1): insmod /usr/kmod/osal_ulogio.ko ulogio_initfile=/setting/ulogio.bin
+⇒ 但 /setting/sen/smode 能打开（SENOPEN OK）⇒ /setting 是挂着的
+⇒ 待查：ulogio 读配置失败的具体原因（可能是某个 ioctl / 设备节点缺失）
+```
+
+### 140.6 本轮产出的镜像
+
+| 镜像 | 内容 | 结果 |
+| --- | --- | --- |
+| `ab_liro.img` | liro beq→nop（错误方向） | 固件没跑 |
+| `ab_tty.img` | `/dev/tty` → `/dev/null` | **堆损坏消除 ✓** |
+| `ab_fix4.img` | + dual patch（错误方向） | — |
+| `ab_fix5.img` | **`b 2e0` 无条件** | **固件完整运行 ✓** 但 complete 未触发 |
+| `ab_fix6.img` | + 跳过 liro_init 等待 | 过早返回，崩 |
+| **`ab_fix7.img`** | **`b 2e0` + 固件前注入 complete** | **★ liro 完全通过 ✓** |
