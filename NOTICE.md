@@ -19,7 +19,20 @@
 - 文档中出现的商标、产品名归其各自所有者所有
 - 本项目与 Sony 无关联
 
+## 第三方参考与致谢
+
+本项目的许多思路来自公开研究，包括但不限于：
+
+- **Lost-week-1025 / CXD90045-FPSU**
+- **DavidBuchanan314** —— *ILCE-7M4-RE*、*Sony-ILCE-7M4-Linux*
+- **ma1co** —— *Sony-PMCA-RE*、PMCA-QEMU、`fwtool.py`
+- **chocotan/a7c2-re** —— a7C II 原生 QEMU 相机实验
+- **YuuLuo/a7c2-service-preload** —— 服务模式 / `ld.so.preload` 先行工作
+
+上述项目**不随本仓库分发**，各自遵循其自身许可。
+完整清单与逐项说明见 [`docs/ACKNOWLEDGEMENTS.md`](docs/ACKNOWLEDGEMENTS.md)。
+
 ## Licensing
 
-- 代码（`scripts/`、`patches/`）：**MIT**（见 [LICENSE](LICENSE)）
-- 文档（`docs/`）：**CC BY 4.0**
+- 代码（`scripts/`、`patches/`、`rescue/`、`display/`、`tools/`）：**MIT**（见 [LICENSE](LICENSE)）
+- 文档（`docs/`、`hardware/`、`rescue/docs/`）：**CC BY 4.0**

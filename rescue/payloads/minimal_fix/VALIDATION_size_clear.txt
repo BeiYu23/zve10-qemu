@@ -1,0 +1,15 @@
+==== ZV10 MINIMAL FIX: delete /etc/ld.so.preload ====
+ [1] mmc init OK
+ [2] read blk 0x56008 ret=0
+   [0] first=0x41 attr=0x0f name=A..z.v.1.0.
+   [1] first=0x5a attr=0x20 name=ZV9744~8   
+   [2] first=0x41 attr=0x0f name=Al.d...s.o.
+   [3] first=0x4c attr=0x20 name=LDSO~1  PRE
+   [end]
+ [3] HIT short entry 3  LFN=[ld.so.preload]
+ [4] 原 size=0x0000000000000104
+ [4] size 已清 0（档2：文件变 0 字节，preload 失效）
+ [5] write back ret=0
+ [6] readback ret=0
+     读回 size=0x0000000000000000  ✓✓ size 已为 0，preload 失效！
+==== DONE ====
