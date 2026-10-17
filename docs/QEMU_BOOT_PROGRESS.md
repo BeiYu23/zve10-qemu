@@ -13615,3 +13615,93 @@ NEUTRAL_CONTENT = b"\n" * 512    # ★ glibc 按空白分割 ⇒ 512 换行 = �
 1. **在 im.elf/appFw 的符号/字符串里找 "create_screen"、"create_menu"、"Menu" 相关**
 2. **找 a7c2 的 `0x1e78870` 在 ZV-E10 里的对应物**（需要先知道 a7c2 那个函数长什么样）
 3. **从 a7c2 的源码里看它是怎么"9 参数入口"的**（可能需要 arm64 反汇编）
+
+---
+
+## 一百五十九、🏆🏆🏆🏆🏆 Round 186：**ZV-E10 的 UI 框架架构完整揭示（重大发现）**
+
+### 159.1 关键库定位（60 个加载库里）
+
+| 库 | 大小 | 作用 |
+| --- | --- | --- |
+| **`libObj.so`** | **21,305,528 B（21 MB）** | ★ **UI 主库**：`ux::gfxeng` + `stella` + `andromeda` + `libra` |
+| **`viewUnified2.so`** | **14,284,732 B（14 MB）** | ★ View 层（CmnView* 系列） |
+| **`viewUnified4.so`** | 3,287,604 B | View 层 |
+| `viewUnified3/5/6/7/8.so` | 283KB~941KB | View 层分片 |
+| `libmpr.so` | 13,021,036 B | DVD/媒体处理（**不是** UI） |
+| `libMWF.so` | 247,776 B | 事件/消息框架（EventBase/ObjMsg/ObjLock） |
+| `libBizFw.so` | 318,780 B | 业务框架（`OBJAVBBCBASECLASS::SeqController`） |
+| `libBizFw2.so` | 249,964 B | ADF 数据流（音视频） |
+
+### 159.2 ★★★ 完整 UI 框架架构（C++ 符号未 strip）
+
+```
+ux::gfxeng（图形引擎）
+  ├─ GraphicsEngine::sys_getInstance()        ← 引擎单例
+  ├─ Screen / ScreenBase / Screen3D
+  │    └─ Screen::Layer2D_UXEngine
+  ├─ Sprite（setRectColor/Pos/Size, setCurRectNum, setPatchImageCache）
+  ├─ TextSprite（setString/setFont/drawText/freezeDrawText/getRotation）
+  ├─ MultiLineTextSprite（setOrigin/setScrollable）
+  ├─ Element（setLocalPos/setVisible）
+  └─ ResourceUpdater.visit(andromeda::NodeBase)
+
+andromeda（场景图）
+  ├─ Window / Canvas / Scene3D / OffScreenRender3D
+  ├─ NodeBase / Node2D / Node3D
+  ├─ Composite2D / Image2D / Rectangle2D / Visual2D / LayerBase / ZSortList
+  └─ Node2DWalker / Update2DWalker / Render2DWalker / Update3DsWalker / Render3DsWalker / Node3DsWalker
+
+stella（UI 主题）
+  ├─ CColor
+  └─ TCompositeNode<andromeda::Node2D / Node3D / NodeBase>
+
+libra（资源）
+  └─ ImageData
+
+GEN_*（生成的控件）
+  └─ GEN_Label（setImageLoadCallback）/ GEN_Panel（setBlendMode）
+
+GRM（图形驱动接口）
+  ├─ GRM_fbrmSetScreenPreference
+  ├─ GRM_screenGetOnBitmap
+  └─ [CLM] disp_screen : %d x %d         ← 屏幕尺寸
+```
+
+### 159.3 ★★★★★ 关键结论：UI **可以完全软件渲染**
+
+**证据：**
+1. **`andromeda::Render2DWalker` / `Render3DsWalker` / `Update2DWalker` —— 纯软件遍历器**（不是 GPU 命令）
+2. **`andromeda::OffScreenRender3D` —— 离屏渲染**（可渲染到内存）
+3. **`Sprite::setRectColor/setRectPos` + `TextSprite::drawText` —— 直接绘制原语**
+4. **`ResourceUpdater` + `libra::ImageData` —— 资源可软件加载**
+5. **`DMM Open Unit` / `DMM Close Unit` —— 显存管理可模拟**
+
+**⇒ 这印证了 a7c2-re 的路线：软件 GPE + CPU 解码 + headless 输出 ⇒ 完全可行**
+**⇒ 我们的 `libObj.so` 有**完整的 C++ 符号**，比 a7c2 的更容易逆向！**
+
+### 159.4 下一步（明确的三条路）
+
+**路线 A（推荐）：找到 `andromeda::Window` / `Canvas` 的创建点，直接驱动 `Render2DWalker`**
+1. **反汇编 `andromeda::Canvas` 的构造/绘制**
+2. **找到 `GraphicsEngine::sys_getInstance()` 的调用点**
+3. **在 App 初始化早期 hook，构造一个最小场景 + 调用 Render2DWalker**
+
+**路线 B：hook `GRM_screenGetOnBitmap` / `GRM_fbrmSetScreenPreference`**
+1. **这两个是 GRM（图形驱动）接口，是 UI 与显示驱动的边界**
+2. **hook 它们就能拦截"最终位图"**
+3. **对应 a7c2 的 `drawFramebuffer` hook 思路**
+
+**路线 C：参考 a7c2 的九参数 apply**
+1. **在 libObj/viewUnified 里找"屏幕切换"的 9 参数函数**
+2. **构造 from/to/restore 屏幕 ID**
+
+### 159.5 与 a7c2-re 的对比
+
+| 项 | a7c2-re（AArch64） | 我们（ARMv7） |
+| --- | --- | --- |
+| UI 主库 | `appFw.so`（单一大库） | **`libObj.so`(21MB) + `viewUnified2.so`(14MB)** |
+| 场景图 | 未详述 | **`andromeda::Window/Canvas/Scene3D`** |
+| 渲染 | 软件 GPE | **`andromeda::Render2DWalker`（纯软件）** |
+| 屏幕创建 | `view::create_screen` | 待找（`ux::gfxeng::Screen` 相关） |
+| 符号 | 部分 | **★ 完整 C++ mangled 符号（更易逆向）** |
