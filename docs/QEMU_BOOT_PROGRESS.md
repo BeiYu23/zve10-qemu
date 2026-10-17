@@ -11827,3 +11827,70 @@ liro 退出时刻:   28.936865
 | **2. App 跑过初始化并稳定运行（不再崩）** | ✅ **达成**（4 处修复） |
 | **3. 显示链路** | ⏳ App 停在"等外部事件"，未到显示初始化 |
 | **4. 输入链路** | ⏳ 同上 |
+
+---
+
+## 一百三十二、★★★ Round 129：**CXD90045 完整内存图（为 ARMv7 最小 payload 提供确定值）**
+
+**背景**：隔壁对话（真机改造）需要三样"确定值"来写 ARMv7 最小裸机 payload
+（往 eMMC 偏移 `0x0B000000` 写 12,582,912 字节以恢复 `/etc`）。
+我用 **QEMU monitor `info mtree`** 从自己的 `cxd90045` 模型导出（模型能跑真机固件 ⇒ 映射即真值）。
+
+### 132.1 ★ SDHCI / eMMC 基址 = **`0xF0304000`**（三重交叉验证 ✓）
+
+```
+00000000f0304000-00000000f03040ff (i/o): sdhci      ← ★ SDHCI base
+00000000f0304124-00000000f0304127 (rom): emmc0      ← Sony 私有 = base+0x124
+00000000f0304130-00000000f0304133 (rom): emmc1      ← = base+0x130
+```
+**交叉验证**：① `info mtree` ✓ ② QEMU 二进制里的常量 `0xf0304000` ✓
+③ 本笔记 §24.3 里 `CXD90045_SDHCI_BASE + 0x124` 的用法 ✓
+**⇒ 寄存器布局 = 标准 DW SDHCI 0x00–0xFE（窗口仅 0x100 字节）**
+
+### 132.2 ⚠️ 更正：`0xF8000000` 是 **ARM A9 SCU**，不是时钟控制器
+
+```c
+platform.h:155  #define SCU_BASE  CXD900X0_SCU_BASE     /* 0xf8000000 */
+platsmp.c:133   ncores = scu_get_core_count(VA_SCU);     /* ARM A9 SCU ✓ */
+```
+**⇒ a7M4 payload 的 `scu.h`（时钟门控）在 CXD90045 **同名不同物** ⇒ 不可用 ✗**
+
+**真正的时钟/复位（模型里称 "sugi"，位于 APB1/APB3）：**
+```
+0xf3400280  sugi_clk0      0xf3400080  sugi_pll0
+0xf28040c4  sugi_rst0      0xf28041a8  sugi_rst1
+0xf28050b8  sugi_rst2      0xf280518c  sugi_rst3
+0xf2915010  miscctrl_mode
+```
+⚠️ 模型里它们是**只读常量寄存器**（真机驱动只读）⇒ **写语义无真值** ⇒
+**建议最小 payload 第一版完全不碰时钟**（bootloader 已配好 eMMC 时钟）。
+
+### 132.3 BootROM：地址 `0xffff0000`、约 48KB（`0xc000`）—— **无 dump**
+
+```
+我的 QEMU 模型: 0xffff0000-0xffff5fff (rom): bootrom
+对面已有工具:   <repo>/agent/payload_brom3.c（mmap /dev/mem @0xffff0000 读 0xc000）
+盘上无 bootrom_CXD90045_0xffff0000.bin ⇒ 该次读取未成功；且工具依赖相机开机 ✗
+```
+
+### 132.4 完整内存图（供 payload 底稿）
+
+```
+0x00000000-0x3fffffff  ddr0 (RAM 1G)      0x80000000-0x8fffffff  ddr1 (RAM 256M)
+0xf0030000  dma330                        0xf0104148 ddrc0   0xf0105148 ddrc1
+0xf0304000  sdhci ★  (+0x124 emmc0 / +0x130 emmc1)
+0xf2000000-0xf2003fff  pl011 ×4 (uart0-3) 0xf2403000 bionz_hwtimer ×4
+0xf2405000  bionz_sio ×5                  0xf28040c4/41a8/50b8/518c sugi_rst0..3
+0xf2908008 / 0xf290c008  unknown0/1       0xf2910000 bionz_gpio ×18
+0xf2915010  miscctrl_mode                 0xf3400080 sugi_pll0  0xf3400280 sugi_clk0
+0xf8000000  a9-scu / a9mp-priv            0xf8000100 gic_cpu  0xf8001000 gic_dist
+0xf8000200  a9gtimer  0xf8000600 mptimer  0xf8002000 l2x0_cc
+0xfe000000-0xfeffffff sram                0xfe005030 bionz_bootcon
+0xffff0000-0xffff5fff bootrom
+```
+
+### 132.5 已回复对面（协作）
+
+**已通过对话桥发回**：①`0xF0304000` ②别用 `0xF8000000`、且第一版不碰时钟
+③没有 BootROM dump，建议 payload 第一版"**只读探测**"（读 SDHCI `+0x40 CAPABILITIES`/`+0xFE HOST_VERSION`
+验证基址 + 把 BootROM 48KB 经串口回吐）⇒ **一次上机同时完成验证、dump 与最终修复**。
