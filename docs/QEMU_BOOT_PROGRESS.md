@@ -12028,3 +12028,77 @@ ZZRD  NORINTSTS -> 0x2      ×1001  ← 第 2 次迭代死等 ⇒ 超时
 1. **QEMU 的 eMMC 模型在 CMD6(SWITCH) 后会卡在 `programming` 态（模型 bug）**
    ⇒ VM 测试时把两处 CMD6 调用 patch 成 `mov r0,#0` 跳过；**真机 CMD6 是 R1b，会自己回 transfer 态** ✓
 2. QEMU 的 SD 卡模型按 `[boot0][boot1][user]` 映射 ⇒ 恰好验证了 §134.3 的 4MB 关系 ✓
+
+---
+
+## 一百三十五、🏆🏆🏆 Round 132：**阶段 B 完成 —— 12MB 写入端到端验证通过**
+
+### 135.1 W0 写入闭环（含决定性标记验证）
+
+```
+[W0] 源 CRC32=0x00e3c1e9  →  write ret=0  →  读回 CRC32=0x00e3c1e9  ✓✓
+```
+**决定性验证（用带标记的数据，证明镜像真的被改）：**
+```
+写入前 镜像@0xB000000 = eb 3c 90 6d 6b 64 6f 73   (= FAT 引导扇区)
+写入后 镜像@0xB000000 = 57 30 54 45 53 54 21 21   (= "W0TEST!!")
+⇒ 镜像真的被 payload 改写 ✓✓✓
+```
+
+### 135.2 W2 完整 12MB 写入
+
+```
+[W2] 源整体 CRC32=0xbefb387e      ← 与预期 0xBEFB387E 一致 ✓
+[W2] ... done 24576 blocks         ← 24576 × 512 = 12,582,912 ✓
+[W2] ✓✓ 48 批全部写入并抽检通过
+```
+
+### 135.3 主机侧最终验证（全部通过）
+
+| 项 | 结果 |
+| --- | --- |
+| 参考 `nflasha10.img` md5 | `3a75a7c02c80420ec48b763164b02fbc` |
+| **写入后镜像 @`0xB000000` md5** | **`3a75a7c02c80420ec48b763164b02fbc`** ✓ |
+| CRC32 | `0xBEFB387E` == `0xBEFB387E` ✓ |
+| **前 64KB（nflasha7 尾部）** | 未变 ✓（无误写相邻区） |
+| **后 64KB** | 未变 ✓ |
+| FAT 结构 | `mdir` 能列出 `config.spec`/`images`/`kikilog.dat`/`nsswitch.conf`/… ✓ |
+| **修复后分区干净度** | `ld.so.preload`=0、`zve10_agent.so`=0、`gotdump.so`=0 ✓ |
+
+**⇒ 这就是"真机写入用户区 `0x0AC00000` 后重启 ⇒ 相机恢复"的完整等价验证。**
+
+### 135.4 完整验证链（全部在 QEMU，零真机风险）
+
+```
+ARMv7 payload → UART(0xF2000000) → SDHCI(0xF0304000)
+  → mmc_init(CMD0/1/2/3/7，CMD6 为 VM 模型限制而跳过)
+  → CMD25 多块写 24576 块 = 12MB
+  → eMMC 镜像内容 = 参考 md5
+  ⇒ 抢救流程技术上已完全验证 ✓
+```
+
+### 135.5 我的实现（`<repo>/my_payload/`）
+
+| 文件 | 大小 | 说明 |
+| --- | --- | --- |
+| `main.c` | 16,571 B | **CMD25 写 + CRC32 + W0/W2 分阶段** |
+| `payload.bin` | 9,896 B | 可执行镜像（入口 `0xFE020000`） |
+| `W2_success.log` | 3,675 B | 完整成功日志 |
+
+**关键实现要点：**
+```c
+REG16(SDHCI+R_BLKCNT) = nblocks;
+REG16(SDHCI+R_TRNMOD) = MULTI|BLKCNTEN|AUTO_CMD12;   /* 写：不设 TRNS_READ / DMA */
+sdhci_cmd(25, start_block, F_SHORT|F_CRC|F_IDX|F_DATA, 0);
+for (b=0; b<nblocks; b++) {
+    wait_int(IS_BUFWR, 1000);                         /* ★ 每块等一次 */
+    for (w=0; w<128; w++) REG32(SDHCI+R_BUF) = *in++; /* 连续写 128 字 */
+}
+wait_int(IS_XFERCPL, 2000);
+```
+
+### 135.6 真机前的注意点
+
+1. **W2 每批抽检第 1 块**（48 次读回）—— VM 全过 ✓，真机建议保留（成本低、能早停）
+2. **SRAM 布局**：payload `0xFE020000`，镜像 `0xFE100000`，12MB 到 `0xFED00000` ✓ 不冲突
+3. **真机执行必须由用户确认接线/拆机**（不可逆物理操作）
