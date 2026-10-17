@@ -14124,3 +14124,83 @@ sen.elf 向 id=0x00910042 发 32 字节请求，返回 -1024（无 handler）
 ```
 **⇒ 与 a7c2 的差别正在这里：他们的项目实现了若干"服务端"（dmm/hdmi-format/capid/...），
 我们没有。下一步要么补上这个 peer，要么让 sen.elf 跳过它，要么绕过整条链强制 UI。**
+
+---
+
+## 一百六十四、Round 191：**改成「只给 App 注入」的包装法（重要工程改进）**
+
+### 164.1 问题：全局 `ld.so.preload` 会让 ash 崩 → 整机停摆
+
+```
+[Exception Syndrome]
+program: /bin/ash(ash) (pid: 121)
+pc = ld-2.11.2.so+0xa79e   lr = ld-2.11.2.so+0x6f2f
+page translation fault (0x017) at 0x0000000c   →  进入 exception monitor（整机停）
+```
+A/B 对照：不装 probe 的 3 次运行 ash 崩溃 0 次 ⇒ **是 probe 副作用**，
+而且一旦 ash 崩，系统进入 exception monitor，**后续所有观测都作废**。
+
+### 164.2 解决：把 `/usr/bin/im.elf` 换成包装脚本
+
+```sh
+#!/bin/sh
+LD_PRELOAD=/lib/libgrmlog.so
+export LD_PRELOAD
+exec /usr/bin/im.elf.real "$@"
+```
+- 原 ELF 改名 `/usr/bin/im.elf.real`（nflasha15 = `/usr`，镜像偏移 0x2DC00000）
+- 撤掉 nflasha10 的全局 `ld.so.preload`
+- debugfs 没有 `mv` 命令 ⇒ 用 `rm` + `write` + `sif mode 0100755`
+- **坑**：脚本里写 `/bin/im.elf.real` 会 `not found`（guest 的 `/bin` 是 rootfs，
+  真 ELF 在 `/usr/bin`）⇒ 必须写 `/usr/bin/im.elf.real`
+
+**效果：ash 崩溃 0 次，App 正常启动，探针只在 App 进程里生效** ✓
+
+### 164.3 ★ UIPC handler 注册表（首次拿到）
+
+在 App 进程里 hook `osal_reg_sync_msg_queue_cb` / `osal_reg_msg_queue_cb`，
+记录到的注册（全部 ret=0）：
+```
+0x003f6086  0x0094016a  0x00940270  0x011e6088  0x011e02ec
+0x0097e01f  0x020f099d  0x009001b9  0x012182ed  0x012002da(async)
+0x00ca0288  0x00ca01a4  0x00ca8192  0x012282f6  0x012182ea
+```
+**⇒ 里面没有 `0x00910042`** —— sen.elf 要找的那个 peer 确实不存在（坐实）。
+
+id 结构假设：`(class << 16) | instance`（如 sen.elf = 0x8f013a，缺失方 = 0x91/0x42）
+
+### 164.4 新的崩溃点：BusPower 线程 NULL 解引用
+
+```
+program: /usr/bin/im.elf.real(BusPower) (pid: 152)
+page translation fault (0x80000017) at 0x00000000
+```
+发生在加载 `libBusPower.so` 之后 ⇒ USB 总线电源线程解引用 NULL（同样是需要真实硬件的服务）。
+
+### 164.5 现状总结
+
+```
+App 初始化会依次触碰三类"需要真硬件"的东西：
+  ① 传感器（sen.elf → id 0x910042，无 peer）
+  ② WiFi（libWlanResource/libWlanAdjust，bcmdhd 未加载）
+  ③ USB 电源（BusPower 线程，NULL 解引用）
+每一次都可能崩或永久阻塞，且顺序/时机不稳定 ⇒ 每次都停在不同位置
+
+⇒ 结论：**"让 App 自然启动到 UI"这条路不现实**，
+   必须走 a7c2 的路线：绕过这些服务，直接强制创建 UI。
+   前提是拿到/造出 ViewManager（见 §162.5 / §163.5）
+```
+
+### 164.6 复现包装法（给后来者）
+
+```sh
+# 1) 抽 nflasha15
+dd if=<img> of=n15.img bs=1M skip=$((0x2DC00000/1048576)) count=300
+# 2) 装包装脚本
+debugfs -w -R "rm /bin/im.elf" n15.img
+debugfs -w -R "write im_wrap.sh /bin/im.elf" n15.img
+debugfs -w -R "sif /bin/im.elf mode 0100755" n15.img
+debugfs -w -R "write im.elf.real /bin/im.elf.real" n15.img
+# 3) 写回镜像；并把 probe 库放到 rootfs 的 /lib/libgrmlog.so
+dd if=n15.img of=<img> bs=1M seek=$((0x2DC00000/1048576)) conv=notrunc
+```
