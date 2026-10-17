@@ -12498,3 +12498,68 @@ abort 前的失败线索:
 | `ab_fix5.img` | **`b 2e0` 无条件** | **固件完整运行 ✓** 但 complete 未触发 |
 | `ab_fix6.img` | + 跳过 liro_init 等待 | 过早返回，崩 |
 | **`ab_fix7.img`** | **`b 2e0` + 固件前注入 complete** | **★ liro 完全通过 ✓** |
+
+---
+
+## 一百四十一、Round 138：**abort 调用链追踪（tgkill + 用户栈内核级追踪）**
+
+### 141.1 新增内核追踪工具
+
+```c
+/* kernel/signal.c: SYSCALL_DEFINE3(tgkill,...) 里 */
+ZZTGKILL <comm> pid=.. tgid=.. sig=.. pc=.. lr=.. sp=..     ← 谁调了 tgkill（= abort）
+ZZSTACK [nn] <addr>                                          ← dump 用户栈（96 字，只留代码段指针）
+```
+
+**★ 踩坑：最初按 `comm` 前缀 `"im."` 过滤 ⇒ 漏掉了 `THREAD_INFRA0`（前 3 字符是 `THR`）⇒ 改无条件打印后才抓到。**
+
+### 141.2 实测结果（`ab_fix7.img`）
+
+```
+ZZTGKILL THREAD_INFRA0 pid=122 tgid=143 sig=6 pc=0431d796 lr=0432cd8f sp=08bfb3e4
+⇒ sig=6 = SIGABRT ✓（确认是 abort）
+
+栈回溯（按映射表解析）:
+  libc+0x24d8f  = raise
+  libc+0x25bdf  = abort
+  libpthread+0x6d5b
+  libpthread+0x509c   （线程入口）
+  libc+0xc81e5 / 0x9b24f / 0xaf15b / 0xdc87c / ...
+⇒ ★★★ 栈里【只有 libc / libpthread 帧，没有 App 库的帧】
+   ⇒ abort 来自 libpthread 内部路径（典型的 pthread_mutex/cond 无效状态检测）
+```
+
+### 141.3 abort 前的现场
+
+```
+QMMAP 2MB anon ×N（加载库）
+ZZFUTEX im.elf op=0x80 (FUTEX_WAKE)
+MISSSO //lib/libInfraSystemProperty.so   ← 探测 /lib 失败
+ZZFUTEX op=0x0 (FUTEX_WAIT)
+MISSSO //lib/libInfraCrypt.so
+MISSSO //lib/libInfraSetupFile.so
+MISSSO //lib/libInfraSystemAdjust.so
+ZZTGKILL ... sig=6                        ← abort
+```
+**⇒ 这些都是"探测 `/lib` 失败 → 从 `/usr/lib` 成功加载"的正常模式（已验证）**
+
+### 141.4 本轮已消除的问题（累积）
+
+| 问题 | 状态 | 修法 |
+| --- | --- | --- |
+| liro 永久阻塞 | ✅ **已修** | `b 2e0` + 在调用 entry_pre 前注入 complete（12 字节） |
+| 堆损坏 `realloc/free invalid next size` | ✅ **已修** | `/dev/tty` → `/dev/null` 符号链接（原地 debugfs 编辑，保留 696 个设备节点） |
+| `MISSDEV /dev/tty` | ✅ 消失 | 同上 |
+| `tsk_entry_1st() error` | ✅ 消失 | liro 修法 |
+| `version unmatched 4 != 4` | ✅ 绕过 | 无条件 `b 2e0`（magic 检查仍生效） |
+| `Illeagle Instruction @ libc+0x15796` | ⏳ **仍在**（abort 路径） | 下一步 |
+
+**⇒ App 现状：跑到 ~29.8s、UIPC 1042 次、无堆损坏、无 tty 问题、liro 完全通过**
+
+### 141.5 下一步方向
+
+**abort 来自 libpthread 内部** ⇒ 方向：
+1. 反汇编 `libpthread-2.11.2.so` 的 `0x6d5b` / `0x1fdc` / `0x509c`，确认是哪个检查（`__pthread_mutex_cond_lock` / `pthread_cond_wait` 的 EINVAL 断言？）
+2. 反汇编 `libc-2.11.2.so` 的 `0x24d8f`(raise) / `0x25bdf`(abort) 的调用者，看 abort 是否由 `__libc_message` 触发
+3. 用 `MALLOC_CHECK_`/`M_CHECK_ACTION` 预加载（`ab_mchk.img` 已有此能力）确认是否有 libc 内部一致性检查失败
+4. 检查 Infra 框架的线程创建/销毁时序（THREAD_INFRA0 是 Infra 框架的线程）
