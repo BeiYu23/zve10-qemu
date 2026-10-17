@@ -13372,3 +13372,75 @@ libbackup.so 的 PLT
 1. **反汇编 `u_osal_valloc_msg_wait`（0x2870）的完整参数搬移，核对约定**
 2. **验证 `backup_sync_msg` 的 msg 结构大小（0..23 字节 = 24 字节）与分配大小 64 是否匹配**
 3. **检查 `osal_valloc_msg_wait(type, &buf, 64, 1)` 的 arg 顺序是否符合 API**
+
+---
+
+## 一百五十六、Round 183：**关键发现 —— UIPC valloc 走 ioctl，输出指针由内核侧写入**
+
+### 156.1 ★★★ `u_osal_valloc_msg_wait`（0x2870）的完整实现
+
+```asm
+2870: push {r4, r5, r7, lr}
+2872: sub  sp, #24
+2874: add  r7, sp, #0
+287c: str  r3, [r7, #12]        ; args[3] = r3（flags）
+2882: str  r0, [r7, #16]        ; args[0] = r0（type/len）
+2886: str  r1, [r7, #4]         ; args[1] = r1（★ 输出缓冲区指针）
+2888: str  r2, [r7, #8]         ; args[2] = r2（size）
+288a: str  r0, [r7, #20]        ; 另存
+288e: movs r1, #10
+2894: movt r1, #0x8000          ; ★ cmd = 0x8000000a = __k_4u_valloc_msg_wait
+2890: add.w r2, r7, #16         ; arg = &args[0]
+2898: ldr  r0, [r5, #0]         ; fd
+289a: blx  ioctl@plt            ; ★★★ ioctl(fd, 0x8000000a, &args)
+289e: cbnz r0, 28a8             ; 失败路径
+28a0: ... 返回
+```
+
+**⇒ 对比同文件的 `u_osal_free_msg`（0x28c8）：**
+```asm
+28dc: ldr  r4, [r3, r2]
+28de: movs r1, #11
+28e2: movt r1, #32768          ; cmd = 0x8000000b = __k_4u_free_msg
+28e0: adds r2, r7, #0           ; arg = 消息结构
+28e8: blx  ioctl@plt
+```
+
+### 156.2 ★★★ 结论：输出指针由**内核侧** `__k_4u_valloc_msg_wait` 写入
+
+```
+用户态: ioctl(fd, 0x8000000a, &args)  where args = {type/len, &buf, size, flags}
+内核:   osal_uipc.ko 的 __k_4u_valloc_msg_wait
+        → 需要把分配的缓冲区地址写回 args[1]（&buf ⇒ *args[1]）
+        → 若内核侧没写 / 写错 ⇒ 用户态 [r7+8] 保持栈垃圾 ⇒ `strb r6,[r3,#0]` 崩
+```
+
+**⇒ 所以真正的嫌疑点是 **`osal_uipc.ko`（内核模块）的 valloc 实现**
+**⇒ 注意：该模块是**固件原版**（未打补丁），我的 `libosal_uipc.so` 0x26c0 补丁在用户态另一个函数上**
+
+### 156.3 下一步（给接手者）
+
+1. **反汇编 `osal_uipc.ko` 的 `__k_4u_valloc_msg_wait`（笔记记录在 `osal_uipc.ko` 的 0x8c8 附近有相关函数）**
+2. **确认它是否把缓冲区地址 `copy_to_user` 回了 `args[1]` 指向的位置**
+3. **若是 `copy_to_user` 失败（比如 QEMU 内存映射差异）⇒ 就是它**
+4. **或者在 `backup_sync_msg` 的 `f90` 后加指针合法性检查（防御性补丁）**
+
+### 156.4 本轮会话最终状态（用户要求收尾）
+
+**已完成（全部有日志证据）：**
+- ✅ 真机固件在 QEMU 完整启动（33 模块 / init chroot / 16 分区）
+- ✅ App 稳定运行到 **52.5s**，加载 **70 个模块**
+- ✅ liro 4-MUSASHI 固件完整运行（280 内核线程）
+- ✅ HDMI 驱动 `udm_hdmi`、CEC 驱动 `udm_cec` 初始化成功
+- ✅ GPU 驱动 `grm_gles` 加载，`/dev/dmpgles2` 节点就位
+- ✅ 43 种 UIPC 处理器
+- ✅ 10 项修法（4 原始 + 6 追加）
+- ✅ 4 件内核级诊断工具（ZZTGKILL/ZZSTACK/ZZEXCSTACK/ZZGOT）
+- ✅ 完整文档（13,000+ 行 / 160 节）+ 交接文档 + 开源仓库
+
+**未完成：**
+- ❌ App init 最后一关（valloc 输出指针未写入）
+- ❌ 显示链路（GPU 建模 / stub 驱动）
+- ❌ 输入链路
+
+**⇒ 这是一份"基础设施完整、只差最后两层"的状态，可直接交接给其他人继续。**
