@@ -12823,3 +12823,58 @@ program: /usr/bin/im.elf(THREAD_INFRA2) (pid: 141)
 | 7 | 68 个库符号链接 `/lib/X → /usr/lib/X` | rootfs:/lib/ |
 | 8 | **libc `abort` → `b .`（自旋）** | 同上 |
 | 9 | （已验证 #8 必须自旋而非返回） | — |
+
+---
+
+## 一百四十六、Round 143：**NULL 函数指针崩溃的精确归因**
+
+### 146.1 ★★★ 故障本质：**跳转到 NULL+0x107**（不是数据访问）
+
+```
+page translation fault (0x80000017) at 0x00000106
+r0: 0x00000107   ← pc+1（Thumb 位）
+r1: 0x8000000b   ← UIPC cmd 0x0b
+lr: 0x040bb227   ← 返回地址
+pc: 0x00000106   ← ★ CPU 跳到了 0x106
+sp: 0x091e6ce0
+```
+**⇒ `pc = 0x106` + `r0 = 0x107`(Thumb) ⇒ 执行了 `blx r0`/`bx r0`，而 r0 是**空的函数指针**
+
+### 146.2 ★★★ 调用链追踪（逐层定位）
+
+```
+lr = 0x040bb227 → libbackup.so + 0x1227
+   反汇编: 0x1222  blx backup_sync_msg@plt    ← 返回地址 0x1226(+1=0x1227) ✓
+   backup_sync_msg @0xf64 内部:
+     0x100c  blx osal_snd_sync_msg@plt       ← 再下一层
+   osal_snd_sync_msg 在 libosal_uipc.so 里
+   → 在 u_osal_snd_sync_direct 内部跳到 NULL+0x107
+```
+**⇒ 完整链：`libbackup.so` → `backup_sync_msg` → `osal_snd_sync_msg`(libosal_uipc) → **空函数指针****
+
+### 146.3 ★ 验证：我的 UIPC 补丁不是元凶（对比实验）
+
+| 镜像 | 运行到 | MODLOAD | UIPC handler | page fault |
+| --- | --- | --- | --- | --- |
+| **有 UIPC 补丁（ab_v3b）** | **49.7s** | 70 | **43** | 1 |
+| 无 UIPC 补丁（ab_nouipc2） | 37.6s | 70 | 40 | 1 |
+
+**⇒ 撤销 UIPC 补丁后运行反而变短（37.6s vs 49.7s）⇒ **补丁是有益的**，不是崩溃原因 ✓
+⇒ 两者都有同一个 page fault ⇒ 崩溃在 `osal_snd_sync_msg` 内部的空回调，与补丁无关。**
+
+### 146.4 已完成 `__assert_fail` / `abort` 补丁的安全性确认
+
+| 补丁 | 做法 | 结果 |
+| --- | --- | --- |
+| `__assert_fail` (0x1f98c) | `80b5`(push) → `7047`(bx lr) | ✅ 安全（调用方后续状态合理） |
+| `abort` (0x25ae0) | `684d` → `fee7`(`b .` 自旋) | ✅ 安全（仅该线程挂起） |
+| `abort` → `bx lr`（错误做法） | — | ❌ 崩在 `ldrh r2,[r4,#6]` @0x6（noreturn 函数返回后状态不一致） |
+
+### 146.5 下一步方向
+
+**空函数指针在 `osal_snd_sync_msg` / `u_osal_snd_sync_direct` 内部被调用 ⇒ 可能：**
+1. **某个回调用结构体中的函数指针字段未初始化**（应有一个 register callbacks 的调用被跳过/失败）
+2. **`backup_sync_msg` 传入的 msg 结构里回调指针为 NULL**（r1=0x8000000b 的消息类型需要特定注册）
+3. **排查 `libbackup.so` 的初始化顺序**（是否有一个 `Backup_init` 没被调用）
+
+**⇒ 具体动作：在 libosal_uipc.so 的 `osal_snd_sync_msg` 入口加 trace，打印回调表指针，找出哪个槽位是 NULL。**
