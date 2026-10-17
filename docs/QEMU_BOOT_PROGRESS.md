@@ -13329,3 +13329,46 @@ f9a: strb r0, [r3, #4]
 2. **对照 `u_osal_valloc_msg_wait`（0x2870）的封装约定**
 3. **怀疑点：我的 UIPC 补丁（0x26c0）虽然在同一文件，但位于 `u_osal_snd_sync_direct`，
    不在此路径上 —— 需要用"无补丁"镜像验证（已完成过：两者都崩，但崩溃点不同）**
+
+---
+
+## 一百五十五、Round 179~182：**osal_valloc_msg_wait 的写指针逻辑确认正确**
+
+### 155.1 完整的成功路径（唯一）
+
+```asm
+36e8: movs r0, #0
+36ee: str  r2, [r6, #0]     ← ★ 唯一的写输出指针指令
+36f0: b.n  3642             ← 返回 r0=0（成功）
+```
+**⇒ 两条分配路径都汇合到这里：**
+- `alloc_fblock` 路径（size ≤ 20）：0x3704 → 0x3708 → b 0x36a0 → ... → 0x36e8
+- `vpool_alloc` 路径（size > 20）：0x371a → 0x368a → ... → 0x36e8
+**⇒ 所以 `osal_valloc_msg_wait` **本身逻辑正确** —— 成功时一定写 `*r6`**
+
+### 155.2 三层封装结构
+
+```
+libbackup.so 的 PLT
+  → libosal_uipc.so: osal_valloc_msg_wait (0x3fec)   ← 参数检查（size<=4096, arg0>=0）
+      → 0x4004: b.w u_osal_valloc_msg_wait@plt        ← ★ 尾调用，args 原样传递
+          → libosal_uipc.so: u_osal_valloc_msg_wait (0x2870)  ← 保存 args 到栈
+              → 内部实现 (0x361c)                     ← 真正分配 + 写 *r6
+```
+
+### 155.3 问题所在（推断）
+
+**既然三层封装的最终实现正确写指针，那失败只可能来自：**
+1. **封装层参数搬移错误**（0x2870 的 `u_osal_valloc_msg_wait` 把 args 存栈后重排）
+2. **`backup_sync_msg` 的 `[r7+8]` 与传入的 `r1` 不是同一位置**
+   （r7 是 `backup_sync_msg` 的帧指针，`f80: add.w r1, r7, #8` ⇒ 应该是同一处）
+3. **栈帧被破坏**（某个 `strb` 越界写了 backup_sync_msg 的栈帧）
+
+**⇒ 第 3 点最可疑：`backup_sync_msg` 在 0xf9a-0xfd2 有一连串 `strb` 写 msg 结构（偏移 0..23），
+   若 `r3` 指向的是栈上的小缓冲区，写到偏移 23 可能覆盖到相邻变量**
+
+### 155.4 下一步
+
+1. **反汇编 `u_osal_valloc_msg_wait`（0x2870）的完整参数搬移，核对约定**
+2. **验证 `backup_sync_msg` 的 msg 结构大小（0..23 字节 = 24 字节）与分配大小 64 是否匹配**
+3. **检查 `osal_valloc_msg_wait(type, &buf, 64, 1)` 的 arg 顺序是否符合 API**
