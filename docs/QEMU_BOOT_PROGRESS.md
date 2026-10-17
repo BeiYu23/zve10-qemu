@@ -13275,3 +13275,57 @@ r0: 0x00000107       ⇒ = 0x106 + 1
    —— `Backup_read` 在 0x1218 `stmia.w sp, {r0, r1}` 把入参存栈，0x121c 起构造 msg
 3. **`0x0107` 作为数据值** 出现在用户栈的 `01070e85/01070e87` 模式里
    ⇒ 可能是 msg 结构里的一个长度/类型字段，被错误地当作指针传递
+
+---
+
+## 一百五十四、🏆 Round 175~178：**故障指令精确锁定**
+
+### 154.1 ★★★ 故障指令：`libbackup.so +0xf94` 的 `strb r6, [r3, #0]`
+
+**`backup_sync_msg`（0xf64）分配消息缓冲区的完整序列：**
+```asm
+f72: mov  r8, r0                      ; 保存 arg0
+f74: mov  r4, r1                      ; 保存 arg1
+f76: mov  r6, r2                      ; 保存 arg2
+f78: ldr.w r5, [r3], #4               ; r5 = *arg3（取一个字段）
+f7c: mov  r0, r1                      ; ★ 传给 osal_valloc_msg_wait(..., r1, 64, 1)
+f7e: movs r2, #64                     ;   arg2 = 64（缓冲区大小）
+f80: add.w r1, r7, #8                 ;   arg1 = &local[8]（输出指针）
+f84: str r3, [r7, #12]
+f86: movs r3, #1
+f88: blx  osal_valloc_msg_wait@plt    ; ★ 分配
+f8c: cmp  r0, #0
+f8e: bne.n 1034                       ; 失败 → 错误路径
+f90: ldr  r3, [r7, #8]                ; ★ r3 = 输出指针
+f92: lsrs r2, r6, #8
+f94: strb r6, [r3, #0]                ; ★★★ 故障指令：若 r3=0x106 → 数据地址 0x106 ✓
+f96: strb r2, [r3, #1]
+f98: lsrs r2, r6, #16
+f9a: strb r0, [r3, #4]
+```
+
+### 154.2 ★★★ 根因判断
+
+**`osal_valloc_msg_wait` 返回 0（成功）但**没有把缓冲区指针写入 `[r7+8]`**
+**⇒ `[r7+8]` 保持栈上的垃圾值（本次是 `0x106`）**
+**⇒ 随后 `strb r6, [r3, #0]` 写入 0x106 ⇒ 数据访问异常 ✓**
+
+**`osal_valloc_msg_wait`（libosal_uipc 0x3fec）的检查逻辑：**
+```asm
+3ffe: bne  4008
+4008: cmp  r0, #0
+400a: bge  401a
+400c: mov.w sl, #0xfc00 ; 返回错误
+401a: cmp.w r2, #4096 ; 大小上限检查
+401e: bhi  400c
+4020-402c: 调用内部实现 bl 361c
+```
+
+**⇒ 需要检查内部实现（0x361c）是否正确写入输出指针**
+
+### 154.3 下一步（非常具体）
+
+1. **反汇编 `libosal_uipc.so:0x361c`（`osal_valloc_msg_wait` 的内部实现），看它如何写输出指针**
+2. **对照 `u_osal_valloc_msg_wait`（0x2870）的封装约定**
+3. **怀疑点：我的 UIPC 补丁（0x26c0）虽然在同一文件，但位于 `u_osal_snd_sync_direct`，
+   不在此路径上 —— 需要用"无补丁"镜像验证（已完成过：两者都崩，但崩溃点不同）**
