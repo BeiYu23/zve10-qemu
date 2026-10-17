@@ -12951,3 +12951,48 @@ LOAD RW:  VMA 0xe000-0xefd4  ← 运行时映射到 0x04046000-0x04047000
 | libc `__assert_fail` → `bx lr` | ✅ 安全 |
 | 68 个库符号链接 | ✅ 有益（MISSSO 183→30） |
 | libc `abort` → `b .` 自旋 | ✅ 安全（**不能改成返回**） |
+
+---
+
+## 一百四十八、Round 148~152：**ZZEXCSTACK 工具 + 运行非确定性确认**
+
+### 148.1 新增工具：异常处理器里的用户栈 dump
+
+**在 `arch/arm/kernel/exception.c: em_show_syndrome()` 里加入：**
+```c
+[ZZEXCSTACK] sp=xxxxxxxx pc=xxxxxxxx lr=xxxxxxxx
+  [00] <栈里的代码指针>
+  [01] ...
+```
+**⇒ 目的：页错误发生时直接拿到用户态调用链（不再只靠寄存器猜）**
+
+**⚠️ 注意：本轮两次运行都没触发页错误（见 148.2），所以工具尚未产出数据。**
+
+### 148.2 ★ 运行非确定性（重要观察）
+
+| 运行 | 终止形式 | guest 时间 | 异常 |
+| --- | --- | --- | --- |
+| `fv4` | `page translation fault 0x106` | **52.5s** | 1 |
+| `fex` | 超时被杀（未崩溃） | 33.5s | 0 |
+| `fex2` | 静止（无输出） | **41.1s** | 0 |
+
+**⇒ 同一镜像两次运行结局不同 ⇒ **时序相关**（App 的多个线程竞争，走到不同分支）**
+
+**⇒ 这也解释了此前多次"跑到不同位置"的现象。**
+
+### 148.3 已确认的符号解析状态（排除"未解析符号"假设）
+
+**libosal_uipc.so 内部 PLT 调用的符号全部有定义：**
+```
+alloc_fblock   @0x4ba4 T   vpool_alloc @0x4d80 T
+osal_lock      @0x4fbc T   osal_unlock @0x502c T
+osal_snd_sync_msg @0x3ec8 T
+osal_reg_sync_msg_queue_cb @0x3ae0 T
+```
+**⇒ 崩溃**不是**未解析符号导致；`r0=0x107` 更像"结构体字段被写成小整数"**
+
+### 148.4 下一步（待 ZZEXCSTACK 抓到现场）
+
+1. **多次运行直到触发页错误 ⇒ 用 ZZEXCSTACK 拿到完整用户栈**
+2. **若栈仍不足以定位 ⇒ 用 QEMU gdb 在 `osal_snd_sync_msg` 下断，单步到 `blx` 看 r0 来源**
+3. **同时留意：App 在 41s 后"静止"（无输出无崩溃）也是一种状态，值得单独分析（是否卡在某处等待）**
