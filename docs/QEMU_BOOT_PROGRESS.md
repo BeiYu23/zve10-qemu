@@ -12753,3 +12753,73 @@ page translation fault (0x017) at 0x00000006
 ```
 
 **⇒ 每消除一个崩溃点，App 都前进一段（已反复验证）。下一步：定位 NULL 来源。**
+
+---
+
+## 一百四十五、🏆🏆🏆 Round 142：**App 推进到 49.7s / 70 个模块 / HDMI 驱动初始化**
+
+### 145.1 ★★★ 关键突破：`abort` → 自旋（`b .`）
+
+```
+libc-2.11.2.so @0x25ae0: 68 4d → fe e7 (Thumb `b .` 自旋)
+⇒ abort() 不再杀进程，只让【该线程挂起】
+⇒ 其他线程继续运行 ⇒ App 得以越过 Infra 线程的失败点
+```
+
+**⚠️ 对比尝试（重要教训）：**
+| abort 补丁 | 结果 |
+| --- | --- |
+| `bx lr`（返回） | **崩**：`ldrh r2,[r4,#6]` at `0x6`（abort 是 noreturn，返回后调用方状态不一致） |
+| **`b .`（自旋）** | **✅ 该线程挂起、进程存活、App 继续** |
+| 不打补丁 | abort 杀进程（`ZZTGKILL sig=6`） |
+
+### 145.2 ★★★ 实测（`ab_v3b.img`，运行 500s）
+
+| 指标 | 修复前 | **修复后** |
+| --- | --- | --- |
+| 运行到 | 30.4s | **49.7s** ✓ |
+| `MODLOAD`（模块加载） | — | **70 次** ✓ |
+| `MODARGS` | — | **70 次** ✓ |
+| **`udm_hdmi`（HDMI 驱动）** | 无 | **初始化成功 code=0** ✓ |
+| **`grm_gles`（GPU 驱动）** | 无 | **已加载并出现在模块表** ✓ |
+| **UIPC 处理器种类** | 41 | **43** ✓ |
+| `glibc detected`（堆损坏） | 0 | **0** ✓ |
+| `ZZTGKILL`（abort） | 2 | **0**（自旋替代）✓ |
+| 剩余崩溃 | — | `page translation fault at 0x106`（NULL+0x106，THREAD_INFRA2） |
+
+### 145.3 最后阶段的活动（37~49s）
+
+```
+MODARGS THREAD_INFRA2 len=238788 / 79240     ← App 在加载模块
+MODLOAD attempt
+QMMAP 2MB
+ZZCOMPLETE udm_hdmi pid=163 → EXIT code=0     ← ★ HDMI 驱动初始化完成
+grm_gles [5f3fa018]                            ← ★ GPU 驱动在模块表中
+⇒ App 已进入「加载/初始化各类驱动」阶段
+```
+
+**⇒ 这是距「显示链路」最近的一次：`grm_gles`/`udm_hdmi` 都已就位。**
+
+### 145.4 当前剩余卡点
+
+```
+page translation fault (0x80000017) at 0x00000106
+program: /usr/bin/im.elf(THREAD_INFRA2) (pid: 141)
+⇒ 0x106 = NULL + 0x106 ⇒ 又是 NULL 解引用（结构体成员 0x106）
+⇒ App 在加载模块的过程中解引用了 NULL
+⇒ `dmpgles2` ioctl 仍为 0（尚未打开显示设备）
+```
+
+### 145.5 完整修法清单（9 项，`ab_v3b.img`）
+
+| # | 修法 | 层 |
+| --- | --- | --- |
+| 1 | liro `b 2e0` + 固件前注入 complete | nflasha15:/kmod/liro.ko |
+| 2 | backup.ko 补丁版（73,764 B） | nflasha15:/kmod/ |
+| 3 | libosal_uipc.so @0x26c0=7a68 | nflasha15:/lib/ |
+| 4 | im.elf @0x2f46=00bf | nflasha15:/bin/ |
+| 5 | `/dev/tty` → `/dev/null` 符号链接 | rootfs:/dev/ |
+| 6 | libc `__assert_fail` → `bx lr` | rootfs:/lib/libc-2.11.2.so |
+| 7 | 68 个库符号链接 `/lib/X → /usr/lib/X` | rootfs:/lib/ |
+| 8 | **libc `abort` → `b .`（自旋）** | 同上 |
+| 9 | （已验证 #8 必须自旋而非返回） | — |
