@@ -13997,3 +13997,130 @@ libObj.so:
 
 **下一步：**先确认 `ViewBaseProduct` 的构造路径（谁 new 它、需要什么参数），
 再在 preload 里的合适时机（App 主循环起来后）调用视图创建入口。
+
+---
+
+## 一百六十三、Round 190：**因果链闭合 —— 缺失的服务是「队列 0x20」**
+
+### 163.1 纠正：`0xc` 崩溃不是 App
+
+```
+program: /bin/ash(ash) (pid: 121)
+pc = ld-2.11.2.so+0xa79e   lr = ld-2.11.2.so+0x6f2f
+```
+**⇒ 是 busybox/ash 在 ld.so 重定位阶段崩的，与 App 无关。**
+A/B 对照：无 probe 的三次运行（`fv4`/`fmd`/`flog`）**ash 崩溃 0 次** ⇒ 这是 probe 副作用，
+不影响主结论（App 在崩溃之后仍有 12 行活动）。
+
+### 163.2 ★ 无 probe 基线（70.6s 运行）的真实停点
+
+```
+最后一次 App 活动:
+  UIPCARG im.elf  @30.67s
+  ZZFUTEX op=0x0  @30.73s   ← FUTEX_WAIT（无超时！）
+  MODLOAD(THREAD_INFRA2, hdmi.ko) @32.39s
+  ZZCOMPLETE udm_hdmi @32.83s → EXIT code=0
+此后直到 70.6s：【App 零活动】
+```
+**⇒ App 在 "加载 hdmi.ko / HDMI 驱动初始化完成" 之后永久阻塞在 futex 上（无超时）。**
+
+### 163.3 ★★★ 缺失服务定位：队列 `0x20`
+
+按目标队列统计（UIPCARG 的 f0）：
+```
+64 × 0x3e014d      ← 最活跃的服务
+60 × 0x8f013a      ← sen.elf
+21 × 0x20          ← ★ sen.elf 的 snd_sync_direct 全发到这里
+```
+对应的返回值：
+```
+UIPCRET sen.elf cmd=0x80000006 ret=-1024   × 21   ← -0x400 = 无此 handler
+UIPCRET im.elf  cmd=0x80000005 ret=-1020   × 7    ← 等 sen.elf 回复，超时
+```
+消息内容（发往 0x20 的 32 字节消息）：
+```
+f0=0x20(len=32) f1=0 f2=0 f3=0 f4=0 f5=0   ← payload 全 0
+```
+
+**⇒ 完整因果链：**
+```
+队列 0x20 无人注册 ⇒ sen.elf 的 21 次请求全部 -1024
+⇒ sen.elf 无法完成自身工作 ⇒ 不回 im.elf 的 type 0xff 请求
+⇒ im.elf 在 HDMI 初始化后永久 futex 等待
+⇒ UI 初始化（GraphicsEngine / Screen / GRM）永不执行
+```
+
+### 163.4 「认领 0x20」实验：失败，但确认了 id 空间规则
+
+在 preload 构造函数里调 `osal_reg_sync_msg_queue_cb(0x20, cb)`：
+```
+GRMLOG claim 0x20 ret=0xfffffc00    ← -0x400，非法 id
+⇒ 0x20 不是合法的软件队列 id（合法的如 sen.elf 的 0x8f013a）
+⇒ 0x20 更像是"固定通道/硬件端口"的编号，不能靠注册软件 handler 认领
+副作用：构造函数里太早注册破坏了 App 早期启动（dlopen 掉到 1 次）
+```
+
+### 163.5 下一步（三条，按可行性排序）
+
+**路线 1：查清 0x20 是什么通道**
+- 在 `libosal_uipc.so` / `osal_uipc.ko` 里找对 id 0x20 的特判
+- 或从 sen.elf 的代码看它对 0x20 发的是"什么语义"（找 `osal_snd_sync_direct(0x20, ...)` 的调用点）
+- 若是硬件通道（CP/ISP），则要么内核侧伪造应答，要么让 sen.elf 跳过
+
+**路线 2：让 App 容忍 sen.elf 超时**
+- 7 次 `snd_sync_msg` 超时后 App 并没有崩（只是不再前进），说明它在等别的条件
+- 需要定位那个 futex（`uaddr=0x08c004c8`）属于哪个线程/模块
+
+**路线 3：绕过整条服务链，直接强制 UI（a7c2 路线）**
+- 需要 `ViewManager` 实例；`pViewManager`（libObj .bss 0x149221c）大概率是 NULL
+- 需先关 ASLR 再做 gdb watchpoint 确认（见 §162.5）
+
+### 163.6 探针安全规则（本轮新增）
+
+```
+✗ 不要在 preload 构造函数里调用目标程序的初始化 API（UIPC 注册等）——太早，会破坏启动
+✗ 不要在 dlopen 钩子里调 dlsym（加载器锁）——会崩在 ld.so
+✓ 只做"读"和"记录"；任何"写/注册"都要挑明确安全的时机
+```
+
+### 163.7 ★ 修正：`f0=0x20` 不是队列 id，而是**消息长度**
+
+反汇编 sen.elf 唯一一处 `osal_snd_sync_direct` 调用（0x9a74）：
+
+```asm
+9a5a: movs r5, #32          ; r5 = 32
+9a66: mov  r0, r7
+9a68: mov  r2, r5
+9a6a: blx  memset           ; 清 32 字节消息体
+9a6e: ldr  r0, [pc, #32]    ; ← 真正的目标 id 在字面量 0x9a90
+9a70: mov  r1, r7           ; msg
+9a72: str  r5, [r7, #0]     ; msg[0] = 32 = 长度
+9a74: blx  osal_snd_sync_direct@plt
+```
+
+```
+字面量 @0x9a90 = 0x00910042   ← 真正的目标 id
+```
+**⇒ UIPCARG 打印的 `f0=0x20` 是 msg[0]=长度，不是队列 id（之前判断有误）。**
+
+### 163.8 0x910042 的身份
+
+- 全固件搜 `42 00 91 00`：**64 个文件命中**，其中 libObj.so 出现 **68 次**
+- 54 个文件同时导入 `osal_reg_*` ⇒ 它是**广泛使用的 id 常量**，不是某个唯一服务
+- 与 sen.elf 自身 id `0x8f013a` 同构：可理解为 `(class<<16)|instance`，
+  `0x910042` = class 0x91 / instance 0x42
+
+**⇒ 下一个问题变成："class 0x91 / instance 0x42 这个 peer 应该是谁？"**
+（可能是 CP、某个 Infra 服务，或 boot controller 的一个实例）
+
+### 163.9 本轮结论
+
+```
+App 在 HDMI 初始化后永久 futex 等待（无超时）
+  ↑
+sen.elf 向 id=0x00910042 发 32 字节请求，返回 -1024（无 handler）
+  ↑
+该 peer 在本环境里不存在
+```
+**⇒ 与 a7c2 的差别正在这里：他们的项目实现了若干"服务端"（dmm/hdmi-format/capid/...），
+我们没有。下一步要么补上这个 peer，要么让 sen.elf 跳过它，要么绕过整条链强制 UI。**
