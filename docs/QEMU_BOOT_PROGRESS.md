@@ -14352,3 +14352,53 @@ viewUnified2 裸加载：静态初始化依赖缺失，0x106 崩溃 ✗
 ```
 下一步必须逆向 `viewUnified2` 的静态初始化依赖/上游 ViewManager 创建上下文，
 不能继续直接调用 `openView`。
+
+---
+
+## 一百六十七、Round 194：**View 层真正前置依赖：CautionConfig → BackupManager**
+
+### 167.1 裸加载 viewUnified2 的真实崩溃链
+
+`viewUnified2.so` 只有一个直接 NEEDED：`CautionConfig.so`。加载时：
+```text
+IMOPEN OK /usr/lib/viewUnified2.so
+MISSSO //lib/CautionConfig.so
+IMOPEN OK //usr/lib/CautionConfig.so
+```
+随后原始镜像在 `0x106` 崩溃。
+
+`CautionConfig.so` 导入：
+```text
+BackupManager::Bkup_Read(int, void*)
+```
+其构造函数在 `CautionConfig.so+0xb85d34` 调用该 PLT；对应 `.init_array` 有 16 个构造函数。
+
+### 167.2 ABI 与实测
+
+这是静态成员 ABI（两个显式参数），不是带 `this` 的三参数成员调用。正确 preload 符号：
+```c
+int _ZN13BackupManager9Bkup_ReadEiPv(int id, void *buf);
+```
+实测调用参数：
+```text
+id  = 0x01070316
+buf = 0x08b397af
+```
+该 `buf` 落在当前线程栈附近，且未对齐，不能盲目清零。
+
+- 原始链：`viewUnified2` 加载阶段 0x106 崩溃
+- 正确 ABI hook + 返回成功：`viewUnified2.so` 成功映射，0x106 消失
+- 但之后在 libc/NULL 调用处崩溃（返回值/配置内容未满足 CautionConfig 的预期）
+- 将 `CautionConfig` 全部 constructor 清零也只能绕过早期初始化，后续仍会使用未初始化配置
+- 仅 NOP 掉单个 `Bkup_Read` 调用同样不能完成初始化
+
+**⇒ ViewManager 之前的真正缺口不是单纯的 ViewManager 构造，而是 BackupManager/备份配置服务先要成立。**
+
+### 167.3 当前最短路线
+
+不要继续裸调 `openView`；先恢复/模拟 `BackupManager::Bkup_Read` 的正确输出协议，
+使 `CautionConfig` 构造完整返回。之后再让 worker 读取 `pViewManager` 并调用：
+```text
+viewManagerIf::openView(0x75, 0)
+```
+成功判据：worker 打印 dlopen 返回、`pViewManager != 0`，随后出现 View/Graphics/GRM 活动。
