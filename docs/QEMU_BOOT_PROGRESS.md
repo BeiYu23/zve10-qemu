@@ -14488,3 +14488,46 @@ libra::RecordPtr
 让 CautionConfig/ModelManager 完整初始化；随后再处理 Widget/Layer 状态。
 
 **停止继续堆 return-0 patch；所有此类 patch 仅保留为诊断实验镜像。**
+
+---
+
+## 一百七十、Round 197：**backup_sync_msg 第五参数与 FixedArea 值解出**
+
+### 170.1 `backup_sync_msg` 参数布局
+
+由 `libbackup.so:backup_sync_msg` 反汇编确认：
+```text
+r0 = out 指针
+r1 = 目标服务 0x003e014d
+r2 = 消息类型
+r3 = 长度/参数
+stack arg #5 = backup key（函数从 [r7,#44] 读取）
+```
+成功返回时，服务响应字节 4..7 被组装成 u32 写入 `*out`。
+
+### 170.2 实测 key
+
+App-only shim 捕获：
+```text
+key=0x00fa0028
+key=0x00fa005d
+```
+结合 BACKUP.bin 解析结果：
+```text
+0x00fa0028 -> 0x20098000   FixedAreaTop
+0x00fa005d -> 0x0007c000   FixedAreaSize
+```
+另捕获 Caution/配置相关 key：
+```text
+0x01070316 -> Backup.bin 数据字节 0x58
+0x0107146d -> Backup.bin 数据字节 0x46
+```
+
+### 170.3 实验结果
+
+在 `backup_sync_msg` 中返回 FixedArea 值后：
+- 早期 `MonQueue NULL` 路径不再立即出现
+- App 继续进入更深的初始化/模块链
+- 最终在 `0x5f3f845c` 触发 Illegal Instruction（进入 exception monitor）
+
+**⇒ Backup 协议切入点正确，FixedArea 数据确实是关键输入；下一步应修复该模块链的非法指令/缺失服务，再回到 ViewUnified。**
