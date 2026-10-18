@@ -14665,3 +14665,40 @@ viewUnified2 映射 ✓
 ```
 下一步应实现 fake GLES ioctl 的真实用户结构返回，并提供 Caution/Widget 默认对象图，
 而不是继续对 libObj 内部函数做无条件短路。
+
+---
+
+## 一百七十五、Round 202：**GPE ioctl 结构已观测；菜单构造器依赖定位尚有分支歧义**
+
+### 175.1 fake_gles ioctl 观察
+
+把 fake module 改为打印 ioctl 用户结构前 8 个 u32，实测三条命令：
+```text
+0x80048206 arg=... w=全 0
+0xc0048202 arg=... w={1,0,0,1,0,0,0,0}
+0x80048263 arg=... w=全 0
+```
+说明中间命令 `0xc0048202` 输入最少是 4 个 u32：首/第四字段为 1；目前尚未识别字段语义。
+
+### 175.2 菜单构造路径实验
+
+`CmnViewMenuData::CmnViewMenuData @ libObj+0x15b4c0` 本体分配/字段清零只有 0x50B，先调用：
+- `libObj+0x15ac40`
+- `libObj+0x15b466`
+- `libObj+0x15b4b2`
+- `SvcCautionIF::ChkCautionGrpStatus @ 0x14e580`
+
+此前分别 patch menu list helper 后，崩溃继续移动到 `SvcCautionIF`；这次只跳过 CmnViewMenuData
+构造器前三个外部调用，但运行仍在 `SvcCautionIF` 崩溃，说明 caution 调用来自另一路初始化，
+不是这个单一构造器入口。
+
+**结论：不能把“这次改了构造器”误当成 patch 已命中；必须用断点/日志证明命中地址。**
+
+### 175.3 当前确认
+
+- fake_gles open/ioctl 已成功 ✓
+- ViewUnified2 已加载 ✓
+- 菜单数据/警告检查代码已触达 ✓
+- 还没有 GraphicsEngine/GRM 帧或 GTK 图像 ✗
+- 不再继续堆 return-0 patch；下一步给 `SvcCautionIF::ChkCautionGrpStatus` 加安全记录/默认状态，
+  并理解 ioctl `0xc0048202` 的输出结构后再连接 framebuffer。
