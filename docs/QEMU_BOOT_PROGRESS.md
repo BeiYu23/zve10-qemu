@@ -15170,3 +15170,43 @@ CALL_63d188      pc=0x6007188
 
 下一步深入 `libObj+0x63d188` 及其后的字体/资源注册调用，确认是阻塞在 Fsys/GRM 资源读取，
 还是等待某个异步初始化完成。
+
+---
+
+## 一百九十、Round 217：**UI 资源齐全；延迟调用后停在 GRM 图形初始化**
+
+检查目标 `/usr` 分区（`nflasha15.img`）：真实固件确实没有 `libgrm.so`、`libuxengine.so`、
+`libgpe.so`、`libDDS.so`、`appFw.so`、`AppConfig.so`、`model*.so`；图形/引擎代码在
+`libObj.so`（21 MB）内部。但 UI 资源是完整的：
+
+```text
+/share/app/view*.uxc       大量视图资源
+/share/app/string_*.uxc    多语言字符串
+/share/app/image_*.uxc     图片资源
+/share/app/lang.uxb
+/share/startbinary/logo.bin
+```
+
+因此当前缺口不是 UI 文件缺失，而是图形初始化链未完成。
+
+新增延迟实验（`/mnt/build/libgrmlog-ait.so`，镜像 `ab_ait.img`）：在 `libObj.so` 加载后由
+worker 等待 35 秒（避开 boot 竞态）再从独立线程调用 `Application_System_Init(0)`：
+
+```text
+AIT worker started
+AIT appinit=0x0626c409
+AIT call
+[guest t=41.86] AIT returned
+[guest t=41.87] I/stella(122): Created HeapAllocator / Replaced log-hook
+               !!! GLES Vecgen disabled.
+[guest t=42.32] QMMAP addr=0x0 len=0x2000000 prot=0x3 flags=0x1 fd=10 ret=0xb8c5000
+[guest t=42.37] QMMAP addr=0x0 len=0x2000000 prot=0x3 flags=0x1 fd=10 ret=0xb8c5000
+```
+
+此后整个 guest 停止产生串口输出，无异常监视器记录，QMP 截图仍为全黑（320×240）。两次 32 MB
+`QMMAP` 返回同一地址，随后系统整体停摆在 GRM/GLES 图形内存初始化附近。
+
+结论：真实 UI 生命周期线程现在能进入 stella/GRM 初始化阶段，但被 QEMU 下缺失/不完整的图形
+后端挡住（与路线中“移植软件 GPE、DMM/HDMI/OSD、ramfb/fw_cfg”一致）。下一步应聚焦图形后端：
+确认 `grm_gles.ko`/DMP 与 `QMMAP` 之后的具体等待点，先让 GRM 初始化返回，再继续
+`uxengine_init` 后续阶段。
