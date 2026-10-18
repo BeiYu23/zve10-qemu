@@ -15139,3 +15139,34 @@ WidgetSystem slot   libObj+0x145cb1c   始终为 0
 当前阻塞边界已收敛到 `resmgr` 资源加载/创建图片调用内部（最后一个已确认调用点之后）。
 下一步继续对该加载器的 `createImage`/底层 GRM 和日志调用取证，直到线程返回
 `uxengine_init` 并继续后续 UI 阶段。
+
+---
+
+## 一百八十九、Round 216：**资源加载器推进到字体/资源注册后停止**
+
+对 `libObj+0x640398` 内部调用继续下断点，观察到同一资源加载路径的推进会列：
+
+```text
+RESMGR_LOADER    pc=0x600a398 r0=0xffffffff80000000
+STELLA_LOG       r0=0xffffffff80000000
+AFTER_STELLA     pc=0x600a3ba
+STELLA_LOG       r0=0x4
+CALL_63eb50      r0=0xffffffffffffffff
+STELLA_LOG       r0=0x4
+CALL_6411f8      r0=0x18
+CALL_64008c
+CALL_63c718
+STELLA_LOG       r0=0x4
+CALL_63d188      pc=0x6007188
+```
+
+之后在剩余观察窗内无继续推进，`pViewManager`（`0x06e5c21c`）与 WidgetSystem 槽
+（`0x06e26b1c`）在这些调用前后仍无任何写入。`libObj+0x63d188` 位于字体/资源注册相关代码区
+（`TextLayout::registerFontFaceFile` 附近），是当前已确认的最后推进点。
+
+限制说明：QEMU gdbstub 的 `$_thread` 是每 CPU 的调试线程号，单核 guest 下恒为 1，不能用于
+区分 guest 内的多个用户态线程；本轮序列是按从线程入口开始的连续调用推断的同一条资源加载
+路径，后续应改用 guest 侧线程 id 或调用栈核对。
+
+下一步深入 `libObj+0x63d188` 及其后的字体/资源注册调用，确认是阻塞在 Fsys/GRM 资源读取，
+还是等待某个异步初始化完成。
