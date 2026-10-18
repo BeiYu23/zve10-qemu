@@ -15009,3 +15009,24 @@ index 3 = "nfs"
 `target mask = 0xffffff9f` 包含 bit0。结合运行时没有 `appFw.so` 的 `dlopen`，当前可以排除
 “default target mask 直接排除 appFw”这一解释。剩余候选是记录类型 `0x20000004` 走独立 loader
 分支、模块路径缺失，或 im.elf 只处理其他类型的记录；仍未证明 `Application_System_Init` 被调用。
+
+---
+
+## 一百八十五、Round 212：**运行时 IMDB 查询完全没有 appFw 记录**
+
+在 App-only preload 中拦截 `IMDB_find_entry(id, mask)`，对同一 `default` target 启动完整记录
+查询。共观察到 55 次查询，全部为 `mask=0x1`，包含：
+
+```text
+0x0000003f  0x000007fd  0x000007fe  0x00000282
+0x000001e3  0x0000003e  0x000002dd  0x000002cd
+0x000000bd  0x00000110  0x00000331  0x000000f7
+0x00000097  0x00000052  0x00000270  0x0000007a
+... 以及后续 libInfra / media / network 条目
+```
+
+没有出现 appFw 表项的 `id=0x07fb0083`，也没有任何 `appFw.so` 的 `dlopen` 请求。结合
+appFw mask 已包含 default bit0，可排除“查询后返回失败”与“default mask 排除”两种解释。
+当前证据表明普通 im.elf IMDB loader 根本不消费 `0x20000004` 的 appFw 记录；该记录需要另一条
+程序或服务入口，或者只是固件注册表中的未使用遗留项。WidgetSystem 单例槽仍为零，UI 验收
+条件仍未满足。
