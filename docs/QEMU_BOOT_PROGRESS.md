@@ -14911,3 +14911,29 @@ LR            = 0x05fcf7e5
 GTK/QMP 截图仍为黑屏，尚未取得原生菜单像素或输入改变菜单的证据。下一步应恢复真实的
 `WidgetSystem` 构造和 `Layer`/`RecordPtr` 返回对象，继续使用 watchpoint 验证写入来源；不把
 栈上哨兵作为最终实现。
+
+---
+
+## 一百八十二、Round 209：**确认不能移植错误型号的 appFw 生命周期**
+
+对照 A7C II 的公开菜单实现后，重新核对本地固件树的型号归属：
+
+```text
+/mnt/build/lf/n10v2.img
+  VFAT 根目录含 .zv10_ran* / .zv10_done* 标记
+
+/mnt/build/lf/n15_orig.img 与 n15_new.img
+  含目标 ARMv7 libObj.so、viewUnified2.so ... viewUnified8.so
+  未发现独立 appFw.so
+
+/mnt/build/fw/unpacked_zv1f/.../lib/appFw.so
+  是另一套 ZV-1F 资产，不能作为 ZV-E10 生命周期入口
+```
+
+A7C II 报告里的 `0x1e78870` 是 AArch64/appFw 私有入口；直接把它或 ZV-1F 的
+`Application_Start`/`Application_System_Init` 地址套到 ZV-E10 会混淆型号和 ABI。当前 ZV-E10
+应继续围绕自身 `libObj` 的 `View::View(ViewManager*)`、`viewManagerIf` 事件投递、
+`pViewManager` 以及 `CreateAndAddSequence` 调用者找原始生命周期入口。
+
+这条核对没有改变实验镜像，也没有产生新的 UI 成功证据；当前仍是 `WidgetSystem → Layer →
+RecordPtr` 对象图未闭合，截图和交互验收保持未完成。
