@@ -14641,3 +14641,27 @@ SvcCautionIF::ChkCautionGrpStatus(unsigned short, unsigned short&)
 
 当前新阻塞是 Caution 配置状态默认值，下一步应给 `ChkCautionGrpStatus`/CautionConfig
 提供合法默认状态，再继续菜单构造，最后接 fake GLES framebuffer 到 ramfb。
+
+---
+
+## 一百七十四、Round 201：**fake GLES 后的菜单链已验证，但停止无边界诊断 patch**
+
+fake GLES 接管后，App 稳定执行三条 GPE ioctl：
+```text
+0x80048206
+0xc0048202
+0x80048263
+```
+随后进入 `CmnViewMenuData`，再进入 `SvcCautionIF`、Widget/Layer/RecordPtr。
+
+诊断 patch 可以逐层推进，但多个 `return 0` 会最终破坏栈/函数指针状态；因此这些 patch
+只用于定位，不作为 UI 实现。当前最可靠交付状态是：
+```text
+fake dmpgles2 open ✓
+fake GPE ioctl ✓
+viewUnified2 映射 ✓
+真实菜单数据构造开始 ✓
+完整菜单/画面/输入 ✗
+```
+下一步应实现 fake GLES ioctl 的真实用户结构返回，并提供 Caution/Widget 默认对象图，
+而不是继续对 libObj 内部函数做无条件短路。
