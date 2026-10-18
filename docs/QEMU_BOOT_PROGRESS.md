@@ -15030,3 +15030,19 @@ appFw mask 已包含 default bit0，可排除“查询后返回失败”与“de
 当前证据表明普通 im.elf IMDB loader 根本不消费 `0x20000004` 的 appFw 记录；该记录需要另一条
 程序或服务入口，或者只是固件注册表中的未使用遗留项。WidgetSystem 单例槽仍为零，UI 验收
 条件仍未满足。
+
+---
+
+## 一百八十六、Round 213：**缺少 dmode 文件不是 mode3 缺口**
+
+反汇编目标 initrd 的 `/sbin/init::check_mode_file()`：
+
+- 读取 `/setting/mode/dmode`；
+- 只有首字符 `0`、`k/K`、`g/G`、`d/D`、`e/E` 会设置特殊调试标志；
+- 文件不存在时返回错误并保留所有特殊标志为零；
+- `bootin.elf` 的 mode3 是这些标志全零时的默认路径，字符串也明确写着
+  “kernel boot -> created global infra -> LIRO boot -> appFw boot (default)”。
+
+因此当前自定义 initrd 没有 `/setting/mode/dmode`，本身不会把启动切到 mode0/1/2；补写
+`dmode=3` 不会改变结果。缺口仍在 mode3 后续实际消费的 UI 初始化链或缺失的目标资产，不能
+把 mode 文件缺失当作 WidgetSystem 单例为零的根因。
