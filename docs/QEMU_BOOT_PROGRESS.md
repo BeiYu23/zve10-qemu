@@ -14447,3 +14447,44 @@ libObj+0x6137e4  Widget::setLayerID → Layer 空对象
 
 **下一步应改为实现最小真实状态服务**：先让 `Backup_read` 返回与配置结构一致的默认数据，
 再初始化 ModelManager/WidgetSystem，而不是继续 patch 多个内部函数。
+
+---
+
+## 一百六十九、Round 196：**Backup_read 协议优先于继续 patch Widget**
+
+### 169.1 诊断结果
+
+在 App-only wrapper 下，拦截下层普通导出：
+```c
+int Backup_read(int id, void *buf) { return 0; }
+```
+可以让 `viewUnified2.so` 映射完成。随后依次暴露：
+```text
+WidgetSystem::getMouseState
+Widget::setLayerID / Layer
+libra::RecordPtr
+```
+继续把内部函数改成 return 0 会越来越偏离真实对象图，不能作为 UI 实现。
+
+### 169.2 重要 ABI 修正
+
+`BackupManager::Bkup_Read` 的符号名容易误导；真正应该拦的是下层普通函数
+`Backup_read(int, void*)`。CautionConfig 构造会调用它多次，观测到的 key 包括：
+```text
+0x01070316
+0x0107146d
+```
+其第二参数是当前线程栈附近的输出结构指针，不能盲目清零大块内存。
+
+### 169.3 当前路线
+
+已有旧逆向文档明确了 Backup 子系统：
+- `libbackup.so` 通过 `backup_sync_msg` 发 UIPC
+- `Backup_read_4Byte` 消息体固定 4 字节 key
+- `Data_SearchId` 的页目录/长度语义已解出
+- `BACKUP.BIN.fixed` 是官方数据输入
+
+因此下一步要根据 `Backup_read` 的实际消息结构，为 CautionConfig 的 key 返回合法默认结构，
+让 CautionConfig/ModelManager 完整初始化；随后再处理 Widget/Layer 状态。
+
+**停止继续堆 return-0 patch；所有此类 patch 仅保留为诊断实验镜像。**
