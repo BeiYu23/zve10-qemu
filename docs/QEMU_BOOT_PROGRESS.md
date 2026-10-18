@@ -14937,3 +14937,25 @@ A7C II 报告里的 `0x1e78870` 是 AArch64/appFw 私有入口；直接把它或
 
 这条核对没有改变实验镜像，也没有产生新的 UI 成功证据；当前仍是 `WidgetSystem → Layer →
 RecordPtr` 对象图未闭合，截图和交互验收保持未完成。
+
+---
+
+## 一百八十三、Round 210：**libIMDB 注册表含 appFw 名称，但目标资产缺失**
+
+对目标 ARMv7 固件的 `libIMDB.so` 做字符串和符号核对，注册表中存在：
+
+```text
+libuxengine.so
+uxengine_init / uxengine_sus / uxengine_res
+appFw.so
+Application_System_Init
+```
+
+但同一目标资产集合实际包含 `libObj.so`、`viewUnified2.so` 到 `viewUnified8.so`，没有对应的
+`appFw.so` 文件；`ref_e10` 的 `libObj.so` 与当前 `lf/tree/libObj.so` SHA-256 相同。已找到的
+`Application_Start`/`Application_System_Init` 实现来自 ZV-1F 资产，不能用于 ZV-E10。
+
+当前应先确认 `libIMDB` 的 appFw 条目是否在实际启动中被尝试加载、失败后是否继续运行，以及
+WidgetSystem 单例槽 `libObj+0x145cb1c` 是否正因该缺失模块而保持为零。不能把注册表字符串
+当作模块存在证据，也不能用错误型号库补齐它。当前仍未取得原生菜单像素和输入改变菜单的
+验收证据。
