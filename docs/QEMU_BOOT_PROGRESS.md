@@ -14994,3 +14994,18 @@ IMDB_TARGET_INPUT = "default"
 `dlopen`，但还不能仅凭此判断是 target mask 过滤、模块路径选择，还是另一个 loader 分支
 负责 UI 初始化。WidgetSystem 槽保持为零、原生菜单像素仍未出现；下一步继续跟踪
 `IMDB_find_entry` 的返回记录和 im.elf 的过滤条件。
+
+静态解析 `imdb_raw + 8` 的 target-name 表得到：
+
+```text
+index 0 = "default"
+index 1 = "qemu"
+index 2 = "sim"
+index 3 = "nfs"
+...
+```
+
+因此 `IMDB_find_target_bit("default")` 的正常返回应为 `0x1`；appFw 表项的
+`target mask = 0xffffff9f` 包含 bit0。结合运行时没有 `appFw.so` 的 `dlopen`，当前可以排除
+“default target mask 直接排除 appFw”这一解释。剩余候选是记录类型 `0x20000004` 走独立 loader
+分支、模块路径缺失，或 im.elf 只处理其他类型的记录；仍未证明 `Application_System_Init` 被调用。
