@@ -14280,3 +14280,75 @@ page translation fault at 0x0000000c
 ```
 且无 probe 的 A/B 运行中 ash 崩溃为 0。此前把它归因到 im.elf 是错误的；
 App 的真实停点仍是 HDMI 初始化后 futex 等待。
+
+---
+
+## 一百六十六、Round 193：**固定地址确认 pViewManager 永远为空；官方启动链与 View 层边界**
+
+### 166.1 `pViewManager` 已双重确认为空
+
+使用 `norandmaps` 固定地址，并在 App 进程中用 `dlsym(RTLD_DEFAULT, "pViewManager")` 读取：
+```
+pViewManager symbol address = 0x06e6d21c
+value = 0x00000000
+```
+在整个 App 生命周期（dlopen libObj、HDMI 初始化、最终 futex 等待）始终为 0。
+随后用 QEMU gdb 硬件 watchpoint 盯 `0x06e6d21c`，运行到 310s，**没有任何写入命中**。
+**⇒ ViewManager 确实从未创建，不是探针漏读。**
+
+### 166.2 `viewManagerIf::openView(0x75,0)` 实验
+
+找到 `viewUnified2.so` 内真实调用点：
+```asm
+movs r0, #0x75
+movs r1, #0
+blx  viewManagerIf::openView(int,int)
+```
+在 App 进程里直接调用同一入口：
+```
+MENU open fn = 0x05afbfb9
+MENU open call
+page translation fault at 0x00000010
+```
+**⇒ 入口确实可调用，但内部依赖空 ViewManager；直接盲调不可行。**
+
+### 166.3 延迟 dlopen View 层实验
+
+为避开 loader lock，在独立 worker 中延迟：
+```text
+worker → dlopen("/usr/lib/viewUnified2.so") → dlsym(openView) → openView(0x75,0)
+```
+结果：
+```
+IMOPEN OK /usr/lib/viewUnified2.so
+program: im.elf.real(THREAD_INFRA2)
+pc=0x00000106
+```
+崩溃发生在 `dlopen(viewUnified2.so)` 的静态初始化/依赖初始化阶段，尚未打印
+`view handle`，所以 View 层不能仅靠裸 dlopen 注入；它需要完整的上游初始化上下文。
+
+### 166.4 官方 cramfs initrd A/B 已验证
+
+官方升级包里的 initrd 是 cramfs；将 cmdline 改为 `rootfstype=cramfs` 后真实跑通：
+```text
+UdtrMain.sh
+[W] Forced Prod Mode.
+[DETAIL] MODE=1
+execute_prod.sh
+  mf
+  sen.elf
+```
+但 `ud_im.elf` 依赖 `libupdater0604.so` / `udtr_senser_init`，属于 updater/传感器初始化，
+不是正常 `im.elf` UI 启动器。故官方链验证了模式判断，却不会自动创建相机 View。
+
+### 166.5 当前准确结论
+
+```
+官方 initrd：模式链真实可复现 ✓
+自定义 initrd：bootin → im.elf，App 可运行到 HDMI 后 futex ✓
+pViewManager：确定从未创建 ✗
+openView：已定位、可达，但空管理器崩溃 ✗
+viewUnified2 裸加载：静态初始化依赖缺失，0x106 崩溃 ✗
+```
+下一步必须逆向 `viewUnified2` 的静态初始化依赖/上游 ViewManager 创建上下文，
+不能继续直接调用 `openView`。
