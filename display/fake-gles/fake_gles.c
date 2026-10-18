@@ -15,6 +15,11 @@ static dev_t fake_dev = MKDEV(FAKE_MAJOR, FAKE_MINOR);
 static struct cdev fake_cdev;
 static void *fake_fb;
 static atomic_t opens = ATOMIC_INIT(0);
+static atomic_t ioctl_logs = ATOMIC_INIT(0);
+static const u32 fake_state[] = {
+    0x80000000U, /* index 0: unsupported */
+    0x00000001U, /* index 1: default resource/state handle */
+};
 
 static int fake_open(struct inode *ino, struct file *f)
 {
@@ -26,11 +31,30 @@ static int fake_open(struct inode *ino, struct file *f)
 static int fake_release(struct inode *ino, struct file *f) { return 0; }
 static long fake_ioctl(struct file *f, unsigned int cmd, unsigned long arg)
 {
-    { unsigned int w[8] = {0,0,0,0,0,0,0,0};
-      if (arg && access_ok(VERIFY_READ, (void __user *)arg, sizeof(w)))
-          copy_from_user(w, (void __user *)arg, sizeof(w));
-      printk(KERN_INFO "FAKEGLES ioctl cmd=0x%08x arg=0x%lx w=%08x,%08x,%08x,%08x,%08x,%08x,%08x,%08x\\n",
-             cmd, arg, w[0],w[1],w[2],w[3],w[4],w[5],w[6],w[7]); }
+    unsigned int w[8] = {0,0,0,0,0,0,0,0};
+    int copied = 0;
+
+    if (arg && access_ok(VERIFY_READ, (void __user *)arg, sizeof(w)))
+        copied = (copy_from_user(w, (void __user *)arg, sizeof(w)) == 0);
+
+    if (cmd == 0xc0048202U) {
+        u32 value = 0;
+        u32 index = copied ? w[0] : 1;
+        if (index < ARRAY_SIZE(fake_state))
+            value = fake_state[index];
+        if (arg && copy_to_user((void __user *)arg, &value, sizeof(value)))
+            return -EFAULT;
+        w[0] = value;
+    } else if (cmd == 0x80048206U || cmd == 0x80048263U) {
+        u32 value = 0;
+        if (arg && copy_to_user((void __user *)arg, &value, sizeof(value)))
+            return -EFAULT;
+        w[0] = value;
+    }
+
+    if (atomic_inc_return(&ioctl_logs) <= 64)
+        printk(KERN_INFO "FAKEGLES ioctl cmd=0x%08x arg=0x%lx w=%08x,%08x,%08x,%08x,%08x,%08x,%08x,%08x\\n",
+               cmd, arg, w[0],w[1],w[2],w[3],w[4],w[5],w[6],w[7]);
     return 0;
 }
 static int fake_mmap(struct file *f, struct vm_area_struct *vma)
