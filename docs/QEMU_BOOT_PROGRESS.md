@@ -14531,3 +14531,34 @@ key=0x00fa005d
 - 最终在 `0x5f3f845c` 触发 Illegal Instruction（进入 exception monitor）
 
 **⇒ Backup 协议切入点正确，FixedArea 数据确实是关键输入；下一步应修复该模块链的非法指令/缺失服务，再回到 ViewUnified。**
+
+---
+
+## 一百七十一、Round 198：**Backup.bin 真实值已成功返回给 App**
+
+### 171.1 真实 Backup key/value shim
+
+从官方 `Backup.bin` 按已解出的页目录/条目格式解析出 245 个已观察 key，生成 App-only
+`backup_sync_msg` shim，按第五参数 key 返回真实数据。
+
+关键输出首次在 App 日志中出现：
+```text
+FixedAreaTop  : 20098000
+FixedAreaSize : 0007C000
+```
+这与 `Backup.bin` 的真实条目一致：
+```text
+0x00fa0028 -> 0x20098000
+0x00fa005d -> 0x0007c000
+```
+
+### 171.2 剩余阻塞
+
+FixedArea 数据已经正确返回，但随后仍然：
+```text
+program: im.elf.real(THREAD_INFRA0)
+Illeagle Instruction at 0x5f3f845c
+```
+所以当前阻塞已从“Backup 数据为 0 / MonQueue 初始化失败”推进到
+**Monitor/内核模块后续非法执行路径**。下一步应映射 `0x5f3f845c` 的模块/调用来源，
+修复该路径后再回到 ViewUnified 初始化。
