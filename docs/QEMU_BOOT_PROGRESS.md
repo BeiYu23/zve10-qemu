@@ -14781,3 +14781,67 @@ QMP screendump 成功得到彩色 320x240 VIP framebuffer 图像：
 
 **⇒ fake GLES → CXD90045 VIP → GTK/QMP 的完整显示消费者链已稳定复现。**
 App 随后仍在 Infra/Menu 上下文崩溃，但这不再是显示消费者阻塞；下一步集中于菜单状态对象和 App GPE 像素替换静态测试帧。
+
+---
+
+## 一百八十、Round 207：**gdb 明确空菜单项和 Caution/WidgetSystem 状态缺口**
+
+### 180.1 原始菜单现场
+
+在 `ab_fakegles.img` 上使用 `norandmaps` 和 QEMU ARM gdb 硬件断点，`libObj` 固定基址为
+`0x059bc000`。`CmnViewMenuData` 内部 `libObj+0x15b2d0` 的指令为：
+
+```text
+ldr r1, [r3, #0]
+bl  libObj+0x15b2be       # 将首节点写入 out 参数
+```
+
+入口单步记录：
+
+```text
+r0 = 0x0003b488 / 0x00000000（不同调用轮次）
+r1 = 0x80000004
+lr = libObj+0x15b61b
+```
+
+`r0=0` 的轮次证明调用者传入了空菜单项；`initMenuData` 本身在 `r1==0` 时直接返回，随后仍有代码按有根菜单继续遍历。
+
+### 180.2 可复现的最小诊断推进
+
+只在 QEMU 副本 `ab_getsub.img` 的 `/lib/libObj.so` 中保持 ELF 长度地改写指令，未改动原始
+`libObj.so`：
+
+```text
+libObj+0x15b2d0:  1968 -> 0021   # ldr r1,[r3] 变为 movs r1,#0
+libObj+0x14e422:  1968 -> 0021   # Caution 首字段访问变为 movs r1,#0
+libObj+0x617740:  d0f81435 -> 704700bf  # WidgetSystem 计数 helper 直接返回
+```
+
+三处均通过 ext2 block 定位、回读和字节校验。运行证据保持：
+
+```text
+FAKEGLES open count=1
+FAKEGLES ioctl 0x80048206
+FAKEGLES ioctl 0xc0048202
+FAKEGLES ioctl 0x80048263
+IMOPEN OK /usr/lib/viewUnified2.so
+```
+
+第一处探针把异常从 `libObj+0x15b2d0` 推进到 `libObj+0x14e422`；第二处再推进到
+`libObj+0x617740`；第三处再推进到 `libObj+0x6178f8`。最后一次现场为：
+
+```text
+PC = 0x05fd38f8 = 0x059bc000 + 0x6178f8
+r0 = 0x00000484
+```
+
+`+0x6178f8` 首条指令访问 `[r0,#12]`，说明 WidgetSystem 的链表对象仍未创建。GTK/QMP
+截图仍为黑屏；没有把这些诊断探针当作原生菜单或画面成功证据。
+
+### 180.3 当前结论
+
+- Backup 真实值、fake GLES、GTK/QMP 消费者链均可复现；
+- 空菜单项、Caution 对象、WidgetSystem 链表的缺口已分别取得寄存器和指令级证据；
+- 继续无边界 `return 0`/空返回只会制造假的对象图；下一步应从 `WidgetSystem`/`Layer`/`RecordPtr`
+  的真实构造入口和 `initMenuData` 的上游菜单表来源入手；
+- 当前仍未达到“原生菜单像素 + 输入改变菜单”的验收条件。
