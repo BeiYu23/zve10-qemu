@@ -15046,3 +15046,37 @@ appFw mask 已包含 default bit0，可排除“查询后返回失败”与“de
 因此当前自定义 initrd 没有 `/setting/mode/dmode`，本身不会把启动切到 mode0/1/2；补写
 `dmode=3` 不会改变结果。缺口仍在 mode3 后续实际消费的 UI 初始化链或缺失的目标资产，不能
 把 mode 文件缺失当作 WidgetSystem 单例为零的根因。
+
+---
+
+## 一百八十七、Round 214：**找到并调用正确型号的 Application_System_Init**
+
+目标 ARMv7 `libObj.so` 实际导出：
+
+```text
+Application_System_Init @ libObj+0x8a2408
+```
+
+反汇编显示它清理初始化参数、创建 UI 线程、设置 CPU 并返回；这不是从 ZV-1F 借来的
+`appFw.so` 符号。QEMU-only preload 在 `libObj.so` 加载完成后的主线程下一次 `dlopen` 入口调用：
+
+```text
+Application_System_Init(0)
+```
+
+运行证据：
+
+```text
+MD main appinit=0x0626c409
+MD main appinit call
+MD main appinit returned
+```
+
+入口调用没有异常，确认此前缺少的不是地址或 ABI。入口返回后延迟读取仍显示：
+
+```text
+pViewManager = 0
+WidgetSystem global slot = 0
+```
+
+因此真实入口启动的异步 UI 线程仍停在后续依赖条件，或者需要非空初始化参数/事件；不能在入口返回后立即裸 `dlopen(viewUnified2)`。下一步应对该入口创建的线程、其首次 UIPC/序列请求和等待点做取证，再恢复它需要的真实依赖。
