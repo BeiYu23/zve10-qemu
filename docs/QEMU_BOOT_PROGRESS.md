@@ -14763,3 +14763,21 @@ GTK/QMP console screenshot ✓
 App GPE 像素到 VIP screenshot ✗
 ```
 下一步优先解决 VIP 的初始化时序和 DDR0 地址映射，再接 App GPE 像素。 
+
+---
+
+## 一百七十九、Round 206：**统一 runner 首次稳定抓到 fake GLES/VIP 帧**
+
+使用 `scripts/run_cxd90045_gtk.sh` 跑统一镜像 `ab_unified.img`，日志证据：
+```text
+FAKEGLES VIP test frame programmed
+FAKEGLES open count=1
+FAKEGLES ioctl 0x80048206
+FAKEGLES ioctl 0xc0048202
+FAKEGLES ioctl 0x80048263
+```
+QMP screendump 成功得到彩色 320x240 VIP framebuffer 图像：
+`artifacts/cxd90045-unified-run.png`
+
+**⇒ fake GLES → CXD90045 VIP → GTK/QMP 的完整显示消费者链已稳定复现。**
+App 随后仍在 Infra/Menu 上下文崩溃，但这不再是显示消费者阻塞；下一步集中于菜单状态对象和 App GPE 像素替换静态测试帧。
