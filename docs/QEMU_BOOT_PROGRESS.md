@@ -14975,3 +14975,22 @@ init symbol  = Application_System_Init
 表项断定当前 QEMU 启动实际调用了 `Application_System_Init`。下一步应在 App-only loader 观察器中
 记录当前 target bit、该记录是否被选中、以及对应 `dlopen` 是否发生，再判断 WidgetSystem 单例槽
 未写入是否与这条记录有关。
+
+---
+
+## 一百八十四、Round 211：**运行时 target 为 default，但未请求 appFw**
+
+在只增加 `dlopen` 日志的 QEMU 副本上，`im.elf.real` 启动阶段实际加载了
+`libosal_uipc.so`、`libbackup.so`、`libMWF.so`、`libObj.so` 等模块；日志中没有
+`appFw.so` 的请求或失败记录。对 `libIMDB` 的 `IMDB_find_target_bit` 设置入口断点，
+抓到的输入为：
+
+```text
+IMDB_TARGET_INPUT = "default"
+```
+
+第一次尝试用 Thumb 返回地址读取返回 bit 时被异常监视器的返回地址格式打断，因此 bit 数值仍
+未作为确定证据记录。当前可以确定的是：默认 target 启动确实没有发出 `appFw.so` 的
+`dlopen`，但还不能仅凭此判断是 target mask 过滤、模块路径选择，还是另一个 loader 分支
+负责 UI 初始化。WidgetSystem 槽保持为零、原生菜单像素仍未出现；下一步继续跟踪
+`IMDB_find_entry` 的返回记录和 im.elf 的过滤条件。
