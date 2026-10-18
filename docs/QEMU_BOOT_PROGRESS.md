@@ -14702,3 +14702,19 @@ viewUnified2 映射 ✓
 - 还没有 GraphicsEngine/GRM 帧或 GTK 图像 ✗
 - 不再继续堆 return-0 patch；下一步给 `SvcCautionIF::ChkCautionGrpStatus` 加安全记录/默认状态，
   并理解 ioctl `0xc0048202` 的输出结构后再连接 framebuffer。
+
+---
+
+## 一百七十六、Round 203：**gdb 取得菜单空链表真实现场**
+
+QEMU gdb 在固定地址命中 `CmnViewMenuData` 崩溃点：
+```text
+PC = libObj + 0x15b2d0
+LR = libObj + 0x15b61b
+r3 = 0
+r0 = 0x0ae87d14
+r2 = 0x0ae87c40
+```
+LR 落在同一 `CmnViewMenuData` 辅助调用路径，确认这是菜单项链表空节点访问，不是 fake GLES ioctl 或 Backup/UIPC 崩溃。
+
+下一步应针对该调用者构造合法的空链表结束节点/菜单默认对象；避免继续猜 Caution overload。
