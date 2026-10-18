@@ -14738,3 +14738,28 @@ VNC support yes
 
 下一步是让 fake GLES/CPYFB 的软件 framebuffer 更新 `bionz_vip` 的 graphics console，
 再对照真实 App 的 GPE ioctl 输出生成菜单像素。 
+
+---
+
+## 一百七十八、Round 205：**GTK/QMP 消费者已可用，VIP 接线仍需时序修正**
+
+### 已验证
+
+- Sony QEMU 新构建启用 GTK/VNC；
+- `cxd90045,graphics=on` 可在 Xvfb 下运行；
+- QMP `screendump` 可输出 320×240/640×384 图像；
+- 现有截图是 parallel console，说明宿主 graphics console 工作。
+
+### 当前问题
+
+fake GLES 的静态 VIP framebuffer 写入尚未在截图中出现。CXD90045 的 `bionz_vip`/`bionz_cpyfb`
+已经接入 QEMU 源码，但 fake module 的 `ioremap`/VIP layer 写入时序仍需修正；当前实验会在
+fake module 初始化或 App 进入阶段提前停住，尚无可靠静态帧证据。
+
+**因此当前可靠显示证据仍然是：**
+```text
+App fake dmpgles2 open/ioctl ✓
+GTK/QMP console screenshot ✓
+App GPE 像素到 VIP screenshot ✗
+```
+下一步优先解决 VIP 的初始化时序和 DDR0 地址映射，再接 App GPE 像素。 
