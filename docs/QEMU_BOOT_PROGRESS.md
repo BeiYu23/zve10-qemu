@@ -14959,3 +14959,19 @@ Application_System_Init
 WidgetSystem 单例槽 `libObj+0x145cb1c` 是否正因该缺失模块而保持为零。不能把注册表字符串
 当作模块存在证据，也不能用错误型号库补齐它。当前仍未取得原生菜单像素和输入改变菜单的
 验收证据。
+
+对 `.data.rel.ro` 的记录表解析得到 `appFw` 表项（记录序号从0计）为：
+
+```text
+record       = 140
+type         = 0x20000004
+id           = 0x07fb0083
+target mask  = 0xffffff9f
+library      = appFw.so
+init symbol  = Application_System_Init
+```
+
+`IMDB_find_entry` 按目标 mask 过滤记录，`IMDB_get_entries` 返回同一表的入口数组；因此还不能仅凭
+表项断定当前 QEMU 启动实际调用了 `Application_System_Init`。下一步应在 App-only loader 观察器中
+记录当前 target bit、该记录是否被选中、以及对应 `dlopen` 是否发生，再判断 WidgetSystem 单例槽
+未写入是否与这条记录有关。
