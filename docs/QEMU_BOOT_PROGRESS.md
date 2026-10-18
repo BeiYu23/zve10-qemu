@@ -14222,3 +14222,61 @@ guest 70.4s，App 正常跑到 32.5s（HDMI 初始化后停住），无崩溃
 ```
 另有内核侧改动（本次已打，备用）：`mm/memory.c` 里
 `int randomize_va_space = 2;` → `= 0;`（ZZQEMU 标记）。
+
+---
+
+## 一百六十五、Round 192：**官方 cramfs initrd + 真实 UdtrMain 启动链验证**
+
+### 165.1 官方 initrd 能在 QEMU 识别，但必须用 `rootfstype=cramfs`
+
+从官方升级包 `nflasha1/boot/initrd.img` 提取：
+```
+类型：CramFS（4,943,872 B）
+```
+使用原先 `rootfstype=ext2` 会在 `prepare_namespace` 早期 Oops；改成：
+```text
+rootfstype=cramfs
+```
+之后内核成功：
+```
+RAMDISK: cramfs filesystem found at block 0
+VFS: Mounted root (cramfs filesystem) readonly on device 1:0
+```
+
+### 165.2 官方生产启动链真实跑通
+
+```
+EXECVE /usr/bin//UdtrMain.sh
+[W] Forced Prod Mode.
+[DETAIL] MODE=1
+EXECVE /usr/bin//ud_im.elf
+EXECVE /usr/bin//execute_prod.sh
+EXECVE /usr/bin//mf
+EXECVE /usr/bin/sen.elf
+```
+
+**根因：** `/setting/updater/mode` 不存在 ⇒ `UdtrMain.sh:getCurrentMode()` 进入
+Forced Production（MODE_PROD）⇒ `execute_prod.sh` 启动 `mf` + `sen.elf`。
+
+### 165.3 重要边界：`ud_im.elf` 不是正常主界面 App
+
+官方 `ud_im.elf` 的 NEEDED/字符串显示：
+```
+libupdater0604.so / udtr_senser_init / sens_adjCmd_init
+```
+它是 updater/传感器初始化程序，不是 `im.elf` 的正常相机主界面启动器。
+因此：
+- 官方 initrd + `UdtrMain.sh` 的启动分支已验证 ✓
+- 但 Forced Prod 链不会自动给我们创建 Stella/UI View ✓
+- 当前 QEMU 的自定义 ext2 initrd + `bootin.elf` 仍是继续逆向 UI 的工作链
+
+### 165.4 另一个重要纠正：0xc 异常属于 ash/ld.so，不是 App
+
+现场：
+```
+program: /bin/ash(ash)
+pc = ld-2.11.2.so+0xa79e
+page translation fault at 0x0000000c
+```
+且无 probe 的 A/B 运行中 ash 崩溃为 0。此前把它归因到 im.elf 是错误的；
+App 的真实停点仍是 HDMI 初始化后 futex 等待。
