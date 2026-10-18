@@ -1,0 +1,301 @@
+diff --git a/hw/arm/bionz.c b/hw/arm/bionz.c
+index 3c146fb..fa04ac8 100644
+--- a/hw/arm/bionz.c
++++ b/hw/arm/bionz.c
+@@ -211,9 +211,9 @@
+ 
+ //////////////////////////// CXD90045 ////////////////////////////
+ #define CXD90045_DDR0_BASE 0x00000000
+-#define CXD90045_DDR0_SIZE 0x40000000
++#define CXD90045_DDR0_SIZE 0x40000000 /* patched: 对齐真机 cmdline 的 mem=1G@0 */
+ #define CXD90045_DDR1_BASE 0x80000000
+-#define CXD90045_DDR1_SIZE 0x40000000
++#define CXD90045_DDR1_SIZE 0x10000000 /* patched: 对齐真机 cmdline 的 mem=256M@0x80000000@1 */
+ #define CXD90045_DDRC_BASE(i) (0xf0104000 + (i) * 0x1000)
+ #define CXD90045_SRAM_BASE 0xfe000000
+ #define CXD90045_SRAM_SIZE 0x01000000
+@@ -239,7 +239,7 @@
+ #define CXD90045_IRQ_SIO(i) (201 + (i))
+ #define CXD90045_IRQ_SDHCI 227
+ 
+-#define CXD90045_TEXT_OFFSET 0x00108000
++#define CXD90045_TEXT_OFFSET 0x00138000 /* 对齐 cxd90045_qemu_nfs_defconfig */
+ #define CXD90045_INITRD_OFFSET 0x00700000
+ 
+ #define NAND_SECTOR_SIZE 0x200
+@@ -978,11 +978,116 @@ static void cxd90014_init(MachineState *machine)
+     cxd_add_const_reg("fusb_otg_usb_id_ext", CXD90014_USB_OTG_BASE + 0x10, 2);
+ }
+ 
++
++/* ---- CXD90045: ATAGS + 带寄存器的跳板 ----
++ * 原来模型的跳板只设 PC，r1/r2 都是 0，内核因此拿不到 machine type 和 atags，
++ * 也就拿不到 initrd。这里补一个最小 ATAGS（CORE + INITRD2 + CMDLINE + NONE），
++ * 并让跳板在跳转前把 r1=MACH_TYPE、r2=atags 装好。
++ * MACH_TYPE_CXD900X0 = 3497
++ */
++#define CXD90045_ATAGS_BASE   0x00010000u  /* 必须在第一 MB 内：早期页表只映射低地址 */
++#define ATAG_CORE             0x54410001u
++#define ATAG_INITRD2          0x54420005u
++#define ATAG_CMDLINE          0x54410009u
++#define ATAG_NONE             0x00000000u
++
++static void cxd90045_build_atags(hwaddr base, hwaddr initrd_start, hwaddr initrd_size, const char *cl)
++{
++    static uint8_t buf[0x1000];
++    uint32_t *p = (uint32_t *)buf;
++    if (!cl || !*cl)
++        cl = "console=ttyAM0,115200n8";
++
++    *p++ = 2; *p++ = ATAG_CORE;
++    if (initrd_start && initrd_size) {
++        *p++ = 4; *p++ = ATAG_INITRD2;
++        *p++ = (uint32_t)initrd_start; *p++ = (uint32_t)initrd_size;
++    }
++    {
++        size_t len = strlen(cl) + 1;
++        size_t words = (len + 3) / 4;
++        *p++ = 2 + words; *p++ = ATAG_CMDLINE;
++        memset(p, 0, words * 4);
++        memcpy(p, cl, len);
++        p += words;
++    }
++    *p++ = 0; *p++ = ATAG_NONE;
++
++    rom_add_blob_fixed("atags", buf, (size_t)((uint8_t *)p - buf), base);
++}
++
++static void cxd90045_bootloader(hwaddr base, hwaddr target, hwaddr atags)
++{
++    uint32_t l[] = {
++        0xe3a00000,              /* mov  r0, #0                */
++        0xe59f1004,              /* ldr  r1, [pc, #4]  -> 3497 */
++        0xe59f2004,              /* ldr  r2, [pc, #4]  -> atags*/
++        0xe59ff004,              /* ldr  pc, [pc, #4]  -> target*/
++        3497,                    /* MACH_TYPE_CXD900X0 */
++        (uint32_t)atags,
++        (uint32_t)target,
++    };
++    int i;
++    for (i = 0; i < ARRAY_SIZE(l); i++)
++        l[i] = tswap32(l[i]);
++    rom_add_blob_fixed("bootloader", l, sizeof(l), base);
++}
++
++
++/* ---- WBI（Warm Boot Image）装载 ----
++ * 真机 cmdline 的 wbimem=<size>@<addr> 是段表：
++ *   0x1000@0x20021000  0xEC000@0x20028000  0x8000@0x20145000
++ *   0x500000@0x03085000  0x96D000@0x11000000
++ *   0x2A48000@0x20200000  0x200000@0x23E00000
++ * 合计 ≈59.7MB ≈ nflasha5(60MB)，即 nflasha5 是这些段的顺序拼接。
++ * 真机由引导器搬进内存；-kernel 直载会跳过它 ⇒ backup.ko 拿不到
++ * ft_backup/cp_backup（backup_init: file_load 失败）⇒ Backup_* 缺失
++ * ⇒ 约 20 个模块连锁失败。这里补上引导器这一步。
++ */
++static const struct { uint32_t size, addr; } cxd90045_wbi_segs[] = {
++    { 0x001000, 0x20021000 }, { 0x0EC000, 0x20028000 },
++    { 0x008000, 0x20145000 }, { 0x500000, 0x03085000 },
++    { 0x96D000, 0x11000000 }, { 0x2A48000, 0x20200000 },
++    { 0x200000, 0x23E00000 },
++};
++
++static void cxd90045_load_wbi(BlockBackend *blk)
++{
++    hwaddr src = 2 * 0x200000 + 0x05800000;   /* 用户区里的 nflasha5 */
++    uint8_t *buf;
++    int64_t off = src;
++    uint32_t i;
++
++    if (!blk) {
++        return;
++    }
++    buf = g_malloc(64 * 1024);
++    for (i = 0; i < ARRAY_SIZE(cxd90045_wbi_segs); i++) {
++        uint32_t sz = cxd90045_wbi_segs[i].size;
++        hwaddr dst = cxd90045_wbi_segs[i].addr;
++        uint32_t done = 0;
++        while (done < sz) {
++            uint32_t chunk = MIN((uint32_t)(64 * 1024), sz - done);
++            if (blk_pread(blk, off, buf, chunk) < 0) {
++                g_free(buf);
++                return;
++            }
++            rom_add_blob_fixed("wbi", buf, chunk, dst + done);
++            off += chunk;
++            done += chunk;
++        }
++    }
++    g_free(buf);
++    fprintf(stderr, "ZZWBI: loaded %u segments from nflasha5\n",
++            (unsigned)ARRAY_SIZE(cxd90045_wbi_segs));
++}
++
+ static void cxd90045_init(MachineState *machine)
+ {
+     DriveInfo *dinfo;
+     BlockBackend *drive;
+     MemoryRegion *mem;
++    MemoryRegion *ddr0;
+     DeviceState *dev;
+     Object *cpu;
+     BusState *bus;
+@@ -999,6 +1104,7 @@ static void cxd90045_init(MachineState *machine)
+ 
+     mem = g_new(MemoryRegion, 1);
+     memory_region_init_ram(mem, NULL, "ddr0", CXD90045_DDR0_SIZE, &error_fatal);
++    ddr0 = mem;
+     memory_region_add_subregion(get_system_memory(), CXD90045_DDR0_BASE, mem);
+ 
+     mem = g_new(MemoryRegion, 1);
+@@ -1024,6 +1130,28 @@ static void cxd90045_init(MachineState *machine)
+         irq[i] = qdev_get_gpio_in(dev, i);
+     }
+ 
++    /* Software video path for CXD90045: reuse the CXD4108 VIP/CPYFB models. */
++    dev = qdev_new("bionz_cpyfb");
++    qdev_prop_set_uint32(dev, "base", CXD90045_DDR0_BASE);
++    sysbus_realize_and_unref(SYS_BUS_DEVICE(dev), &error_fatal);
++    sysbus_mmio_map(SYS_BUS_DEVICE(dev), 0, 0x79700000);
++    sysbus_mmio_map(SYS_BUS_DEVICE(dev), 1, 0x79780000);
++    sysbus_connect_irq(SYS_BUS_DEVICE(dev), 0, irq[0]);
++
++    dev = qdev_new("bionz_vip");
++    object_property_set_link(OBJECT(dev), "memory", OBJECT(ddr0), &error_fatal);
++    sysbus_realize_and_unref(SYS_BUS_DEVICE(dev), &error_fatal);
++    sysbus_mmio_map(SYS_BUS_DEVICE(dev), 0, 0x79800000);
++    sysbus_mmio_map(SYS_BUS_DEVICE(dev), 1, 0x79800800);
++    sysbus_connect_irq(SYS_BUS_DEVICE(dev), 0, irq[1]);
++    sysbus_connect_irq(SYS_BUS_DEVICE(dev), 1, irq[2]);
++
++    /* L2 缓存控制器 (PL310)：索尼 platform.h -> CXD900X0_PL310_BASE = 0xf8002000
++     * 不补这个，内核的 l2c 清刷/同步循环会一直轮询一个读到 0 的寄存器而死循环。 */
++    dev = qdev_new("l2x0");
++    sysbus_realize_and_unref(SYS_BUS_DEVICE(dev), &error_fatal);
++    sysbus_mmio_map(SYS_BUS_DEVICE(dev), 0, 0xf8002000);
++
+     for (i = 0; i < CXD90045_NUM_GPIO; i++) {
+         dev = qdev_new("bionz_gpio");
+         qdev_prop_set_uint8(dev, "version", 3);
+@@ -1033,21 +1161,25 @@ static void cxd90045_init(MachineState *machine)
+     }
+ 
+     dev = qdev_new("bionz_bootcon");
+-    qdev_prop_set_chr(dev, "chardev", serial_hd(0));
++    /* patched: 与 UART0 抢 chardev 会导致 QEMU>=5 报 "Device 'serial0' is in use" */
++    qdev_prop_set_chr(dev, "chardev", serial_hd(CXD90045_NUM_UART));
+     sysbus_realize_and_unref(SYS_BUS_DEVICE(dev), &error_fatal);
+     sysbus_mmio_map(SYS_BUS_DEVICE(dev), 0, CXD90045_BOOTCON_BASE);
+ 
+     dev = qdev_new(TYPE_SYSBUS_SDHCI);
+-    qdev_prop_set_uint8(dev, "uhs", UHS_II);
++    qdev_prop_set_uint8(dev, "uhs", UHS_I);
+     sysbus_realize_and_unref(SYS_BUS_DEVICE(dev), &error_fatal);
+     sysbus_mmio_map(SYS_BUS_DEVICE(dev), 0, CXD90045_SDHCI_BASE);
+     sysbus_connect_irq(SYS_BUS_DEVICE(dev), 0, irq[CXD90045_IRQ_SDHCI - CXD90045_IRQ_OFFSET]);
+     bus = qdev_get_child_bus(dev, "sd-bus");
+ 
++    /* 先按引导器的方式把 WBI 搬进内存 */
++    cxd90045_load_wbi(drive);
++
+     dev = qdev_new(TYPE_SD_CARD);
+     qdev_prop_set_bit(dev, "emmc", true);
+     qdev_prop_set_bit(dev, "high_capacity", true);
+-    qdev_prop_set_uint32(dev, "boot_size", 0x40000);
++    qdev_prop_set_uint32(dev, "boot_size", 0x200000); /* patched: 真机 nflashaB0/B1 各 2MB */
+     qdev_prop_set_drive(dev, "drive", drive);
+     qdev_realize_and_unref(dev, bus, &error_fatal);
+ 
+@@ -1072,9 +1204,24 @@ static void cxd90045_init(MachineState *machine)
+     }
+ 
+     if (machine->kernel_filename) {
++        hwaddr initrd_addr = 0;
++        long initrd_size = 0;
+         load_image_targphys(machine->kernel_filename, CXD90045_DDR0_BASE + CXD90045_TEXT_OFFSET, CXD90045_DDR0_SIZE - CXD90045_TEXT_OFFSET);
+-        load_image_targphys(machine->initrd_filename, CXD90045_DDR0_BASE + CXD90045_INITRD_OFFSET, CXD90045_DDR0_SIZE - CXD90045_INITRD_OFFSET);
+-        cxd_write_bootloader(CXD90045_BOOTROM_BASE, CXD90045_DDR0_BASE + CXD90045_TEXT_OFFSET);
++        if (machine->initrd_filename) {
++            initrd_addr = CXD90045_DDR0_BASE + CXD90045_INITRD_OFFSET;
++            initrd_size = load_image_targphys(machine->initrd_filename, initrd_addr,
++                                              CXD90045_DDR0_SIZE - CXD90045_INITRD_OFFSET);
++        }
++        /* 索尼内核用 CONFIG_CMDLINE_PHYS_OFFSET=0x133000 从物理地址读命令行；
++         * 原模型漏了这一步，内核拿不到 console=ttyAM0 就静默挂死。 */
++        cxd_init_cmdline("", machine->kernel_cmdline, CXD90045_DDR0_BASE + 0x00133000);
++        /* 再补一份标准 ATAGS（含 INITRD2），否则内核找不到 initrd */
++        cxd90045_build_atags(CXD90045_ATAGS_BASE, initrd_addr,
++                             initrd_size > 0 ? (hwaddr)initrd_size : 0,
++                             machine->kernel_cmdline);
++        cxd90045_bootloader(CXD90045_BOOTROM_BASE,
++                            CXD90045_DDR0_BASE + CXD90045_TEXT_OFFSET,
++                            CXD90045_ATAGS_BASE);
+     } else if (bios_name) {
+         load_image_targphys(bios_name, CXD90045_BOOTROM_BASE, CXD90045_BOOTROM_SIZE);
+     } else if (drive) {
+@@ -1083,7 +1230,7 @@ static void cxd90045_init(MachineState *machine)
+ 
+     cxd_add_const_reg("miscctrl_mode", CXD90045_MISCCTRL_BASE(1), 0x28);
+ 
+-    cxd_add_const_reg("emmc0", CXD90045_SDHCI_BASE + 0x124, 0x1000000);
++    cxd_add_const_reg("emmc0", CXD90045_SDHCI_BASE + 0x124, 0x0000000);
+     cxd_add_const_reg("emmc1", CXD90045_SDHCI_BASE + 0x130, 0x1fff);
+ 
+     cxd_add_const_reg("ddrc0", CXD90045_DDRC_BASE(0) + 0x148, 0x20000000);
+@@ -1091,6 +1238,44 @@ static void cxd90045_init(MachineState *machine)
+ 
+     cxd_add_const_reg("unknown0", 0xf2908008, 1);
+     cxd_add_const_reg("unknown1", 0xf290c008, 1);
++
++    /* ---- Sugilite GPU / GRM 相关最小寄存器桩 ----
++     * grm_gles.ko 的 sugilite_clock_up_internal（sugi_hw.c:221）上电后读回
++     * 0xf3400080 并期望值 21，否则 BUG()。这里给一个常量读回。 */
++    cxd_add_const_reg("sugi_pll0",  0xf3400080, 0x15);
++    cxd_add_const_reg("sugi_clk0",  0xf3400280, 0x10);
++    cxd_add_const_reg("sugi_rst0",  0xf28040c4, 0x06);
++    cxd_add_const_reg("sugi_rst1",  0xf28041a8, 0x06);
++    cxd_add_const_reg("sugi_rst2",  0xf28050b8, 0x06);
++    cxd_add_const_reg("sugi_rst3",  0xf280518c, 0x06);
++
++    /* ---- eMMC 信息表 ----
++     * emmc.ko 以 module_param tbl=0x80000000 给出指针（内核虚拟）=> 物理 0x20000000。
++     * tbl_valid()（内联于 emmc_blk_plat_resume，emmc_blk_uz.c:1229）要求
++     *   u32 @ +12,+16,+20,+24,+28,+32,+36,+40 全部非零；
++     * 且 +12 起 16 字节是 CID、+28 起 16 字节是 CSD。
++     * 原模型该处为 0 → "Information table is invalid" → nflasha 拿不到分区表
++     * → backup.ko 失败 → 约 20 个模块因缺 Backup_* 符号加载失败。
++     */
++    {
++        static const uint32_t info_tbl[16] = {
++            /* +0  */ 0x00000000, 0x00000000, 0x00000000,
++            /* +12 CID (16B) */ 0x4b000115, 0x47344d4c, 0x50454631, 0x3332d144,
++            /* +28 CSD (16B) */ 0xd00f5903, 0x2d0f7fff, 0x0a400000, 0x01000000,
++            /* +44 */ 0x00000000, 0x00000000, 0x00000000, 0x00000000,
++            /* +60 */ 0x00000000,
++        };
++        rom_add_blob_fixed("emmc_info_tbl", info_tbl, sizeof(info_tbl), 0x20000000);
++    }
++
++    /* ---- DMA330 控制器寄存器区 ----
++     * 索尼 platform.c: DMA330_IO_BASE = 0xf0030000, SIZE = 0x10000。
++     * 原模型没映射，导致 dma330.ko 探测失败（udif_err=-14 / osal_err=-1022）。 */
++    {
++        MemoryRegion *dmamem = g_new(MemoryRegion, 1);
++        memory_region_init_ram(dmamem, NULL, "dma330", 0x10000, &error_fatal);
++        memory_region_add_subregion(get_system_memory(), 0xf0030000, dmamem);
++    }
+ }
+ 
+ static void cxd4108_machine_init(MachineClass *mc)
+diff --git a/hw/display/bionz_vip.c b/hw/display/bionz_vip.c
+index ef2422f..b6f9f7f 100644
+--- a/hw/display/bionz_vip.c
++++ b/hw/display/bionz_vip.c
+@@ -289,6 +289,7 @@ static void vip_ch_write(VipState *s, unsigned int ch, hwaddr offset, uint64_t v
+ 
+         case 0x2c:
+             channel->num_repeat = value;
++            vip_update_display(s);
+             break;
+ 
+         default:
