@@ -14718,3 +14718,23 @@ r2 = 0x0ae87c40
 LR 落在同一 `CmnViewMenuData` 辅助调用路径，确认这是菜单项链表空节点访问，不是 fake GLES ioctl 或 Backup/UIPC 崩溃。
 
 下一步应针对该调用者构造合法的空链表结束节点/菜单默认对象；避免继续猜 Caution overload。
+
+---
+
+## 一百七十七、Round 204：**GTK QEMU 显示消费者已建立**
+
+系统安装 GTK 开发依赖后，重新构建 Sony QEMU：
+```text
+GTK support yes
+VNC support yes
+-display gtk 可用
+```
+当前 `cxd90045,graphics=on` 能在 Xvfb 下运行，QMP `screendump` 成功输出：
+```text
+640x384 PPM
+```
+截图内容为 parallel console，说明 QEMU graphics console/GTK 消费端已经工作；之前的
+`qemu-build` 只有 `-display none`，不能验证窗口。
+
+下一步是让 fake GLES/CPYFB 的软件 framebuffer 更新 `bionz_vip` 的 graphics console，
+再对照真实 App 的 GPE ioctl 输出生成菜单像素。 
