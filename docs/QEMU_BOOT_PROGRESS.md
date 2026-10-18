@@ -14845,3 +14845,69 @@ r0 = 0x00000484
 - 继续无边界 `return 0`/空返回只会制造假的对象图；下一步应从 `WidgetSystem`/`Layer`/`RecordPtr`
   的真实构造入口和 `initMenuData` 的上游菜单表来源入手；
 - 当前仍未达到“原生菜单像素 + 输入改变菜单”的验收条件。
+
+---
+
+## 一百八十一、Round 208：**WidgetSystem 单例槽确认，最小哨兵推进到 RecordPtr**
+
+### 181.1 单例槽的真实位置
+
+从 `WidgetSystem` 直接调用点 `libObj+0x618cce` 反汇编确认：调用前先从全局槽读取对象，再加
+`0x480+4` 作为 intrusive-list 头传给 `libObj+0x6178f8`。在 `norandmaps` 运行中：
+
+```text
+libObj base                 = 0x059bc000
+WidgetSystem global offset  = 0x0145cb1c
+WidgetSystem global runtime = 0x06e18b1c
+```
+
+对 `0x06e18b1c` 设置 QEMU gdb 硬件 watchpoint，原始 `ab_getsub.img` 运行期间没有任何构造写入；
+调用现场为：
+
+```text
+r0 = 0x00000484
+r3 = 0x06e18b1c
+*(u32*)0x06e18b1c = 0
+```
+
+所以缺口是单例对象未创建，而不是已有对象的链表损坏。
+
+### 181.2 最小哨兵布局实验
+
+在 QEMU gdb 中临时把全局槽指向当前线程栈上的零对象，并设置空链表哨兵：
+
+```text
+obj + 0x490 = obj + 0x494
+slot         = obj
+call r0      = obj + 0x484
+```
+
+这只改变运行内存，没有修改固件文件。实验结果：
+
+```text
+Widget::setLayerID reached
+r0 = 0x1029ef60
+r1 = 0x06e18ae0
+r2 = 0x00004f50
+```
+
+这证明空 WidgetSystem 哨兵足以越过 `+0x6178f8`，并进入真实 Widget/Layer 关联路径。
+
+### 181.3 下一层边界
+
+继续运行后，异常现场为：
+
+```text
+fault address = 0x00000018
+PC            = 0x062207ec
+              = 0x059bc000 + 0x8647ec
+LR            = 0x05fcf7e5
+```
+
+`libObj+0x8647ec` 位于 `libra::RecordPtr` 访问区域；`Widget::setLayerID` 在此前调用
+`getLayer` 后，把返回的 Layer/RecordPtr 传入该路径。当前最小对象图因此已经从
+`WidgetSystem` 推进到 `Layer → RecordPtr`，而且 fault address `0x18` 表明返回对象仍为空。
+
+GTK/QMP 截图仍为黑屏，尚未取得原生菜单像素或输入改变菜单的证据。下一步应恢复真实的
+`WidgetSystem` 构造和 `Layer`/`RecordPtr` 返回对象，继续使用 watchpoint 验证写入来源；不把
+栈上哨兵作为最终实现。
