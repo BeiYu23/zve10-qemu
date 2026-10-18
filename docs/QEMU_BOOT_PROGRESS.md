@@ -15080,3 +15080,62 @@ WidgetSystem global slot = 0
 ```
 
 因此真实入口启动的异步 UI 线程仍停在后续依赖条件，或者需要非空初始化参数/事件；不能在入口返回后立即裸 `dlopen(viewUnified2)`。下一步应对该入口创建的线程、其首次 UIPC/序列请求和等待点做取证，再恢复它需要的真实依赖。
+
+---
+
+## 一百八十八、Round 215：**生命周期线程入口与 uxengine/resmgr 阻塞边界**
+
+在本轮 QEMU 副本中，preload 使 `libObj` 基址固定为：
+
+```text
+libObj base = 0x059ca000   （此前无 preload 运行时为 0x059bc000）
+Application_System_Init   = 0x0626c408
+```
+
+对 `Application_System_Init` 内部创建线程的 `osal_create_thread` 调用取证：
+
+```text
+desc pointer      = 0x06e1ff24   (libObj+0x1455f24)
+desc[+8] (entry)  = 0x0626c399   (libObj+0x8a2399, Thumb)
+desc[+0]          = 0x069fdf63
+osal_create_thread(desc) 返回 0x89
+```
+
+`libosal_utm.so` 的 `osal_create_waitable_thread` 确认从 `[desc+8]` 读取线程入口并
+`pthread_create`。线程实际运行：
+
+```text
+THREAD_ENTRY      pc=0x0626c398  sp=0x8b5adb0
+UXENGINE_INIT     pc=0x5ff11d4   (libObj+0x6271d4)
+RESMGR_INIT       pc=0x5fdaf74   (libObj+0x610f74)
+RESMGR_LOADER     pc=0x600a398   (libObj+0x640398)  r0=0xffffffff80000000
+```
+
+静态核对：导出的 `uxengine_init`（`libObj+0x6271cc`）只是空桩，真正实现从 `+0x8`
+开始（`libObj+0x6271d4`），先做 640×480 GRM/资源初始化，再进入 `resmgr` 初始化
+（`libObj+0x610f74`）。`uxengine_init` 实体本身不引用 `WidgetSystem::sys_getInstance`，
+因此 WidgetSystem 不是由该线程的这一阶段创建。
+
+`resmgr` 资源加载器（`libObj+0x640398`）执行了多轮资源创建与 stella 日志调用：
+
+```text
+STELLA_LOG    r0=0xffffffff80000000
+SUBCALL_8627c0 r0=0x209c8
+STELLA_LOG    r0=0x4
+SUBCALL_640050
+SUBCALL_643818 r0=0x209c8
+STELLA_LOG    r0=0x4
+SUBCALL_8627c0 r0=0x2a620
+STELLA_LOG    r0=0x4
+```
+
+之后在约 35 秒观察窗内没有继续推进，且对两个全局槽设置硬件 watchpoint 后未观察到任何写入：
+
+```text
+pViewManager slot   libObj+0x149221c   始终为 0
+WidgetSystem slot   libObj+0x145cb1c   始终为 0
+```
+
+当前阻塞边界已收敛到 `resmgr` 资源加载/创建图片调用内部（最后一个已确认调用点之后）。
+下一步继续对该加载器的 `createImage`/底层 GRM 和日志调用取证，直到线程返回
+`uxengine_init` 并继续后续 UI 阶段。
