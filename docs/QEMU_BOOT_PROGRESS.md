@@ -14562,3 +14562,43 @@ Illeagle Instruction at 0x5f3f845c
 所以当前阻塞已从“Backup 数据为 0 / MonQueue 初始化失败”推进到
 **Monitor/内核模块后续非法执行路径**。下一步应映射 `0x5f3f845c` 的模块/调用来源，
 修复该路径后再回到 ViewUnified 初始化。
+
+---
+
+## 一百七十二、Round 199：**显示设备入口已到达：grm_gles sugilite_open**
+
+### 172.1 关键证据
+
+在真实 Backup 值 shim 下，App 成功打印：
+```text
+FixedAreaTop  : 20098000
+FixedAreaSize : 0007C000
+```
+随后打开 `/dev/dmpgles2`，内核记录：
+```text
+PC is at sugilite_open+0x28/0x1f8 [grm_gles]
+```
+`grm_gles.ko` 反汇编确认 `+0x28` 是：
+```asm
+ldrex r2, [r3]
+add   r2, r2, #1
+strex r1, r2, [r3]
+```
+即显示驱动 open 路径里的独占计数操作。
+
+### 172.2 模块 patch 经验
+
+- 直接改模块文件可能触发旧内核的 `insmod error(8)`，必须保持 ELF 文件长度、节表、重定位和模块元数据完全一致。
+- size-preserving 入口 patch 可验证 active module 来源；但会导致 `private_data` 未初始化，随后 ioctl 断言，不能作为最终方案。
+- 正确方向是保留 `sugilite_open` 的 private_data/上下文初始化，只替换不兼容的 exclusive sequence，或在内核/QEMU 侧提供等价原子语义。
+
+### 172.3 当前最短目标
+
+```text
+grm_gles module loads
+→ sugilite_open succeeds
+→ /dev/dmpgles2 ioctl reaches a QEMU software model
+→ GRM/GPE framebuffer output
+→ ramfb/GTK
+```
+这条显示路径已经比 ViewManager 路径更接近“先看到画面”；继续优先修 `sugilite_open` 和 ioctl。 
