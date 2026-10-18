@@ -14602,3 +14602,42 @@ grm_gles module loads
 → ramfb/GTK
 ```
 这条显示路径已经比 ViewManager 路径更接近“先看到画面”；继续优先修 `sugilite_open` 和 ioctl。 
+
+---
+
+## 一百七十三、Round 200：**fake grm_gles 成功接管 dmpgles2，App 已进入菜单数据构造**
+
+### 173.1 QEMU 软件 grm_gles shim
+
+新增 QEMU-only kernel module `fake_gles.ko`，替换镜像中的 `grm_gles.ko`：
+```text
+major=248 minor=29
+open -> 建立 private_data
+ioctl -> 打印命令并返回 0
+mmap -> 提供 64KB 软件 framebuffer
+```
+
+实测：
+```text
+FAKEGLES init major=248 minor=29
+FAKEGLES open count=1
+FAKEGLES ioctl cmd=0x80048206
+FAKEGLES ioctl cmd=0xc0048202
+FAKEGLES ioctl cmd=0x80048263
+```
+这证明 App 已越过原 Sugilite/`ldrex` 硬件驱动入口，并开始执行 GPE 显示命令。
+
+### 173.2 菜单路径已经进入
+
+fake GLES 后，App 进入：
+```text
+CmnViewMenuData::CmnViewMenuData()
+```
+此前的空菜单链表 helper patch 后继续进入：
+```text
+SvcCautionIF::ChkCautionGrpStatus(unsigned short, unsigned short&)
+```
+**⇒ 已从“没有 UI”推进到真实菜单数据构造阶段。**
+
+当前新阻塞是 Caution 配置状态默认值，下一步应给 `ChkCautionGrpStatus`/CautionConfig
+提供合法默认状态，再继续菜单构造，最后接 fake GLES framebuffer 到 ramfb。
