@@ -14402,3 +14402,48 @@ buf = 0x08b397af
 viewManagerIf::openView(0x75, 0)
 ```
 成功判据：worker 打印 dlopen 返回、`pViewManager != 0`，随后出现 View/Graphics/GRM 活动。
+
+---
+
+## 一百六十八、Round 195：**ViewUnified 逐层进入：Backup → Widget → Layer → RecordPtr**
+
+### 168.1 下层 `Backup_read` 是正确的 shim 位置
+
+`libObj.so` 导出真实实现：
+```text
+BackupManager::Bkup_ReadEiPv @ 0x00168320
+```
+其内部先调用普通导出 `Backup_read`，再处理配置数据。因此对 `BackupManager::Bkup_Read`
+直接做 ABI/返回值桩会破坏上层状态；对下层 `Backup_read(int,void*)` 做 App-only shim 后，
+ViewUnified 初始化能进一步推进。
+
+实测：
+```text
+IMOPEN OK /usr/lib/viewUnified2.so
+viewUnified2 映射成功
+```
+此前在 CautionConfig/0x106 的崩溃消失。
+
+### 168.2 View 层后续空状态链
+
+按崩溃地址逐层定位：
+```text
+libObj+0x617740  ux::wgtsys::WidgetSystem::getMouseState
+libObj+0x6178f8  WidgetSystem 内部 helper
+libObj+0x8647ec  libra::RecordPtr 访问
+libObj+0x6137e4  Widget::setLayerID → Layer 空对象
+```
+这些调用都来自裸 View 初始化，说明它缺少真实的 WidgetSystem/Layer/RecordPtr/Model
+上下文。逐个把函数改成 return 0 能继续推进，但会形成越来越假的对象图，最终出现栈/函数指针
+损坏；这不是可交付实现。
+
+### 168.3 当前可靠结论
+
+- `pViewManager` 真实值始终为 0，且 gdb watchpoint 无写入 ✓
+- `openView(0x75,0)` 入口已确认，但依赖完整 Manager/Model 状态 ✗
+- 裸 `dlopen(viewUnified2)` 依赖 `CautionConfig`/Backup 配置和大量 Widget 初始化 ✗
+- 下层 `Backup_read` shim 能让 viewUnified2 完整映射，但不能替代 Backup 配置数据
+- View 层尚未产生 GRM/GraphicsEngine 调用；没有宣称画面成功
+
+**下一步应改为实现最小真实状态服务**：先让 `Backup_read` 返回与配置结构一致的默认数据，
+再初始化 ModelManager/WidgetSystem，而不是继续 patch 多个内部函数。
