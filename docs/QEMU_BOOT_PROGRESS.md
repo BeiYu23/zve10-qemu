@@ -16076,3 +16076,60 @@ __schedule+0x0
    或用 gdb 附加并读取该线程用户态上下文；映射到 libObj 数据区可定位具体 mutex/condvar；
 2. 找到应由谁唤醒该 futex（大概率是等待显示/OSD 事件或某个未启动的服务线程）；
 3. 同时推进 QEMU 图形后端（VDF/stream 已完成 mmap，缺的是事件/中断源）。
+
+---
+
+## 二百零六、Round 233：**UI 线程 futex 等待地址与用户栈取证**
+
+### 扩展内核追踪
+
+`kernel/futex.c` 中的 ZZFUTEX 追踪原先只匹配 `im.` 前缀（`im.elf.real`），而 UI 线程名为
+`Appframework`，因此此前没有任何记录。扩展为同时匹配 `App`，并在 futex 系统调用入口打印
+用户态上下文与用户栈前 32 字：
+
+```text
+ZZFUTEX Appframework op=0x80 uaddr=06e2dc94 upc=04097146 ulr=04092ac9 usp=0b843b70
+ZZSTK0 00000001 04092ac9 00000000 00000081 00000000 06e2dc90 06e2dc78 00000000
+ZZSTK1 040928cd 0b843b80 06e2dc78 ...
+```
+
+### 实测：Appframework 的 futex 等待点
+
+libObj 基址 0x59ca000（QMMAP 确认），四次 futex 等待：
+
+| uaddr | 归属 | op |
+|---|---|---|
+| `0x08b48d34` | 栈（初始化同步） | 0x81 |
+| `0x06e2dc94` | **libObj+0x1463c94（BSS）** | 0x80 (WAIT\|PRIVATE) |
+| `0x06e2dcf4` | **libObj+0x1463cf4（BSS）**，与上一个相距 0x60 | 0x80 |
+| `0x0b8c3b24` | 堆/栈 | 0x80 |
+
+用户栈样本显示调用链位于 libpthread（`0x040928cd`、`0x04092ac9`、`0x04094d5f` 等，均在
+`libpthread-2.11.2.so` 代码段 0x0408a000–0x0409a000），futex 对象本身在 libObj BSS：
+
+```text
+libObj+0x1463c94 / +0x1463cf4  （间距 0x60，典型 pthread_cond_t + mutex 布局）
+```
+
+即：**UI 线程（Appframework）阻塞在 libObj 内在 BSS 上的条件变量等待**。它没有被 abort、
+没有被 CPU 饿死，而是在等某个事件/信号；目前尚未确认该条件变量属于哪个 libObj 子系统
+（osal 消息队列/资源管理/图形事件），也没有找到应当唤醒它的线程。
+
+### 当前完整状态
+
+```text
+[已修复] Infrastructure 随机崩溃（libObj+0x15b2d0 诊断 patch）
+[已修复] VDF 显示端口 abort（stream offset 0x20312000 + abort patch）
+[已修复] abort 死循环导致 100% CPU 忙等
+[已建立] SysRq 任务栈取证（t/w/l 已验证）
+[已建立] futex 用户态上下文+栈追踪（ZZFUTEX/ZZSTK）
+[当前]  Appframework 阻塞于 libObj BSS 条件变量 futex（0x1463c94/0x1463cf4）
+[未完成] GraphicsEngine/WidgetSystem 创建；画面显示；输入交互
+```
+
+### 下一步
+
+1. 静态定位 libObj+0x1463c94 条件变量的引用点：扫描 `pthread_cond_wait/mutex_lock`
+   调用点，看哪个对象地址等于该 BSS 偏移，从而确定所属子系统；
+2. 找到“应发出 signal/broadcast”的线程或事件源（可能与显示/OSD/VIP 中断有关）；
+3. 继续推进 QEMU 图形后端，为事件源提供真实触发。
