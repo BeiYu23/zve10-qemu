@@ -16825,3 +16825,69 @@ seq 111 tid 150 a=13271442 c=-1 d=0
 2. 对该 tid 的 syscall/OSAL 调用序列单独追踪（或用内核 ZZIOCTL/ZZFUTEX 按 tid 过滤），
    找出它最后一个未返回的调用；
 3. 按该调用的语义在 QEMU-only 环境提供最小应答/数据。
+
+---
+
+## 二百一十八、Round 245：**借鉴 a7c2-re：CP 事件注入实验；纠正"自旋"误判为 abort**
+
+### 借鉴 chocotan/a7c2-re 的方法
+
+拉取并阅读 a7c2-re qemu-native-camera（本地 `/root/fw/a7c2re/report/2026-10-17-qemu-native-camera/`）。
+其 A7C2（ILCE-7CM2）已在 QEMU 中显示原厂菜单并可操作，核心手法：
+
+1. **guest 内 LD_PRELOAD `menu-observe.so`**：用 `dlvsym/dlsym` 拦截原厂 OSAL API：
+   `osal_dynamic_id`、`osal_reg_sync_msg_queue_cb`、`osal_reg_msg_queue_cb`、`osal_snd_msg`、
+   `osal_snd_sync_msg`、`osal_valloc_msg_wait`、`osal_free_msg`、`osal_get_msg_src`、
+   `osal_set_msg_src`、`osal_msg_size`、`osal_rcv_msg_tmo`
+2. **合成 CP 事件**：向"QEMU 中永远收不到消息"的 sequence 队列投递 48 字节消息：
+   `frame u16 0x2003 @+0`、`code u16 0x8201 @+2`、`size u16 48 @+4`、`selector 3 @+0xa`；
+   并直接调用 `WidgetSystem::notifyDraw()` 触发真实 UX→GPE 渲染
+3. **服务模型**：`dmm-service.c`（display memory 分配/open/close/free，op 0x20–0x23，
+   0x80000 槽位、generation handle）、`hdmi-format-service.c`、`capid-service.c`、
+   `sa-address-service.c`、`file-media-config.c`
+4. **软件渲染链**：`gpe-raster.c`/`gpe-sprite.c`（软件 GPE）、`sony-lz77.c`（LZ77 CPU 解码）、
+   `headless-osd.c`、`ramfb-viewer.c`（读已提交 inode→RGBA4444→XRGB8888→fw_cfg ramfb）
+5. 输入注入：`inject-key.c`/`input-table.c` + 三层验证
+
+### 我们在 ZV-E10 上的 CP 事件注入实验（`ab_v16.img`）
+
+按同样机制实现：拦截 `osal_rcv_msg_tmo` 记录阻塞中的队列，appinit 后 5 秒向这些队列各投递
+一条 48 字节 `0x2003/0x8201`（`osal_valloc_msg_wait` 分配、`osal_set_msg_src(0x92840747)`、
+`osal_snd_msg`）。实测：
+
+```text
+INJ begin n=13 → 13 个阻塞队列逐一 send=0（投递成功）
+结果：60 秒稳定、无异常，但 gfx/res/wg 无变化（res 仍为 115501664）
+```
+
+结论：ZV-E10 的这个卡点不是 A7C2 那个 sequence 队列事件能解开的。
+
+### 纠正"用户态自旋"误判（重要）
+
+- 内核新增 `ZZEXIT`（线程退出追踪）与 `ZZREAD`（App 线程 read 追踪）后确认：
+  初始化线程 pid=166 自 t≈17.63 后**无任何系统调用、也没有退出**，sysrq 显示其状态为 R、
+  内核栈为 `ret_slow_syscall`（在跑用户态代码）→ 看起来像用户态自旋；
+- QMP 连续 80 次采样得到 PC=0x04021688（78/80）——该地址属于 **我们自己的 preload
+  libgrmlog 映射区**：说明"自旋"其实是**探针里的 abort interposer 的 `for(;;)`**；
+- 串口中出现 12 条 `AAB3` 日志 → **应用在图形初始化过程中又调用了 abort()**，被我们的
+  interposer 拦下后进入死循环，从而伪装成"用户态自旋/卡住"。
+
+### 新的 abort 调用链（待解）
+
+```
+0x8558c4（图形系统初始化，虚调用 obj->vtbl[8]）
+  → ... → 0x646440: bl 0x64028c   （0x64028c 通过全局函数指针调用 → abort）
+  → abort（AAB3 sp[8]=0x64029a）
+栈帧线索：0x646444、0x63c660/0x63c652、0x645d84
+```
+
+即：`0x8558c4` 在调用某个虚函数后，代码走到 0x6463xx 区域并主动 abort。下一步需要解析
+该函数的 abort 条件（很可能又是某个"资源/服务缺失"的校验，与 VDF 案例同类），按真实协议
+提供默认值即可继续。
+
+### 本轮新增内核追踪
+
+- `ZZEXIT`：`do_exit` 中打印 App/im 线程退出（验证线程是否退出）
+- `ZZREAD`：App 线程 read()（fd/count/设备名）
+- UIPC ioctl 命令表已从 `osal_uipc.ko` 反解并修正：0x8000000a=`osal_valloc_msg_wait`、
+  **0x8000000b=`osal_free_msg`**（此前误以为是接收）
