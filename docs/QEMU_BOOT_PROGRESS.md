@@ -17027,3 +17027,62 @@ pthread_attr_setschedparam(attr, &param)   ← policy 若为 FIFO/RR 且 prio∉
 **结论**：从 “guest 物理显示缓冲 → QEMU GTK/QMP 画面” 的呈现链已经真实打通并经逐像素验证；
 接下来只剩“让 App 真正画出 UI 并写入 0x20312000”。真实固件下仍需用 QMP watch 确认 App 写入
 时机，并用 analyze_stream_dump.py 确定实际几何/像素格式后回填 `-global` 参数。
+
+---
+
+## 二百二十、Round 247：**队友并行收网：两级 assert 已解；定位到 DMP allocator 锁被 56 字节记录数组覆盖**
+
+### 队友任务板
+
+```text
+task-1 完成  a7c2-porter     → /root/fw/port_a7c2（移植报告/ARMv7 适配/selftest 22/22、交叉 31/31）
+task-2 完成  ramfb-planner   → /root/fw/port_ramfb（bionz-streamfb 补丁 + 工具；Lead 已构建并逐像素验证 PASS）
+task-3 完成  init-unlocker   → 两级 assert 修复 + 深栈定位（本文）
+task-4 完成  init-unlocker   → 证明 mutex 非“被持有”，而是被覆盖成乱码
+task-5 进行中 init-unlocker  → gdb watchpoint 抓写入者 + 强制解锁诊断（ab_v32）
+```
+
+### 已修复的两级 assert（可逆、单独镜像）
+
+1. `SystemImpl.cpp:156`：`dmpNative::SystemImpl::initialize_setting()` 调
+   `Backup_nread(0x01700000, &this->setting, 4)`，要求返回 4；实测真实实现返回 26747（失败）
+   → assert。**修复**：探针 interpose `Backup_nread`，对该 id 填 0 并返回 4（ab_v26）。
+2. `tpp.c:63`：`__pthread_tpp_change_priority` 的 SCHED_FIFO 优先级断言（new_prio=0 越界）。
+   **修复**：firmware `/lib/libpthread-2.11.2.so` VMA 0xce38 打 8 字节 trampoline
+   `mov.w r4,#-1 ; b.w 0xcbc0`（越界走 new_prio==-1 安全路径），消掉 assert（ab_tb_e1）。
+
+两级 assert 消除后，Appframework(pid=166) 深栈稳定为：
+
+```text
+uxengine_init(0x6271f8) → GraphicsEngine::updateResource(0x6131de)
+ → ResourceUpdater(0x6124b8) → TextLayout::registerFontFaceFile(0x63d24a)
+ → alcor 文本排版 → libObj mutex wrapper(0x7858e0/0x78a642)
+ → pthread_mutex_lock 永久阻塞
+```
+
+### 关键结论：不是“锁被别的线程持有”，而是 mutex 内存被覆盖
+
+- 探针 c53 记录锁的获取/释放（owner 表）：只有 pid=166 自己在 i=0 前后成功 lock/unlock 两次，
+  之后 **own 恒为 0**（无人持有），但 `pthread_mutex_lock` 永久阻塞；
+- 同一时刻 mutex 的 32 字节被写成常数乱码（`w0=0x93054648` 等），glibc 因此认为“永久被锁”；
+- 邻域 dump（tb10）显示该区域被 **固定 56 字节步长的记录数组**整片覆盖，且是**一次性覆盖**
+  （17.34s–18.01s 窗口，`DMP_2D_Initialize : 0` 之后、`initialize_setting` 之前）；
+- memcpy/memmove/memset 钩子 0 命中 → 写入是直接 store/内联循环（非 libc 调用）；
+- 因此：递归锁（ab_v28）、timedlock 清零（ab_v30）、tpp trampoline 都无法解决该等待。
+
+### 当前状态
+
+```text
+[已解决] 启动/加载链、VDF abort、GLES 死锁、两级 assert
+[已打通] QEMU 呈现链（bionz-streamfb 注入测试图逐像素 PASS）
+[已移植] a7c2 软件渲染/服务组件（ARMv7 可用）
+[当前]   pid=166 卡在 DMP allocator mutex；其内存被 56B 记录数组覆盖成乱码
+[未完成] gfx/wg=0；画面像素与输入交互
+```
+
+### 下一步（task-5 进行中）
+
+1. gdb 硬件 watchpoint（base+0x145df44）抓覆盖写入者 pc/lr/调用链；
+2. 并行：ab_v32 探针在覆盖后强制清零锁字，验证“解锁后初始化能否继续”；
+3. 静态：定位 56 字节记录数组的基址/写入循环与 magic `0xb2409304`，从边界/配置上根治
+   （很可能是字体/资源加载把 BSS 数组写越界）。
