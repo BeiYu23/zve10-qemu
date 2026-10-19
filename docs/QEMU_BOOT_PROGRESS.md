@@ -15964,3 +15964,55 @@ sample 2-5,8,10 PC=0x60152e80 mode=SVC （errind_delay 区域）
    返回成功并给出 640×480 framebuffer 语义，周期性产生 VSYNC/完成中断）；
 2. 观察 `gfx`/`wg` 单例是否随之创建；
 3. 通过 ramfb 或 console surface 把 guest framebuffer 呈现到 GTK 窗口，实现“画面可见”。
+
+---
+
+## 二百零四、Round 231：**用真实 stream offset 修复 VDF 初始化；进程随后正常退出**
+
+### 重要修正：之前的“内核态空闲/阻塞”是 exception monitor
+
+Round 230 中把 1MB 长度配置后的现象解读为“阻塞等待”，重新核对串口发现实际是
+`Entering exception monitor`：VDF 映射失败返回 `-1`，随后代码做
+`memset(base + p, 0x5a, len)`，`p=-1` 使目标变成 `0x0401efff`、长度 `0xfffffff6`，
+在 libc memset 内写坏地址崩溃。异常监视器停住 CPU，QMP 采样才会只看到内核态。
+
+### 正确的 VDF 配置：offset = /dev/stream 实际使用的 0x20312000
+
+内核新增 mmap offset 追踪后，`/dev/stream` 的 32MB 映射显示：
+
+```text
+QMMAP len=0x2000000 off=0x20312000 prot=0x3 flags=0x1 fd=10 ret=0xb9cd000 name=stream
+```
+
+该 offset 落在内核保留图形区（cmdline `memrsv=680M@0x15800000:uc`）内。把 VDF 的 Backup
+配置改为 `offset=0x20312000, length=0x100000` 后实测（`ab_s.img`，3 次运行）：
+
+```text
+J appinit
+J returned
+J i=0..19  gfx=0 res=0 wg=0     ← 连续 20 秒，无 abort、无异常
+t≈16.6s  stream mmap off=0x20312000 len=0x2000000 fd=10
+t≈36.4s  EXIT im.elf.real pid=137 code=0   ← 进程正常退出
+```
+
+即：VDF 显示端口初始化验证通过、不再崩溃；但主线程（im.elf.real）在跑完自身启动序列后
+以 **code 0 正常退出**，GraphicsEngine/WidgetSystem 仍未创建（`gfx=res=wg=0`）。
+
+### 含义与下一步
+
+`im.elf.real` 是启动编排进程：它的 main 完成初始化后返回/退出。真实设备上此时 UI 应由
+“应用框架进程/线程”接管并保持存活，而我们的探针只是临时把 `Application_System_Init`
+注入到该进程，主线程退出后整个进程随之结束，UI 线程也无法继续。
+
+下一步可尝试：
+
+1. **interpose `exit`/`_exit`**：主线程请求退出时改为挂起/长睡眠，保持进程存活，看
+   Appframework 线程能否继续完成 GraphicsEngine/WidgetSystem 初始化；
+2. 或找到真实 UI 宿主进程（官方启动链中的 appFw 类进程）并从那个入口启动；
+3. 继续用 SysRq（`/proc/sysrq-trigger` 已验证可用）在存活窗口内 dump 任务状态。
+
+### 其他已验证能力
+
+- `/proc/sysrq-trigger` 可写：`h` 打印帮助、`w` 打印 Blocked State——可在 console 被占时
+  直接让内核把任务状态输出到串口（本轮验证通过）；
+- `/dev` 只读（mknod 返回 EROFS），不能创建 `/dev/kmsg` 节点，kmsg 通道不可用。
