@@ -17216,3 +17216,53 @@ BNR 0xbd0000 sz=4800 real=65535 passthru
   n7 = c58；用于验证“越过该空指针后初始化能否继续”，并抓下一阻塞（task-10）。
 - 注意：这是诊断绕过，真正修法需解释“状态为何 NULL”（可能仍与缺失的 Backup/Caution 配置或
   服务应答有关）。
+
+---
+
+## 二百二十二、Round 249：**双基线确立：BNR 根因修复（ab_v36）与现实路径（ab_v38）**
+
+### 布局副作用的最终排除（task-8/9）
+
+- `ab_v35`（mmap scratch）：base 仍 0x5a0a000（首次 BNR 在 t≈3.7s，早于 libObj 加载）；
+- `ab_v36`（brk scratch）：**base 恢复 0x59ca000**（`BNR brk=0x37000`），BNR clamp 生效；
+- InfraIndctr 崩溃偏移 `pc=+0x14e422 / lr=+0x8bf19f` 在两种 base 下**完全相同** ⇒ 布局不是原因，
+  是 BNR 修复让初始化推进后暴露的真实下一阻塞。
+
+### InfraIndctr 崩溃性质（task-10）
+
+`ab_v37`（把 `0x14e418` 改为 null-safe 返回 0）：
+- run1：原 SvcCautionIF 崩点消失，改崩 THREAD_INFRA0（`section fault @0x4620eb80`，栈含
+  InfraInput/PhyKeyConfigAlloc/indctr 区）；
+- run2：仍崩 InfraIndctr，但换到 `pc=libObj+0x15b5d4`（fault @0x0）。
+⇒ **单点绕过无意义**：CIFInfraIndctr/InfraInput/PhyKeyConfig 状态对象多处未初始化；疑与
+物理按键/拨盘/输入硬件缺失或缺失配置数据有关（rootfs 有静态 `/dev/input/event0..2`，
+kernel 有 CONFIG_INPUT_UINPUT/EVDEV）。
+
+### 去掉伪造 patch 的差分（task-11）
+
+`ab_v38`（仅 VDF+InfraIndctr diag，无 0x685eee GLES 跳过、无 0x5717c0 字体伪造）：
+- 2/2 到不了 appinit；但 **InfraIndctr@0x14e422 崩溃不再出现**；
+- 日志出现真实 GLES 路径 `!!! GLES Vecgen disabled.`（t≈9.7s）；
+- 新崩溃：run1 THREAD_INFRA1 `pc=libInfraMediaCommon.so+0x22df2`（`mcmn_monlib_getflag` 的
+  `ldrb r3,[r0,#4]`，r0=r1+outputmode*8，fault 0x893748a8）；run2 野跳 + 线程 comm 乱码
+  （内存被破坏）。
+
+**一句话结论**：InfraIndctr 空指针崩确实与早期伪造/跳过 patch 相关（去掉即不再该点崩）；
+但真实 GLES/媒体路径另有阻塞（libInfraMediaCommon/monlib 崩溃 + 内存破坏），仍需定位。
+
+### 双基线
+
+```text
+ab_v36  “BNR 根因修复”干净基线：布局正确、越界消除；卡在 InfraIndctr/PhyKey 状态 NULL
+ab_v38  “真实路径”差分基线：无伪造 patch；卡在真实 GLES/媒体路径（libInfraMediaCommon）
+```
+
+### 下一步（task-12）
+
+A. ab_v38 崩溃取证：完整用户栈/调用链，判断是缺失 GLES/媒体配置/服务应答，还是又一处未
+   clamp 的数据拷贝写坏内存；
+B. Backup 家族 API（`Backup_read`/`Backup_read_multi`/`Backup_read_rst_attr`/
+   `Backup_read_setting_attr`/`Backup_get_datasize`）同类溢出排查，在 ab_v36 上 clamp 后观察
+   InfraIndctr/PhyKey 崩溃是否消失；
+C. 若证据指向输入硬件缺失，则用 kernel uinput（`/dev/uinput`，CONFIG_INPUT_UINPUT=y）创建
+   虚拟输入设备满足 InfraInput/PhyKey 初始化（为后续输入注入铺路）。
