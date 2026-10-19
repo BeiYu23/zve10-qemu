@@ -15861,3 +15861,47 @@ F i=19 gfx=0 res=0 wg=0        ← 连续 20 秒
 1. 用 CPU 采样判断当前状态：是继续自旋（还有别的 abort/忙等）还是阻塞/退出；
 2. 沿 VDF 之后继续追 `uxengine_init` 的下一步（可能在 GRM/GLES 初始化或 port 打开阶段）；
 3. 若应用因无法显示而主动退出，则需要同时推进 QEMU 图形后端，让初始化有真实目标。
+
+---
+
+## 二百零二、Round 229：**VDF 修复后下一崩溃点：rm/图形日志初始化空指针**
+
+在 VDF 配置修复镜像（`ab_l`/`ab_n`，interpose `Backup_read_4Byte` 两 key + 两处 abort
+patch）上继续运行，UI 线程不再 abort，但推进到新位置崩溃：
+
+```text
+program: /usr/bin/im.elf.real(Appframework) pid=168
+address: 0x0  trap=0xe  error=0x17
+pc=libObj+0x776a56   lr=libObj+0x776783
+r0..r3=0  r6=0  r7=0x0b9c3b88  r8=0x06e2906c  r9=2
+```
+
+`libObj+0x776990` 起的函数属于图形/资源管理日志初始化区（`rm_rqueue_hw_log_init` 附近），
+其内部从多个 GOT/全局取指针（`r5`、`r8`、`r9`），随后在 `0x776a56` 附近向 `r4`
+结构写入；此路径此前被 VDF abort 挡住，现在才第一次到达。
+
+另一路随机基线崩溃（THREAD_INFRA2 `pc=0x106`）仍会偶发（`ab_n` 第 2 次运行即此崩溃），
+与 UI 进展无关。
+
+### 当前状态总结
+
+```text
+[已修复] 启动阶段随机 0xc / InfraIndctr 崩溃（libObj+0x15b2d0 诊断 patch）
+[已修复] UI 初始化 abort（VDF 显示端口 Backup 配置 + abort patch）
+[已修复] abort 死循环导致的 100% CPU 忙等假象
+[当前]   Appframework 线程推进到 rm/图形日志初始化，空指针崩溃 @ libObj+0x776a56
+[未完成] GraphicsEngine/ResourceManager/WidgetSystem 创建（仍为 0）
+[未完成] 显示输出、原生菜单像素、输入交互
+```
+
+### 下一步
+
+1. 反汇编 `libObj+0x776990` 函数完整逻辑，确认 `r6=0` 的来源（哪个 GOT/全局未初始化），
+   该处很可能需要 RM（resource manager）/显示子系统状态；
+2. 用同样的“先 interpose 提供默认值、再逐步推进”的方法继续前进；
+3. 同时留意：若后续步骤依赖真实 framebuffer/显示，就必须并行推进 QEMU 图形后端。
+
+### 仓库存档
+
+本轮提交：`5e1815f`（abort 发现）、`29e5ac2`（VDF 根因与修复）。
+实验镜像：`ab_m.img`/`ab_n.img`（VDF 修复版），`n15_vdf.img`（libObj VDF abort patch）。
