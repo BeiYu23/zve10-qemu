@@ -15661,3 +15661,54 @@ uxengine_init body (libObj+0x6271d4)
 
 这为下一步 QEMU 图形后端工作提供了明确落点：`dmpgles2`（248:29）可在 fake 模块内扩展
 framebuffer 能力；`stream`（249:7）则是显示流缓冲，需要让 QEMU 侧能读取/呈现它。
+
+---
+
+## 一百九十九、Round 226：**uxengine 初始化是忙等自旋，不是死锁**
+
+新增用户态 CPU 归因探针（App-only preload，`/proc/stat` 全系统 CPU + `/proc/self/stat`
+进程 CPU + `/proc/self/task/*/stat` 线程 CPU），在 appinit 之后每秒采样：
+
+```text
+C appinit
+C returned
+C stat dt=0   idle=0
+C stat dt=103 idle=0 busy_permille=1000
+C stat dt=102 idle=0 busy_permille=1000
+C stat dt=101 idle=0 busy_permille=1000
+... （连续 11 秒，idle 增量始终为 0）
+```
+
+**结论：`Application_System_Init` 之后系统 100% CPU 忙等（busy spin），不是 futex/ioctl
+阻塞。** 之前“long futex wait / 停摆”的判断需要修正为：UI 线程进入图形初始化后在一个
+忙轮询循环里空转。
+
+这也解释了：
+- 为什么串口在 appinit 之后几乎没有新输出（CPU 被一个高优先级自旋线程占满，串口输出线程
+  被饿死）；
+- 为什么 QMP 采样看到 CPU 一直停在用户态代码（libc/memcpy 附近是采样落点，实际是热循环）；
+- 为什么 gdb 断点追踪会放大竞态、且运行容易被随机基线崩溃打断。
+
+### 线程级归因的限制
+
+尝试用 `/proc/self/task/*/stat` 做逐线程归因，但该 guest 内核下 `/proc/self/task` 打开
+（即使 O_RDONLY）未成功，探针输出 `C nodir`；同时多次运行出现两种环境级不稳定：
+
+1. `im.elf.real` 在加载 libObj 之前随机崩溃（THREAD_INFRA2 `pc=0x106` 等，已知基线缺陷）；
+2. 少数运行里 `im.elf.real` 在 t≈26.8s 以 `EXIT code=0` 提前退出，根本未走到 libObj 加载。
+
+因此逐线程 CPU 归因需要换手段（内核侧打印 per-task utime，或改用 `fork`+`/proc/<pid>/stat`），
+否则被环境噪声淹没。
+
+### 对后续工作的意义
+
+自旋意味着图形初始化在**轮询某个从来不变化的状态位/寄存器**，与“QEMU 缺少 GRM/OSD/
+framebuffer 图形后端”完全吻合：真实硬件上该状态位会由显示控制器/中断置位，而 QEMU 的
+`bionz_cpyfb`/`bionz_vip` 只是 DMA 模型，没有产生 guest 期待的状态变化。
+
+下一步应优先做的两件事：
+
+1. **定位自旋循环的地址**：用 gdb 在 appinit 之后对 CPU 采样，或在内核侧记录用户态 PC
+   直方图，找到具体轮询函数（预期在 GRM/resmgr 初始化内）。
+2. **补 QEMU 图形状态源**：让对应状态寄存器/中断按访客预期变化（最小可先让状态位恒为
+   “就绪”），使自旋退出，从而让 resmgr 初始化继续走到 GraphicsEngine/WidgetSystem 创建。
