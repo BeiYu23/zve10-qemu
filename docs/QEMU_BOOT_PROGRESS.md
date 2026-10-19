@@ -15650,3 +15650,14 @@ uxengine_init body (libObj+0x6271d4)
 2. 增加最小 framebuffer 呈现路径（ramfb 或 console surface），并让 `/dev/dmpgles2`
    对应的内核侧 fake 设备提供一致的 framebuffer 信息；
 3. 用 B16 探针验证：`gfx`/`wg` 是否在 appinit 后变成非零。
+
+补充（Round 225 取证）：目标 rootfs 设备节点与后端对应关系：
+
+```text
+/dev/dmpgles2   major 248 minor 29   ← 我们自定义的 grm_gles.ko fake 设备
+/dev/stream     major 249 minor 07   ← 显示流缓冲设备（32MB mmap 来源）
+/dev/stream2    major 249 minor ...
+```
+
+这为下一步 QEMU 图形后端工作提供了明确落点：`dmpgles2`（248:29）可在 fake 模块内扩展
+framebuffer 能力；`stream`（249:7）则是显示流缓冲，需要让 QEMU 侧能读取/呈现它。
