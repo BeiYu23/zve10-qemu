@@ -17453,3 +17453,38 @@ ab_v52      c67 原子日志（定位越界调用；v52-1 首次干净 60 采样
 ab_v53      c68 白名单 clamp（过窄，已弃）
 ab_v54      c69 InfraDial 黑名单失败 + 其它 clamp + mmap 取证（task-22 验证中）
 ```
+
+---
+
+## 二百二十六、Round 254：**又一个自伤：原子日志全局缓冲无锁竞争；备份数据注入文件核对**
+
+### 崩溃根因：日志实现的多线程竞争（c67–c70）
+
+- v54/v55 的崩溃 `address=0x06e63000`（=libInfraFsys.so r-x 起始页，err 0x81f）、
+  `pc=探针+0xf6c/f70`、lr 垃圾值；BNRC/BNDE 与 BRDC/BRDE 均“配平”、崩溃前 ~700 行无任何
+  read/nread 日志 → 崩溃不在被记录的数据拷贝里；
+- 反汇编 `0xf70` 位于探针 Backup_read 内的**日志格式化循环**（`strb` 到由全局 `LB/LI` 算出的
+  指针）→ **c67–c70 的“原子日志”用无锁全局 `char LB[224]; int LI;`，多线程并发调用会互相
+  踩状态 → 野写任意地址**。这解释了 0x58000、0x6e63000 这类“确定性但地址怪”的崩溃，以及
+  v52-1 干净/v52-2 崩溃的不确定性；
+- 修复 c71：日志加**自旋锁**（`lk/la/lz` 包裹全部 LB/LI 使用），镜像 `ab_v56`（task-24 验证）。
+
+### 备份数据文件核对（runner 注入路径）
+
+- runner 实际用 `-device loader,file=$BACKUP,addr=0x02E80000` 注入 backup 数据，
+  `BACKUP` 默认 `/root/fw/BACKUP.BIN.fixed`；
+- 从真机 nflasha2（`/root/fw/zve10_delivery/nflasha2.img`，FAT16）FAT 根目录提取
+  `BACKUP.BIN`（cluster 471，1,235,836 B）→ `/mnt/build/Backup.bin.real`
+  （sha256 `32d5f3cd…`，与 initramfs-readtest 版一致）；
+- 对照：`BACKUP.BIN.fixed` 与真机原文件**只差 11 字节**（早期为过校验打的补丁，位于 ~0xBD9xx）；
+  `/mnt/build/Backup.bin` 是差异 559,289 字节的旧副本（勿用）；
+- 待对照实验：用真机 `Backup.bin.real` 注入是否能让 `Backup_get_datasize` 不再返回
+  0xF7FF/0xBFFC 之类的垃圾长度（0x1190001/0x11b000x 异常来源），从而减少假长度拷贝。
+
+### 当前镜像
+
+```text
+ab_v49/v50  libbackup PLT 文件级修复
+ab_v52      c67（首次干净 60 采样 + abort；但日志有竞争）
+ab_v56      c71 日志自旋锁 + InfraDial 黑名单 + clamp + mmap 取证（默认数据 / 真机数据两跑）
+```
