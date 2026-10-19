@@ -17393,3 +17393,17 @@ malloc 调用点、栈含 PhyKeyConfigAlloc）。
   - `ab_v45` = ab_tb_s1（伪造路径 P1+P2）+ c62；
   - `ab_v46` = ab_v38（真实路径）n15 libObj = libObj_cur + P1+P2，n7 = c62；
 - 这解释了 c59→c63 期间大量“崩点漂移/野指针”：相当一部分是我们的递归自伤。
+
+### Round 252：libbackup PLT 文件级修复 + Backup_read 拷贝越界定位
+
+- **运行时 GOT 绑定方案失败**（c64）：libbackup 是启动时 DT_NEEDED 映射，不经我们的 dlopen 钩子，
+  `BBIND ok` 从未出现，递归依旧；
+- **文件级修复成功**：从镜像 n15 提取真实 `/lib/libbackup.so`（sha256 b6420f8f…，与 ref_e10 一致），
+  把其 `.plt` 中 `Backup_read@plt`（VMA 0xd68）stub 首 4 字节 `e28fc600` 改为 ARM
+  `b 0x1204`（`ea000125`）→ libbackup 内部 PLT 自调用直接跳真实实现，绕开我们的 wrapper，
+  **递归根除**（v49 起崩溃签名不再是“栈 guard + lr=libbackup”）；
+- 新崩溃签名：fault=**0x00058000**，恰好是低地址堆区 `0x16000-0x58000` 的末尾（maps 证实），
+  pc=探针内拷贝循环（`strb`）→ **某次 Backup_read 把 datasize d 字节拷进小于 d 的调用方缓冲，
+  越过堆分配块**；v51（c66）加入“拷贝前 BRDC 日志 + 栈区大拷贝保护”，但多线程字符级日志穿插；
+- v52（c67）：日志改单次 write 原子输出（BRDC/BRDE 成对），用于确定“最后一条只有 BRDC 没有 BRDE”
+  的调用 = 越界调用；拿到 caller 偏移后反汇编调用方，确定其缓冲真实大小与 d 的含义。
