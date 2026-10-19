@@ -17194,3 +17194,25 @@ n = min(size, r); copy(buf, scratch, n); return n;
   地址假设**；scratch 必须用不影响库 mmap 区的方式获取；
 - 已在 c58 中改用 **brk 扩展堆**（`brk(0)→brk(+0x40000)`，so bss 仅 0x20），镜像 ab_v36，
   预期 base 回到 0x59ca000；待 task-9 验证。
+
+### ab_v36 验证（brk scratch）：布局恢复、BNR clamp 生效，但暴露下一真实阻塞
+
+```text
+QMMAP libObj ret=0x59ca000   （布局恢复）
+K9 alive / BNR brk=0x37000   （brk scratch 成功）
+BNR 0xbd0002 sz=1200 real=685 ret=685；0xbd0001 sz=512 real=579 ret=512；
+BNR 0xbd0000 sz=4800 real=65535 passthru
+随后确定性崩溃：
+  program: InfraIndctr  address: 0x0
+  pc=libObj+0x14e422   lr=libObj+0x8bf19f
+```
+
+- 崩溃点静态分析：函数 `0x14e418` 的 `r3=r0` 后 `ldr r1,[r3,#0]`（r3=0）；调用链
+  `0x8bf192 ldr r0,[r6,#12] → bl 0x8bb7c0`（CIFInfraIndctr 状态查询）返回 0 →
+  `bl 0x14e418`（SvcCautionIF 包装）把 0 当参数 → 空指针；
+- 即 **caution/indctr 状态查询返回 NULL**。这是 BNR 越界修复让初始化推进后暴露的下一阻塞
+  （与布局偏移无关：v34 base=0x5a0a000 与 v36 base=0x59ca000 崩溃偏移完全相同）；
+- 诊断镜像 `ab_v37.img`：n15 libObj 的 `0x14e418` 改为 `movs r0,#0; bx lr`（null-safe 包装），
+  n7 = c58；用于验证“越过该空指针后初始化能否继续”，并抓下一阻塞（task-10）。
+- 注意：这是诊断绕过，真正修法需解释“状态为何 NULL”（可能仍与缺失的 Backup/Caution 配置或
+  服务应答有关）。
