@@ -15210,3 +15210,61 @@ AIT call
 后端挡住（与路线中“移植软件 GPE、DMM/HDMI/OSD、ramfb/fw_cfg”一致）。下一步应聚焦图形后端：
 确认 `grm_gles.ko`/DMP 与 `QMMAP` 之后的具体等待点，先让 GRM 初始化返回，再继续
 `uxengine_init` 后续阶段。
+
+---
+
+## 一百九十一、Round 218：**延迟调用后的真实异常：THREAD_INFRA2 空指针跳转**
+
+把观察窗口延长到 150 秒后，之前“guest 停摆”的现象被纠正为一次可捕获的异常。异常监视器
+输出的当前任务与寄存器：
+
+```text
+program: /usr/bin/im.elf.real(THREAD_INFRA2) (pid: 142, cpu:0, tid: -1, stackpage: 0x69ceb040)
+address: 00000106, trap_no: 0000000e, error_code: 80000017
+[ZZEXCSTACK] sp=092fece0 pc=00000106 lr=0405d227
+
+r0: 0x00000107  r1: 0x8000000b  r2: 0x092fec68  r3: 0x0407d12c
+r4: 0x00000107  r5: 0x01070e83  r6: 0x092fed3c  r7: 0x0e840000
+ip: 0x0407d1cc  sp: 0x092fece0  lr: 0x0405d227  pc: 0x00000106
+cpsr: 0x20000030: Thumb: on, Mode: USR
+```
+
+栈上从 `sp` 开始是重复模式：
+
+```text
+01070e85 0e860000 00000107 01070e87 0e880000 ...
+```
+
+通过 `/proc/self/maps`（新增 App-only maps dump 探针）取得该进程真实映射：
+
+```text
+04000000-04018000 r-xp ld-2.11.2.so
+04021000-04022000 r-xp libgrmlog.so        （我们的 preload）
+0404b000-04052000 r-xp libIMDB.so
+04059000-0405c000 rw-p libIMDB.so
+0405c000-0405e000 r-xp libbackup.so
+04065000-04066000 rw-p libbackup.so
+0406f000-04075000 r-xp libosal_uipc.so
+0407d000-0407e000 rw-p libosal_uipc.so
+```
+
+`lr=0x0405d227` 落入 `libbackup.so` 代码段，偏移 `0x1227`，即 `Backup_read` 中
+`blx backup_sync_msg@plt`（`0x1222`）的返回地址；`ip=0x0407d1cc` 落在
+`libosal_uipc.so` 的 RW 段（GOT 区）。`pc=0x106` 表示这次间接调用跳到了非法近零地址
+（GOT 槽疑似为无效值 `0x105`）。`ZZGOT` 转储给出该 GOT 附近内容：
+
+```text
+[ZZGOT] ip=0407d1cc r3=0407d12c
+got[+00] @0407d1cc = 042ea170
+got[+03] @0407d1d8 = 0408f2f1
+got[-03] @0407d1c0 = 040718c9
+got[-02] @0407d1c4 = 040717ad
+got[-01] @0407d1c8 = 04091de9
+```
+
+异常模式（`THREAD_INFRA2`、`Backup_read` 路径、栈上 16 字节重复的 `xxxx0e8x/0exx0000`
+数据）说明这条 backup/infra 路径在 GRM 初始化之后才走到，并且发生了函数指针/栈状态异常，
+而不是单纯的等待。下一步：
+1. 用同一镜像做无延迟调用的 150 秒对照，确认该异常是否由 UI 生命周期调用触发；
+2. 若确认相关，则对 `Backup_read`/`backup_sync_msg` 路径提供合法默认返回，避免近零跳转；
+3. 同时继续定位 GRM `QMMAP` 之后 UI 线程的等待点。
