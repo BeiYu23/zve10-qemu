@@ -16424,3 +16424,24 @@ cmd=0x80000005 发送、0x8000000a/0x8000000b 接收/等待），然后等待回
    守护进程）；
 3. 在 QEMU-only 环境中提供最小应答（例如扩展 fake `grm_gles.ko` 或加一个 shim 线程监听
    UIPC 并回复"初始化完成"），使 `grm_init` 返回。
+
+补充（Round 238 取证）：把 `UIPCARG` 追踪扩展到 `App` 线程并打印 12 个字后，抓到
+`Appframework` 的 UIPC 消息样本（cmd=0x80000005 发送 / 0x80000006 接收）：
+
+```text
+UIPCARG Appframework cmd=0x80000005 f0=0x14c0424 f1=0xb9c3b1c f2=0xb9c3b38 f3=0xb9c3b68
+                              f4=0x0 f5=0x46e1fe0 f6=0xb9c3b50 f7=0x69a9333 f8=0x6e27074
+                              f9=0x6132b33 f10=0x4d203d3d f11=0x46e1fd0
+UIPCARG Appframework cmd=0x80000006 f0=0x20 ... f8=0x6 ...
+UIPCARG Appframework cmd=0x80000005 ... f7=0x20312000（stream 偏移）f8=0x2 ...
+```
+
+- 发送消息里出现 `f7=0x20312000`（即 `/dev/stream` 的映射偏移）、`f10=0x4d203d3d`
+  （ASCII "== M"）等；
+- 队列/服务标识字段（f5）在不同消息中为 `0x46e1fe0 / 0x8f11990 / 0x8f11938`，
+  看起来是进程内/共享的 osal 队列对象地址，而不是固定小整数句柄；
+- 接收（0x80000006）消息长度为 0x20，字段 f8 为 0x6/0xa 等消息类别。
+
+下一步需要沿 osal UIPC 队列的服务端定位：谁应当消费这些消息并向渲染线程回发
+"GLES 初始化完成"。这需要结合 `osal_uipc.ko` 的队列 id 分配逻辑与 `libosal_uipc.so`
+的 queue 注册表来解析 f5 指向的队列所有者。
