@@ -16638,3 +16638,66 @@ Vecgen 启用让 GLES 初始化通过，但随后进入 RM 注册表操作；**�
 1. 定位该 BSS 对象的初始化点（`rm_reg_init` 或等价函数），确认为何没有被执行/被谁清空；
 2. 若属于启动顺序问题，可在 App-only 探针中先调用其初始化函数再触发 `Application_System_Init`；
 3. 或者按真实协议在注册表对象中预置最小合法表头（仅 QEMU 实验镜像内）。
+
+---
+
+## 二百一十五、Round 242：**修正对象偏移；占位结构使崩溃前移一步**
+
+### 对象地址修正
+
+GOT 槽（VMA `0x13daff0`，文件偏移 `0x13cfc28+0x33c8`）的 R_ARM_RELATIVE addend 为
+`0x145dce0`，因此运行时对象地址 = `libObj+0x145dce0` = 0x06e27ce0（此前误算为
++0x1463ce0）。
+
+### 探针实验：对象字段0 的实际状态
+
+探针（`ab_v6.img`）在调用 `rm_initialize`（`libObj+0x7740e0`：rm_reg_init →
+rm_rqueue_init → rm_kick_thread_init）前后读取该对象字段0：
+
+```text
+Q rm_init=1        （rm_initialize 成功）
+Q obj0=0
+Q appinit
+Q obj1=0           （appinit 后仍为 0）
+```
+
+即 **RM 初始化并不会创建该对象字段0**；它需要由别的路径（很可能就是 GLES 初始化里的
+硬件日志/队列创建）填充。
+
+### 探针实验：填入零填充占位结构
+
+把字段0 指向探针内 128 字节零填充数组后再 appinit（`ab_v7.img`，3 次运行）：
+
+```text
+S obj0=0
+S objpatched
+S appinit
+S obj1=67375144（= 占位数组地址）
+!!! GLES Vecgen enabled.
+然后异常：
+  pc=0x042ad5c2（libc 代码区）
+  lr=0x06140ea1 → libObj+0x776ea1（函数 0x776e00 内部，blx 之后）
+  address=0x0
+```
+
+结论：给非空占位后，代码成功进入 `0x776e00` 的注册流程（不再在 getter 立即崩溃），但在
+后续通过结构内函数指针/数据调用时仍然崩溃——说明该对象需要**真实结构的初始化内容**
+（含有效函数指针/表），而不是零填充。
+
+### 当前状态
+
+```text
+[已确认] Vecgen 可由 /tmp/tv_enable 启用，启用后 GLES 初始化通过
+[已确认] 下一阻塞是 RM 注册表对象（libObj+0x145dce0）字段0 未初始化
+[已确认] rm_initialize 不负责该字段；零填充占位只能把崩溃前移一步
+[未完成] 找到该字段的真实创建者（或按真实布局构造最小对象）
+```
+
+### 下一步
+
+1. 反汇编函数 `0x776e00` 全文：列出它对 `[对象->field0]`（以及更深层）的访问偏移，
+   推断所需结构的布局（函数指针表？队列句柄？）；
+2. 在 libObj 中找到创建该结构的函数（很可能在 `rm_rqueue_hw_log_init` 或 GLES 初始化
+   的软件路径里），确认其调用条件；必要时由探针按真实布局构造最小对象后继续推进；
+3. gdb 硬件观察点方案本轮因 gdb/QEMU batch 连接状态问题未能命中（`continue` 被拒绝），
+   后续可换用交互式 gdb 或内核侧辅助。
