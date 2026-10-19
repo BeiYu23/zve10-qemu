@@ -16193,3 +16193,54 @@ pthread_mutex_lock(queue+0x50)
 2. 找到首选应投递的“启动完成/显示就绪”事件，用 App-only 探针按真实格式投递一条，
    观察 Appframework 是否被唤醒并继续创建 GraphicsEngine/WidgetSystem；
 3. 若确认为显示驱动事件，则回到 QEMU 图形后端（VDF/stream 已完成 mmap，缺事件源）。
+
+---
+
+## 二百零八、Round 235：**等待队列属于图形渲染子系统（shader uniform 证据）**
+
+### 队列外部入口与外层调用者
+
+对全量反汇编做调用图分析：入队函数 `0x7d7840` 只被队列自身（`0x7d78f4–0x7d847a`）
+调用；队列对外入口被 `0x7d4xxx–0x7d6xxx` 区域调用（如 `0x7d83c0` 被
+`0x7d5c76/0x7d5db4/0x7d5e50/0x7d5f22` 调用）。
+
+### 字符串证据：图形渲染子系统
+
+对该区域的 pc 相对字面量反推 rodata 字符串，得到：
+
+```text
+u_texMatrix
+u_colorMatrix
+u_color
+u_offset
+u_alpha
+u_scale
+xCoord
+```
+
+这些是 **GLSL/GPU shader uniform 变量名**，说明 `0x7d4xxx–0x7d8xxx` 区域是
+**图形渲染（GLES/GFX）子系统的命令/任务队列与渲染任务实现**。
+
+### 结论修正
+
+`Appframework`（pid 168）阻塞的 futex 队列是**图形渲染器的任务队列**——它作为渲染/图形
+工作线程在等待绘制任务（draw list/command），而不是普通 UI 事件循环。也就是说：
+
+```text
+Application_System_Init 已启动图形渲染线程（Appframework）
+  → 渲染线程进入任务队列等待 draw 命令
+  → 但提交绘制任务的“视图/场景层”（ViewManager/viewUnified）没有启动
+  → 因此 GraphicsEngine/WidgetSystem 一直为 0、渲染线程空转等待
+```
+
+这与之前的依赖链互相印证：View 层初始化（需要 WidgetSystem）尚未发生，所以没有任何绘制
+任务被提交，渲染线程只能等待。
+
+### 下一步
+
+1. 打通 View 层：让 `viewUnified2` 的初始化在 WidgetSystem 可用之后运行——
+   即先解决 `Application_System_Init → resmgr → WidgetSystem 创建` 链
+   （resmgr 资源加载器 + 图形系统初始化仍是卡点，需 QEMU 图形后端）；
+2. 或在 QEMU-only 探针中先手动创建最小 WidgetSystem（真实构造函数 `0x618ed0`），
+   再触发 viewUnified2 初始化，观察渲染线程是否收到第一个绘制任务；
+3. 渲染线程一旦跑起来，再配合 QEMU framebuffer 呈现即可验证画面。
