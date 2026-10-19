@@ -17184,3 +17184,13 @@ n = min(size, r); copy(buf, scratch, n); return n;
 2. 若通过：尝试去掉 `0x5717c0`（伪造字体/显示子初始化成功）与 `0x685eee`（GLES 跳过），
    回到真实资源/字体路径，观察 GraphicsEngine 是否自然创建；
 3. 继续推进 gfx/wg 与 View 层，最终接上 bionz-streamfb 画面呈现与输入注入。
+
+### 修复过程中的布局陷阱（Round 248 追加）
+
+- c56/c57 的 256KB scratch 放在 preload 的 .bss / 运行时 mmap，均发生在 **libObj 加载之前**
+  （tb-v35-1：首次 `Backup_nread` 在 t≈3.76s，libObj QMMAP 在其后），使后续库整体平移
+  **0x40000**（libObj base 0x59ca000 → 0x5a0a000），导致确定性 `InfraIndctr @0x0` 崩溃；
+- 结论：在 norandmaps 固定布局下，**任何在 libObj 加载前改变 mmap 区布局的分配都会破坏固件
+  地址假设**；scratch 必须用不影响库 mmap 区的方式获取；
+- 已在 c58 中改用 **brk 扩展堆**（`brk(0)→brk(+0x40000)`，so bss 仅 0x20），镜像 ab_v36，
+  预期 base 回到 0x59ca000；待 task-9 验证。
