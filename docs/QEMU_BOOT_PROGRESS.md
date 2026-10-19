@@ -17503,3 +17503,17 @@ ab_v56      c71 日志自旋锁 + InfraDial 黑名单 + clamp + mmap 取证（�
   - `Backup_nread` clamp、VDF key、rm_init/appinit/采样不变；
 - 镜像 `ab_v57`（n7 探针 md5 `4684a6a9…`，前缀 `X9`）已拆分核对正确，task-25 验证中；
   后续需要的诊断信息（尤其 GPE `/dev/mem` 物理地址）改用 gdb 断点获取，不再依赖探针原子日志。
+
+---
+
+## 运维：环境迁移前清理（pve+lxc → 压平 Kubuntu）
+
+- `/mnt/build`（458G 数据盘）从 **99G → 23G**（释放约 76G）：删除其它机型解包树
+  （a7c2/zve10m2/zv1f/a6400）、旧 emmc 实验镜像（zve10_*_emmc 变体）、旧 n15/n7 镜像、
+  lf/aux_final_verify/downloads、旧日志与冗余整盘实验镜像；
+- `/tmp`（5.7G tmpfs）从 703M → 323M：清理 zv-compare/pytest/node 缓存/旧 img/旧 Xvfb；
+- 保留清单写入 `/root/fw/MIGRATION_KEEP.txt`（源码树、工具链、仓库/证据、固件参考、
+  关键基线镜像、探针源码与二进制、新环境依赖清单）；
+- 根文件系统 `/` 仍 94%（2.5G 空闲）——迁移前可另行清理 `/root/upstream-pr`(1.6G)、
+  `/root/wechat-devtools`(1.2G)、`/root/fw/zve10_v12`(317M)、`/root/fw/ref_zv1f`(159M) 等
+  与本项目无关/其它机型资料（/root/dev 为独立 89G 数据卷，不属于根盘）。
