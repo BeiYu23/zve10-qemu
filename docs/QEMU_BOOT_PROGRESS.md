@@ -16016,3 +16016,63 @@ t≈36.4s  EXIT im.elf.real pid=137 code=0   ← 进程正常退出
 - `/proc/sysrq-trigger` 可写：`h` 打印帮助、`w` 打印 Blocked State——可在 console 被占时
   直接让内核把任务状态输出到串口（本轮验证通过）；
 - `/dev` 只读（mknod 返回 EROFS），不能创建 `/dev/kmsg` 节点，kmsg 通道不可用。
+
+---
+
+## 二百零五、Round 232：**SysRq 任务栈取证：Appframework 阻塞在 futex_wait**
+
+### 建立内核任务栈取证通道
+
+`/proc/sysrq-trigger` 写入小写命令已验证有效（大写不识别、只回 HELP）：
+
+```text
+t  -> SysRq : Show State               （所有任务状态 + 内核栈）
+w  -> SysRq : Show Blocked State       （D 状态任务）
+l  -> SysRq : Show backtrace of all active CPUs
+```
+
+探针（App-only preload，RT 线程）在 appinit 之后 10 秒触发 `t/w/l`，内核把全部任务状态与
+栈直接打印到串口，绕过了被阻塞的 console 与用户态输出。
+
+### 任务状态（`ab_u.img`，VDF 已修复 + exit interpose 保持进程存活）
+
+```text
+im.elf.real   S   pid 124  father 1     ← 启动编排主线程（等待子进程）
+im.elf.real   R   pid 137              ← 我们的 RT 探针线程（正在写 sysrq）
+THREAD_INFRA0 S/R pid 140..144
+Appframework  S   pid 168              ← Application_System_Init 创建的 UI 线程
+```
+
+`Appframework` 的内核栈：
+
+```text
+__schedule+0x0
+  ← schedule+0x9c
+    ← futex_wait_queue_me+0xdc
+      ← futex_wait+0xec
+        ← do_futex+0xd8
+          ← sys_futex+0x168
+            ← ret_fast_syscall
+```
+
+即 **UI 线程当前阻塞在 futex_wait**，不是在 abort、也不是自旋。内核 ZZFUTEX 追踪里没有对应
+记录（说明该 futex 走的是未打印的路径/过滤器外），需要进一步确认是哪个用户态锁以及应由谁
+唤醒。
+
+### 当前完整状态
+
+```text
+[已修复] Infrastructure 随机崩溃点（libObj+0x15b2d0 诊断 patch）
+[已修复] VDF 显示端口 abort（真实 stream offset 0x20312000 + 两处 abort patch）
+[已修复] abort 死循环造成的 100% CPU 忙等假象
+[已建立] SysRq 内核任务栈取证通道（t/w/l）
+[当前]  Appframework 线程阻塞在 futex_wait；gfx=res=wg=0（30 秒观察窗口）
+[未完成] GraphicsEngine/WidgetSystem 创建；显示输出；输入交互
+```
+
+### 下一步
+
+1. 确认 Appframework 等待的 futex 地址：扩展内核 ZZFUTEX 追踪条件（打印全部 futex_wait），
+   或用 gdb 附加并读取该线程用户态上下文；映射到 libObj 数据区可定位具体 mutex/condvar；
+2. 找到应由谁唤醒该 futex（大概率是等待显示/OSD 事件或某个未启动的服务线程）；
+3. 同时推进 QEMU 图形后端（VDF/stream 已完成 mmap，缺的是事件/中断源）。
