@@ -16372,3 +16372,55 @@ QEMU 缺少可用的 GLES/GPU 后端
 2. 扩展 fake `grm_gles.ko`：让它对渲染线程的请求返回"完成"事件（补充必要的 ioctl 语义 +
    完成通知机制，例如通过 eventfd/waitqueue 唤醒）；
 3. 一旦 `grm_init` 返回，resmgr 尾部会自动创建 WidgetSystem，随后可验证 View 层与画面。
+
+---
+
+## 二百一十一、Round 238：**GLES 初始化通过 UIPC 请求服务，未触碰 /dev/dmpgles2**
+
+### 新增内核 ioctl 追踪
+
+`fs/ioctl.c::SYSCALL_DEFINE3(ioctl)` 中增加（仅匹配线程名 `im.` / `App` 前缀）：
+
+```text
+ZZIOCTL %s fd=%u cmd=0x%x arg=0x%lx dev=%s
+```
+
+### 实测（`ab_v3.img`，两次运行均可复现）
+
+```text
+== 设备统计 ==
+520 uipc
+  1 kikilog
+（无 dmpgles2、无 stream、无 fb0！）
+
+== Appframework 线程的 ioctl 例子 ==
+ZZIOCTL Appframework fd=3 cmd=0x80000001 arg=0xb8b1b50 dev=uipc
+ZZIOCTL Appframework fd=3 cmd=0x8000000a arg=0xb8b1b08 dev=uipc
+ZZIOCTL Appframework fd=3 cmd=0x80000005 arg=0xb8b1b28 dev=uipc
+ZZIOCTL Appframework fd=3 cmd=0x8000000b arg=0xb8b1b18 dev=uipc
+...
+```
+
+即：渲染线程执行 GLES 初始化任务时**完全没有访问 `/dev/dmpgles2`**，全部是 UIPC 消息
+（fd=3, dev=uipc, cmd 0x80000001/05/0a/0b）。
+
+### 结论
+
+GLES 初始化不是直接操作 GPU 设备，而是**通过 UIPC 请求某个图形服务/驱动代理**（消息
+cmd=0x80000005 发送、0x8000000a/0x8000000b 接收/等待），然后等待回复。在 QEMU 环境里该
+服务不存在或无法响应，因此：
+
+```text
+渲染线程发 UIPC 请求 → 无服务回复 → GLES 初始化任务悬挂
+  → 0x7d7d30 pthread_cond_wait 永不返回
+    → grm_init 阻塞 → resmgr 阻塞 → WidgetSystem=0 → 无 View → 无画面
+```
+
+下一步需要：
+
+1. 解析 UIPC 消息内容（内核已有 `UIPCARG`/`UIPCRET` 追踪）：确认 GLES 初始化请求的目标
+   服务 id 与命令号；
+2. 确认该服务本应由谁实现（可能是 `grm_gles.ko` 注册的 UIPC 端点，或缺失的用户态图形
+   守护进程）；
+3. 在 QEMU-only 环境中提供最小应答（例如扩展 fake `grm_gles.ko` 或加一个 shim 线程监听
+   UIPC 并回复"初始化完成"），使 `grm_init` 返回。
