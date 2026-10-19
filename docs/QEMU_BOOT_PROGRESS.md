@@ -17131,3 +17131,56 @@ uxengine_init(0x6271f8) → GraphicsEngine::updateResource(0x6131de)
 - 下一步：重跑 watchpoint 打印内核栈（`x/64wx $sp`）以确定**是哪个 syscall/ioctl**（UIPC
   reply / read / 其它）及其长度字段来源；据此修“缓冲尺寸/偏移失配”（很可能与字体表长度或
   reply 长度错误相关，回到“真实字体列表/配置”方向），并补 previous_prio 的 trampoline。
+
+---
+
+## 二百二十一、Round 248：**根因闭环：Backup_nread 驱动忽略 size，越界覆盖 allocator mutex**
+
+### 证据（task-6，gdb + vmlinux 符号）
+
+- watchpoint（base+0x145df44）命中 `__copy_to_user_std`（copy_template.S:102）；
+- 内核栈含 `0x01700000`、`0x687b(26747)`、ASCII `"backup size err / id :0x01700000"`、
+  以及 modules 区地址 0x5f0xxxxx（0x5f000000=modules）→ 调用者 = **backup 内核驱动模块**；
+- 寄存器：`to=0x6e27f48, from=0x63680a10, remaining=0x5efb(24315)`，已拷 0xec
+  ⇒ 总长 ≈ **26747 = 0x687B**，与 `BNR id=0x1700000 sz=4 real=26747` 完全一致；
+- 用户目的缓冲起点 = `0x6e2765c = base+0x145d65c` = `dmpNative::SystemImpl` 的
+  `setting` 字段（this+0x64）。
+
+### 根因
+
+`Backup_nread(0x01700000, &setting, 4)` 的**驱动忽略用户传入的 size，按备份记录实际长度
+26747 字节 copy_to_user 到 4 字节字段**；从 0x145d65c 起写 0x5fe7 字节，在 +0x8e8 处
+**覆盖了 base+0x145df44 的 DMP allocator mutex**（把 __lock 写成 0x93054648，glibc 视为
+永久加锁），同时也解释了 `SystemImpl.cpp:156` 的 `bret == sizeof(this->setting)` assert。
+
+两个此前互相独立的现象（SystemImpl assert、mutex 覆盖）**同源**。
+
+### 修复（Lead：ab_v34，修正版 clamp）
+
+探针拦截 `Backup_nread`：
+
+```c
+r = real_Backup_nread(id, scratch[256KB], size);  // 保留调用方 size，scratch 吸收驱动越界写
+if (r <= 0 || r == 0xffff) return r;              // 错误原样透传，不拷贝
+n = min(size, r); copy(buf, scratch, n); return n;
+```
+
+- `0x1700000,sz=4` → 返回 4（真实前 4 字节，而非此前伪造的 0）；
+- 0xffff（如 0xbd0000 real=65535）→ 原样返回，不再伪造成功；
+- 长记录不再越界写用户缓冲。
+
+（此前 c55 版本因“传 256KB 作 size + 对 0xffff 也伪造成功”导致 InfraIndctr 崩，已修正。）
+
+### 其他
+
+- previous_prio 的第二个 tpp trampoline 已验证（两条断言都过），但坏 `__kind` 会让
+  mutex 语义错误（EINVAL 后崩在 libObj+0x796028），因此**断言绕过非正解**，正解是阻止覆盖；
+- 覆盖 blob 的真实起点 = base+0x145d65c，长度 ≈ 0x5fe7；magic 间距不等，非均匀数组。
+
+### 下一步
+
+1. 跑 ab_v34 验证：w0 恒为小值、futex(06e27f44) 次数下降、SystemImpl assert 消失、
+   启动到 appinit；
+2. 若通过：尝试去掉 `0x5717c0`（伪造字体/显示子初始化成功）与 `0x685eee`（GLES 跳过），
+   回到真实资源/字体路径，观察 GraphicsEngine 是否自然创建；
+3. 继续推进 gfx/wg 与 View 层，最终接上 bionz-streamfb 画面呈现与输入注入。
