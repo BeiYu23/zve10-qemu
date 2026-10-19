@@ -15356,3 +15356,50 @@ appFw/model 层，或 viewUnified 模块加载后的 View 初始化），这也�
    确认是哪个类/函数应创建 WidgetSystem；
 2. 若属缺失模块，则在 QEMU-only 探针里按真实构造顺序创建最小 WidgetSystem/Layer；
 3. 显示后端单独推进：为 QEMU 增加把 `stream`/VIP 缓冲呈现到宿主窗口的最小路径。
+
+---
+
+## 一百九十四、Round 221：**定位 WidgetSystem 真实创建包装（libObj+0x618ed0）**
+
+通过替换 `getInstance`（`libObj+0x616fe4`）反查 GOT 槽偏移 `0x7608`，在 `libObj` 的
+`.text` 中找到对该槽仅有的两处引用：
+
+1. **销毁函数**（`libObj+0x619524`附近）：读槽 → free → `str 0,[slot]`；
+2. **创建包装**（`libObj+0x618ed0`）：
+
+```text
+618ed0: push {r3,r4,r7,lr}
+618ed2: mov  r4, r0            ; arg
+618ed6: mov.w r0, #1320        ; sizeof(WidgetSystem)=0x528
+618eda: blx  malloc@plt
+618ede: cbz  r0, 618ee6
+618ee0: mov  r1, r4            ; 第二参数 = arg
+618ee2: bl   618d7c            ; 真实构造函数
+618ee6: bl   640204            ; log
+618eea-: strb r0,[flag]        ; 记录创建标志
+```
+
+真实构造函数 `libObj+0x618d7c` 接收 `(this, arg)`：初始化对象各成员后，在
+`libObj+0x618ddc` 执行 `str r4,[r3,#0]`，即**把 this 写入 WidgetSystem 全局槽**
+（`GOT[0x7608]` 指向的 `libObj+0x145cb1c`）。构造函数内还会调用
+`WidgetSystem::createLayer`（PLT `0x10b78c`）两次、`getGestureAnalyzer`、
+`Animation::addEventCallback` 等，属于完整的真实对象构造，而不是空壳。
+
+关键阴性结论：对 `libObj+0x618ed0` 和 `libObj+0x618d7c` 做全 `.text` 分支扫描
+（BL/BLX/B.W/B.N 全类型，解码器已用已知调用点 `0x618ee2` 校准）：
+
+```text
+target 0x618ed0 callers: 0
+target 0x618d7c callers: 1（仅 0x618ee2，即包装内部）
+word 0x618ed0/0x618ed1/0x618ee3 数据指针引用: 0
+.init_array 272 项中无 0x618ed8/0x618d7c
+```
+
+即：**WidgetSystem 的真实创建代码完整存在于 libObj，但在 libObj 内部没有任何调用者**。
+创建动作必须由外部模块触发（最可能是缺失的 appFw/model 层通过某个导出接口），这与
+Round 220 的运行时结论（appinit 返回后槽仍为 0、watchpoint 从不命中）完全一致。
+
+下一步（可执行实验）：在 QEMU-only preload 里直接调用该真实创建包装
+`libObj+0x618ed0(arg)`，让真实构造函数自己把指针写进全局槽；随后再
+`dlopen("/usr/lib/viewUnified2.so")`，验证“WidgetSystem 非空”是否能让 View 层初始化
+继续前进（此前 viewUnified2 正是因 WidgetSystem 为空而在 mouse helper 崩）。
