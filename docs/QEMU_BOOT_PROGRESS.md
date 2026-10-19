@@ -17105,3 +17105,29 @@ uxengine_init(0x6271f8) → GraphicsEngine::updateResource(0x6131de)
 - 结论/下一步：需要（a）gdb watchpoint 抓写入者（task-5 进行中）；或（b）用邻域大 dump 找数组
   真实起点/长度并反查其所属 BSS 全局；或（c）回到"真实字体列表/配置"修法，避免伪造成功导致
   描述符表越界写入。
+
+### task-5 结果：watchpoint 命中——覆盖来自内核 copy_to_user 的越界资源描述符拷贝
+
+- 自建 gdb runner `/mnt/build/tb_run_gdb5.sh`（QEMU `-gdb tcp::PORT`，等串口 `LBASE=` 后 attach，
+  `watch *(unsigned int*)(LBASE+0x145df44)` 循环 continue）成功命中（OUT=oss/artifacts/tb-gdb-6）；
+- 前 4 次写为合法锁/解锁（pc=0xffff0fd0 kuser_cmpxchg，lr=0x04090bdd/0x04091d3d，值 0↔1）；
+  第 5 次：
+  ```text
+  WP pc=0x60299cf0 lr=0x68184681 v=0x93054648
+  r0=0x6e27f48 to  r1=0x63680a10 from  r2=0x5efb(24315) 剩余
+  r3=0xb2409304 r4=0x68339001 r5=0x93054648 r6=0x9306793b ...
+  cpsr=0x20000013 (SVC/kernel)
+  ```
+- `pc=0x60299cf0` 经 vmlinux+System.map+addr2line = **`__copy_to_user_std` /
+  arch/arm/lib/copy_template.S:102**，即用户态 syscall 触发内核 `copy_to_user`；
+- 解读：不是用户态循环写坏，而是**某次 syscall 把 24315+ 字节（56 字节步长的“指针描述符记录”，
+  magic 0xb2409304、含 rodata 指针）拷进用户缓冲；该缓冲与 DMP allocator mutex 相邻/重叠，
+  越界拷贝把 mutex 覆盖成乱码**。to=0x6e27f48、from=0x63680a10、剩余 0x5efb。
+- 强制解锁诊断（ab_v32 / c54 MWFIX）：`MWFIX` 触发后 `ZZFUTEX uaddr=06e27f44` 从 15293 次
+  → 62 次，pid=166 恢复；gfx/wg 仍 0；随即出现**第二个 tpp 断言**
+  `previous_prio == -1 || (previous_prio >= __sched_fifo_min_prio && ...)`（我们 trampoline
+  只改了 new_prio 那条）。⇒ “覆盖→锁死”确认为阻塞点之一；解锁后链继续推进，下一个可修点是
+  previous_prio 断言。
+- 下一步：重跑 watchpoint 打印内核栈（`x/64wx $sp`）以确定**是哪个 syscall/ioctl**（UIPC
+  reply / read / 其它）及其长度字段来源；据此修“缓冲尺寸/偏移失配”（很可能与字体表长度或
+  reply 长度错误相关，回到“真实字体列表/配置”方向），并补 previous_prio 的 trampoline。
