@@ -15300,3 +15300,59 @@ got[-01] @0407d1c8 = 04091de9
 2. 重写该 fake 模块：按 `len` 分配（或对超出部分映射零页/只映射真实分配长度并返回错误），
    保证用户态写入不越过实际分配；
 3. 在纯基线上验证 150 秒不再随机崩溃，然后再继续 UI 生命周期实验，避免再被内存破坏污染结论。
+
+---
+
+## 一百九十三、Round 220：**Application_System_Init 不创建 WidgetSystem/ViewManager**
+
+在内核 mmap 追踪里增加映射文件名（`file->f_path.dentry->d_name.name`）后，确认延迟 UI 生命周期
+调用触发的两次 32 MB 映射来自设备 **`stream`**：
+
+```text
+QMMAP addr=0x0 len=0x2000000 prot=0x3 flags=0x1 fd=9 ret=0xb9bb000 name=stream
+QMMAP addr=0x0 len=0x2000000 prot=0x3 flags=0x1 fd=9 ret=0xb9bb000 name=stream
+```
+
+时间点在 `AIT call/returned` 之后约 0.4 秒，即 `Application_System_Init` 启动的图形线程立即开始
+映射显示流缓冲。`/dev/stream`、`/dev/stream2`、`/dev/dmpgles2` 等设备节点在目标 rootfs `/dev`
+中存在；QEMU 机器的 `bionz_cpyfb`（0x79700000）经查只是 **DMA 拷贝引擎模型，没有把像素送宿主
+显示**，所以即使 guest 渲染也不会出现在 GTK 窗口（当前窗口仍是默认 320×240）。
+
+随后用三种独立手段确认 WidgetSystem / pViewManager 未被创建：
+
+1. **直接读内存的实时观测线程**（App-only preload，已知 `libObj` base 后直接读
+   `base+0x145cb1c` / `base+0x149221c`，避免 `dlsym` 的 loader 锁）并把自身提到
+   `SCHED_FIFO(90)`，防止被图形 RT 线程饿死：
+
+```text
+A6 ai=0x0626c409 base=0x059ca000 pvm0=0x00000000 widget0=0x00000000
+A6 call
+A6 returned
+A6 rt
+A6 i=0 pvm=0x00000000 widget=0x00000000
+...
+A6 i=9 pvm=0x00000000 widget=0x00000000
+```
+
+2. **gdb 硬件 watchpoint** 覆盖整个 130 秒运行（包含延迟调用与 `stream` 映射）：
+
+```text
+Hardware watchpoint 1: *(unsigned int*)0x06e26b1c   (WidgetSystem slot)
+Hardware watchpoint 2: *(unsigned int*)0x06e5c21c   (pViewManager)
+```
+
+全程未命中，即没有任何代码写入这两个槽。
+
+3. 该组合镜像（`libObj+0x15b2d0` 空指针点已做 2 字节诊断修正）在 150 秒内**无异常崩溃**，
+   说明结论不是被崩溃截断。
+
+结论：`Application_System_Init` → `uxengine_init` → `resmgr` 资源加载 → `stream` 缓冲映射
+这条链**不会创建 WidgetSystem/ViewManager**。后两者需要更后面的阶段（最可能是缺失的
+appFw/model 层，或 viewUnified 模块加载后的 View 初始化），这也解释了为什么此前直接
+`dlopen(viewUnified2)` 会先崩在 CautionConfig/Backup 阶段、随后暴露空 WidgetSystem。
+
+下一步：
+1. 静态定位 `libObj+0x145cb1c` 槽的真正写入者（通过 GOT 槽 `GOT+0x7608` 的引用点搜索 `str`），
+   确认是哪个类/函数应创建 WidgetSystem；
+2. 若属缺失模块，则在 QEMU-only 探针里按真实构造顺序创建最小 WidgetSystem/Layer；
+3. 显示后端单独推进：为 QEMU 增加把 `stream`/VIP 缓冲呈现到宿主窗口的最小路径。
