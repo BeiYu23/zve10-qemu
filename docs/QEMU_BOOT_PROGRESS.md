@@ -16759,3 +16759,17 @@ ab_v10.img = ab_v9 + libObj(0x610fa4 → 002000bf)
    DMM/HDMI/OSD/GPU 语义）；
 2. 用同样"提供真实默认值"的方式让图形系统初始化成功，从而创建 GraphicsEngine；
 3. 之后 resmgr 尾部（0x618ed0）会自动创建 WidgetSystem，再验证 View 层与画面。
+
+补充（Round 243 追加）：
+
+- 在 `ab_v9`（GLES 初始化跳过、ResourceManager 已创建）运行中，UI 线程的等待点已从早期的
+  libObj BSS 渲染队列 condvar 变为**堆上的 pthread 条件变量**（`0x0b94bbbc` 等，内核栈为
+  `futex_wait`），与 `libosal_uipc` 的同步消息等待（`osal_snd_sync_direct` 内部 condvar）
+  特征一致；
+- 该运行中 Appframework 线程的 ioctl 仍只有 `uipc`/`kikilog`（无 dmpgles2/stream），
+  说明图形系统初始化（`0x8558c4`）当前是通过 **UIPC 同步消息**等待某个服务应答；
+- 对照实验：`ab_v9` + 原始 `grm_gles.ko`（`ab_v11.img`）3/3 崩溃（无采样），说明真实驱动
+  与当前配置组合不可用；同步消息的应答方仍需另行提供。
+
+下一步聚焦：确认 `osal_snd_sync_direct` 的目标队列/服务 id（可由 libObj 的 UIPC 包装层
+调用链与内核 UIPC 队列表交叉定位），再决定由探针、fake 驱动或 QEMU 设备侧提供最小应答。
