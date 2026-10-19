@@ -16297,3 +16297,78 @@ op=0x80 uaddr=0x0b88db24 / 0x0b9cbb24 （堆上，随运行变化）
    尾部创建 WidgetSystem 的路径根本没执行到，需要重新检查 resmgr 资源加载器的返回值/分支；
 2. 对 `0x0b88db24` 这一堆上 condvar 的调用方做静态定位（它可能是资源加载完成通知）；
 3. 继续以 QEMU 图形后端（VDF/stream 已完成 mmap，缺事件/中断）为主线推进。
+
+---
+
+## 二百一十、Round 237：**阻塞链终点锁定：GLES 渲染子系统初始化永不完成**
+
+### 稳定配置下的逐层条件断点追踪
+
+本轮找到稳定配置（`ab_v3.img`：VDF 配置修复 + 60 秒采样，3/3 运行无崩溃），
+用 gdb 条件断点（按 uxengine 线程 SP 过滤）逐层追踪，得到完整调用链：
+
+```text
+uxengine_init (libObj+0x6271d4)
+└─ resmgr init (0x610f74)
+   └─ 资源加载器 (0x640398)
+      └─ 字体/资源注册 (0x63d188)
+         └─ 0x644bf8
+            └─ 0x642a70
+               └─ grm_init (0x685e58)
+                  ├─ A/B/C 配置读取（返回正常）
+                  ├─ D 0x685e1c / E 0x684604（返回正常）
+                  └─ F bl 0x7d5bb0      ← 之后不再返回！
+```
+
+追踪输出（SP 过滤后）：
+
+```text
+A_cfg1 B_cfg2 C_cfg3 D_685e1c E_684604 F_7d5bb0
+（G_uiresp_init 及后续全部未到达 → 卡在 F 调用内部）
+```
+
+### 最后一环：GLES 惰性初始化等待渲染线程
+
+`0x7d5bb0` 是薄封装，尾调用 `0x7d7d30`。后者是 **GLES/渲染子系统的惰性初始化**
+（Meyers singleton），逻辑为：
+
+```text
+pthread_mutex_lock(init_lock)
+if (已初始化) return;
+call 7d7780(设备路径1)          ; 打开 GLES 设备
+call 7d7780(设备路径2)
+pthread_key_create
+lock(queue mutex); 入队 GLES 初始化任务(7d7840); pthread_cond_signal(queue+0x20)
+unlock
+pthread_cond_wait(queue+0x68, queue+0x50)   ← 等待渲染线程完成初始化
+if (任务结果 != 0) 错误路径
+置已初始化标志
+```
+
+即：`grm_init` 把 GLES 初始化任务投递给渲染线程后，**阻塞等待渲染线程回信号**。在 QEMU
+环境下渲染线程无法完成 GLES 初始化（没有真实 GPU / 现有 `grm_gles.ko` fake 设备能力不足），
+因此永远不会 signal —— `pthread_cond_wait` 永久阻塞，整条 UI 初始化链停在这里。
+
+### 完整根因链（最终）
+
+```text
+QEMU 缺少可用的 GLES/GPU 后端
+  → 渲染线程无法完成 GLES 初始化任务
+    → 0x7d7d30 的 pthread_cond_wait 永不返回
+      → grm_init 阻塞
+        → resmgr 初始化阻塞
+          → WidgetSystem 永不创建
+            → View/场景层不启动
+              → 没有绘制任务提交给渲染线程
+                → 无画面
+```
+
+### 下一步（唯一主线）
+
+按既定路线实现 QEMU 侧 GLES/GPU 后端：
+
+1. 确认渲染线程执行 GLES 初始化任务时调用的驱动路径：查看 `/dev/dmpgles2` 上的 ioctl/mmap
+   序列（内核已可追踪 mmap；可再加 ioctl 追踪）；
+2. 扩展 fake `grm_gles.ko`：让它对渲染线程的请求返回"完成"事件（补充必要的 ioctl 语义 +
+   完成通知机制，例如通过 eventfd/waitqueue 唤醒）；
+3. 一旦 `grm_init` 返回，resmgr 尾部会自动创建 WidgetSystem，随后可验证 View 层与画面。
