@@ -15539,3 +15539,58 @@ uxengine_init（卡在 resmgr 资源加载）
    （0x640398 内部 22 个调用点已枚举，可用用户态单步/返回值检测替代 gdb）。
 2. 或者直接给 0x640398 内部可疑调用做 App-only 安全 shim（如字体文件相关 read/mmap），
    让 resmgr 初始化返回，观察 WidgetSystem 是否被 tail-call 创建。
+
+---
+
+## 一百九十七、Round 224：**逐级跳过实验定位 resmgr 后续卡点**
+
+### 实验 1：只跳过资源加载器（`libObj+0x640398` 改为 `movs r0,#1; bx lr`）
+
+镜像 `ab_g.img`（`libObj+0x15b2d0` 已修 + 加载器跳过 + 8 秒提前 appinit 的 B16 探针）：
+
+```text
+B16 pre       gfx=0 res=0 wg=0
+B16 appinit call / returned
+B16 i=0       gfx=0 res=0        wg=0
+B16 i=1..19   gfx=0 res=0x06e26a60 wg=0     （20 秒无崩溃）
+```
+
+`res=0x06e26a60` 是 `libObj` 内的静态 ResourceManager 实例地址（`sys_getInstance` 在
+初始化标志置位后返回该常量地址）。说明**跳过加载器后 resmgr 初始化继续推进并完成了
+ResourceManager 的初始化标志**；但 20 秒内 GraphicsEngine / WidgetSystem 仍未被创建，
+说明 resmgr 初始化卡在后续步骤。
+
+### 实验 2：同时跳过加载器与 `libObj+0x610184`
+
+`0x610184` 是 resmgr 初始化中加载器之后的下一个单例初始化步骤（惰性构造 + 初始化 +
+写入 GOT 槽）。镜像 `ab_h.img` 双跳过 + B16 探针：
+
+```text
+B16 appinit call / returned
+B16 i=0 gfx=0 res=0 wg=0
+→ 异常：program=(null)(Appframework) pid=166
+        pc=libObj+0x63d2e0 附近（0x06007240），lr=libObj+0x612b49
+        fault address=0x0
+```
+
+`Appframework` 正是 `Application_System_Init` 创建的 UI 线程；`lr=libObj+0x612b49` 再次落在
+GraphicsEngine 构造函数 `0x612b34` 内 `bl 0x63d2d8`（取 framebuffer 宽）之后，`0x63d2d8`
+因 graphics system 全局为 0 而空指针崩溃。
+
+**结论**：`libObj+0x610184` 正是 GraphicsEngine 构造所需的“图形系统/显示系统”初始化步骤。
+正常流程中加载器之后它没有完成（20 秒仍无引擎），是 resmgr 初始化链的**下一个卡点**；
+把它跳过则引擎构造立即因 framebuffer 未初始化而崩。因此修复方向明确：
+
+```text
+0x640398（资源加载，卡点1）
+  → 0x610184（图形/显示系统初始化，卡点2）
+    → 0x6131d4（GraphicsEngine 创建）
+      → resmgr 结尾 tail-call 0x618ed0（WidgetSystem 创建）
+```
+
+### 下一步
+
+1. 反汇编并定位 `0x610184` 内部阻塞点（它调用 `0x63fb14` 创建对象、`0x8558c4` 初始化；
+   `0x63fb14`/`0x8558c4` 是否等待硬件/线程，需要进一步追踪）。
+2. 若 `0x8558c4` 依赖 GRM/OSD 硬件服务，则应按路线图补 QEMU 图形后端；若只是等待某个
+   线程/信号量，可在探针中补齐。
