@@ -15777,3 +15777,87 @@ LR，或该 vendor 内核在信号/异常返回时把 LR 设成了内核地址�
 1. 拿到 abort 的真实调用点（naked interposer）；
 2. 找到 abort 前最后的错误日志（可能是 GLES/GRM/framebuffer 初始化失败）；
 3. 修复该失败原因（大概率仍指向 QEMU 图形后端缺失），使 UI 初始化不再 abort。
+
+---
+
+## 二百零一、Round 228：**abort 根因定位：VDF 显示端口配置读失败**
+
+### abort 调用点
+
+用 naked 汇编 interposer 在 abort 入口 dump 栈上返回地址，得到：
+
+```text
+AAB3 lr=...  栈上返回地址（均为 libObj 内）
+  0x6fc085 / 0x6fc13d / 0x6f536b / 0x6f9275 ...
+```
+
+解析为 libObj 偏移后定位到函数区 `vdf_if_port_init`（`libObj+0x6fc024/0x6fc054/0x6fc11c`）：
+
+```text
+6fc024: fd = open(path, flags)
+        if (fd == -1) { log(...); abort(); }          ← VDF 端口 open 失败
+
+6fc054: 端口 mmap 封装
+        if (offset < 0) {
+            if ((offset + 0x2000000) < 0x1000000) { 特殊负偏移路径 }
+            else { log(...); abort(); }                ← 0x6fc080，实际触发点
+        }
+        ...
+        ptr = mmap(...); if (ptr == -1) { log; return 0; }
+
+6fc11c: 读取两个 Backup 配置项后调用上面封装：
+        r5 = Backup_read_4Byte(0x00fa00a3);
+        r4 = Backup_read_4Byte(0x00fa00a4);
+        p  = vdf_port_mmap(port, r5, r4);
+        memset(p, 0x5a, r4);
+```
+
+### 根因
+
+在本 QEMU 环境里 Backup 服务没有有效数据，`Backup_read_4Byte(0x00fa00a3/0x00fa00a4)`
+返回 `0xffffffff`；`0xffffffff` 作为显示缓冲 offset 无法通过 VDF 校验
+（`-1 + 0x2000000 >= 0x1000000`），于是 libObj 主动调用 `abort()`。而 `abort()` 在本
+guest 里会死循环（Round 227 已单独验证），占满 CPU、饿死串口——这就是此前所有“UI 初始化
+卡死/100% 自旋”的真正根因。
+
+对照实验（只 patch 两处 abort 为继续执行）会把崩溃转移到后续 `memset(ptr,0x5a,len)`：
+`memset` 收到垃圾 ptr/len（如 `r0=0x0401efff, r2=0xfffffff6`）而在 libc 内写坏地址崩溃。
+说明必须**提供正确的配置值**，而不能简单跳过 abort。
+
+### 定向修复（App-only interposer + 两处 abort patch）
+
+1. interpose `Backup_read_4Byte`：仅对两个 VDF key 返回默认值，其余透传到真实实现：
+
+```c
+unsigned Backup_read_4Byte(unsigned key){
+  if (key == 0x00fa00a3u) return 0;   /* display port offset（非负即通过校验） */
+  if (key == 0x00fa00a4u) return 0;   /* mapping length（0 => 跳过映射） */
+  return real(key);
+}
+```
+
+2. 镜像内 libObj 两处 `abort()` 调用改为继续/返回（`0x6fc04a` → NOP×2，
+   `0x6fc080` → `b 0x6fc084`）。
+
+### 实测结果（`ab_m.img`，连续 2 次）
+
+```text
+F appinit
+F returned
+F i=0  gfx=0 res=0 wg=0
+F i=1  gfx=0 res=0 wg=0
+...
+F i=19 gfx=0 res=0 wg=0        ← 连续 20 秒
+无 AAB3（未再触发 abort）
+无 page translation fault / 异常监视器
+其中一次运行：t≈37s 出现 EXIT im.elf.real pid=137 code=0（进程正常退出）
+```
+
+即：**UI 初始化不再 abort、不再随机崩溃**，但 GraphicsEngine/ResourceManager/WidgetSystem
+仍未被创建，`uxengine_init` 线程在 VDF 之后还有下一个阻塞点（或应用因 UI 不可用而正常退出）。
+
+### 下一步
+
+1. 用 CPU 采样判断当前状态：是继续自旋（还有别的 abort/忙等）还是阻塞/退出；
+2. 沿 VDF 之后继续追 `uxengine_init` 的下一步（可能在 GRM/GLES 初始化或 port 打开阶段）；
+3. 若应用因无法显示而主动退出，则需要同时推进 QEMU 图形后端，让初始化有真实目标。
