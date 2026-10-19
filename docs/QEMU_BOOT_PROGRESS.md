@@ -16996,3 +16996,34 @@ pthread_attr_setschedparam(attr, &param)   ← policy 若为 FIFO/RR 且 prio∉
 
 另：BNR 还有三个失败项（0xbd0000 sz=4800 r=65535、0xbd0001 sz=512 r=579、
 0xbd0002 sz=1200 r=685）待分析，可能是同类 Backup 读取语义问题。
+
+### task-2 交付与 Lead 集成验证（QEMU 呈现链打通）
+
+`/root/fw/port_ramfb/`：
+
+- `RAMFB_PLAN.md`（619 行）+ `0001-cxd90045-stream-framebuffer.patch`：新增 host 侧
+  SysBusDevice `bionz-streamfb`（394 行），链接 DDR0，在 `gfx_update` 中把 guest 物理
+  `0x20312000` 起的 /dev/stream 缓冲按可配置 宽/高/stride/格式 转成 DisplaySurface；
+  建在 `bionz_vip` 之前以占据 console #0（GTK/QMP 默认目标）；不引入 fw_cfg/ramfb、不改 guest。
+  参数：`-global driver=bionz-streamfb,property=width|height|stride|format|addr|blank-pattern`
+  格式：0=XRGB8888、1=RGB565、2=RGBA4444、3=YUYV422。
+- 辅助脚本：`make_test_pattern.py`、`qmp_capture.py`、`analyze_stream_dump.py`、`verify_display.py`。
+- 依据：反汇编 `stream.ko` 证实 `stream_mmap()` 把 `vm_pgoff` 直接当 PFN 传给
+  `remap_pfn_range` ⇒ mmap offset 就是 guest 物理地址（解释 VDF Backup offset=0x20312000）。
+
+**Lead 集成与验证（本机 QEMU-only）**：
+
+1. 将 QEMU 树复制到独立副本 `/mnt/build/src/qemu-sony-sfb/`（保留本地修改，不动原树），
+   `patch -p1` 应用补丁后 `make -j8` 成功（产物 `arm-softmmu/qemu-system-arm`）；
+2. 无固件隔离自测：
+   ```text
+   注入 640x480 XRGB8888 测试图到 guest 物理 0x20312000
+   QMP screendump → verify_display.py：
+   pixels: 307200 total, 0 mismatched (0.000%)
+   PASS: bionz-streamfb presented the injected pattern exactly
+   ```
+   证据：`/mnt/build/ramfb-test/`（pattern.raw / shot.ppm / shot.png）。
+
+**结论**：从 “guest 物理显示缓冲 → QEMU GTK/QMP 画面” 的呈现链已经真实打通并经逐像素验证；
+接下来只剩“让 App 真正画出 UI 并写入 0x20312000”。真实固件下仍需用 QMP watch 确认 App 写入
+时机，并用 analyze_stream_dump.py 确定实际几何/像素格式后回填 `-global` 参数。
