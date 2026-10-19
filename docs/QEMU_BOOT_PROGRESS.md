@@ -15403,3 +15403,65 @@ Round 220 的运行时结论（appinit 返回后槽仍为 0、watchpoint 从不�
 `libObj+0x618ed0(arg)`，让真实构造函数自己把指针写进全局槽；随后再
 `dlopen("/usr/lib/viewUnified2.so")`，验证“WidgetSystem 非空”是否能让 View 层初始化
 继续前进（此前 viewUnified2 正是因 WidgetSystem 为空而在 mouse helper 崩）。
+
+---
+
+## 一百九十五、Round 222：**真实引擎/控件创建包装全部找到；依赖链闭合到 uxengine_init**
+
+用 GOT 槽写入扫描（同 WidgetSystem 方法）找到两个真实创建包装：
+
+| 单例 | sys_getInstance | GOT 槽偏移 | 创建包装 | 结构 |
+|---|---|---|---|---|
+| GraphicsEngine | `libObj+0x61229c` | `0x4f50` | `libObj+0x613134` | `malloc(0x240)` → ctor `0x612b34` → `str slot` |
+| ResourceManager | `libObj+0x610218`（空时有静态回退对象） | — | 未扫描 | — |
+| WidgetSystem | `libObj+0x616fe4` | `0x7608` | `libObj+0x618ed0` | `malloc(0x528)` → ctor `0x618d7c` → `str slot` |
+
+运行时实测（`ab_b10.img`，App-only 探针）：
+
+```text
+B pre gfx=0x00000000 resmgr=0x00000000 widget=0x00000000
+B appinit call
+B appinit returned
+```
+
+即正常启动 + 延迟 `Application_System_Init` 之后，**GraphicsEngine / WidgetSystem 仍然为空**；
+ResourceManager 因有空时静态回退而“看似可用”。
+
+有序创建实验（`ab_b12.img`，观测线程先 `SCHED_FIFO(90)`，解决 appinit 后被 RT 线程饿死的问题）：
+
+```text
+B appinit call / B appinit returned
+B gcreate=0x05fdd135        （libObj+0x613134，已补 Thumb 位）
+B gcreate call
+→ 异常：pc=libObj+0x63d2e2  lr=libObj+0x612b49  r0=0  fault address=0
+```
+
+`0x612b49` 是 GraphicsEngine 构造函数 `0x612b34` 内部的返回地址，构造函数开头即：
+
+```text
+612b34: push {r3,r4,r5,r6,r7,lr}
+612b36: r5 = this+0x3c
+612b40: bl 612988
+612b44: bl 63d2d8        ; getFramebufferWidth 辅助（导出的 getFramebufferWidth 也 tail-call 这里）
+612b48: r6 = r0
+612b4a: bl 63d2f0        ; getFramebufferHeight
+```
+
+`0x63d2d8` 内部因 `r0=0` 解引用空指针 —— 说明 **GraphicsSystem/framebuffer 尚未初始化**。
+而 framebuffer/GRM 初始化正是 `uxengine_init` 线程负责、目前卡在 resmgr 字体注册之后的步骤
+（Round 215–216）。因此依赖链闭合为：
+
+```text
+uxengine_init 线程（卡在 resmgr 字体/资源注册）
+  → 完成 GRM 初始化 / GraphicsSystem 建立
+    → GraphicsEngine 构造成功（→ framebuffer 尺寸可读）
+      → WidgetSystem 构造成功（→ 全局槽发布）
+        → viewUnified2 / ViewManager 初始化
+```
+
+并再次确认：`libObj+0x613134`、`libObj+0x618ed0` 两个创建包装在 libObj 内都**没有调用者**
+（BL/BLX/B.W/B.N/数据指针/.init_array 全扫），真实触发方仍在缺失的外部模块；但这不影响
+我们在 QEMU-only 探针里按正确顺序调用它们——前提是先让 framebuffer/GraphicsSystem 就绪。
+
+下一步回到关键路径：继续深挖 resmgr 字体注册阻塞点，或直接以主线程方式调用
+`uxengine_init` 实体（`libObj+0x6271d4`）并逐步跟踪其内部等待，直到 GRM 初始化完成。
