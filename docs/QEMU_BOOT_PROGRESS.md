@@ -16584,3 +16584,57 @@ N i=0 gfx=0 res=0 wg=0
 而该区域代码存在 `str.w r0,[r1],#24` 这类向 `r1` 写出参数的指令，因此最可能是
 **渲染任务/参数结构指针为 NULL 导致写空地址**。下一步应沿 `r1`（= 先前 `r3`）的来源
 回溯，确认缺少哪个初始化数据表。
+
+---
+
+## 二百一十四、Round 241：**Vecgen 启用后的新崩溃：RM 注册表全局对象为空**
+
+### 崩溃指令精确解码（运行时 libObj）
+
+崩溃 `pc=0x6140dee`，base `0x59ca000` → **`libObj+0x776dee`**（注意：先前地址换算有误，
+正确偏移是 0x776dee）。运行时可执行码：
+
+```text
+776de0: ldr r3,[pc,#20]        ; GOT addend (0xc60e40)
+776de2: ldr r2,[pc,#24]        ; GOT offset (0x33c8)
+776de4: add r3,pc              ; r3 = GOT base = libObj+0x13d7c28
+776de6: push {r7}
+776de8: add r7,sp,#0
+776dea: ldr r0,[r3,r2]         ; r0 = *(GOT+0x33c8) = 0x06e27ce0 (BSS 对象)
+776dec: ldr r3,[r0,#0]         ; r3 = 对象->field0 = NULL
+776dee: ldr r0,[r3,#0]         ; *** r0 = *(NULL) → data abort，fault addr 0 ***
+```
+
+即：getter `0x776de0` 返回 `[[全局对象]]`，而该全局对象（`libObj BSS +0x1463ce0`）的
+首字段为 **NULL**，于是二次解引用崩溃。崩溃时 `r0=0x06e27ce0` 正是上一级对象指针。
+
+### 调用链（扩展内核 ZZEXCSTACK 后的用户栈取证）
+
+把异常处理的用户栈过滤范围从 `<0x10000000` 扩大到包含 `0x04000000–0x70000000`
+（libObj/库代码地址）后，崩溃线程栈中出现：
+
+```text
+[zzex] sp=0x0b943be4 pc=0x6140dee lr=0x6140e1b  (lr → libObj+0x776e1b)
+栈中代码地址：
+  0x0613e32d  → libObj+0x77932d
+  0x0604fed7  → libObj+0x685ed7  （grm_init 内部）
+  0x0600ca89  → libObj+0x642a89  （0x642a70 内，grm_init 的调用者）
+  0x0600ec11  → libObj+0x645c11
+```
+
+- getter `0x776de0` 的调用点只有两处，均在函数 **`0x776e00`** 内（`0x776e16/0x776f8e`）；
+  0x776e00 自身由 `0x774328` 调用；
+- 该函数行为：先 `bl 775670`（RM 锁），再取注册表对象并 `tst r0,#15`、之后做注册/查表，
+  属于 **RM（ResourceManager）注册表 API**；
+- 结合栈帧，调用来源是 `grm_init` → GLES 初始化完成之后的 RM 注册阶段。
+
+### 结论
+
+Vecgen 启用让 GLES 初始化通过，但随后进入 RM 注册表操作；**注册表全局对象
+（libObj BSS +0x1463ce0）没有被创建**（首字段 NULL），注册 API 对空表解引用导致崩溃。
+
+下一步：
+
+1. 定位该 BSS 对象的初始化点（`rm_reg_init` 或等价函数），确认为何没有被执行/被谁清空；
+2. 若属于启动顺序问题，可在 App-only 探针中先调用其初始化函数再触发 `Application_System_Init`；
+3. 或者按真实协议在注册表对象中预置最小合法表头（仅 QEMU 实验镜像内）。
