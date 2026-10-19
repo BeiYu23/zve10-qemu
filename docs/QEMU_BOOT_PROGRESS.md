@@ -16445,3 +16445,68 @@ UIPCARG Appframework cmd=0x80000005 ... f7=0x20312000（stream 偏移）f8=0x2 .
 下一步需要沿 osal UIPC 队列的服务端定位：谁应当消费这些消息并向渲染线程回发
 "GLES 初始化完成"。这需要结合 `osal_uipc.ko` 的队列 id 分配逻辑与 `libosal_uipc.so`
 的 queue 注册表来解析 f5 指向的队列所有者。
+
+---
+
+## 二百一十二、Round 239：**原始 grm_gles 驱动可加载但 "GLES Vecgen disabled"；阻塞点不变**
+
+### UIPC 队列信息接口
+
+内核 UIPC 驱动 (`osal_uipc.ko`) 暴露 `/proc/osal/uipc`，内容包括：
+
+```text
+OSAL Version 4.2
+Compiled at Jun  5 2026 03:41:33
+proxy threads=4 / log async=1 / log sync=0 / mia=off
+
+====Global Info====
+
+[] Resource
+msgqs 368        ← 已注册 368 个消息队列
+sems  52
+msgs  233
+cbs   171
+misc  189
+... vblock 分配表 ...
+- dynamic ids
+SEM   A=8192 F=8142
+BMSGQ A=4096 F=4096
+MSGQ  A=4096 F=39    ← 4096 个消息队列 id 只剩 39 个空闲
+```
+
+说明 UIPC 消息系统在 QEMU 环境完全可用、队列资源充足；GLES 初始化消息投递本身没有问题
+（内核无 "invalid qid"/UIPC ERROR 日志）。
+
+### 原始 grm_gles.ko 的行为
+
+把 n15 `/kmod/grm_gles.ko` 换回原始模块（15648 字节，来自 Guiengine_161H，
+`sugi_hw.c`/`sugi_dev.c`，导入 `osal_snd_msg`/`osal_snd_sync_direct`/`osal_snd_sync_msg`/
+`osal_valloc_msg_wait`/`osal_free_msg`，即驱动本身是 UIPC 服务端）：
+
+- 系统正常启动到 appinit，无异常、无 UIPC 错误；
+- 内核串口出现驱动日志：**`!!! GLES Vecgen disabled.`**（硬件检测失败，GPU 矢量化被禁用）；
+- 60 秒采样（58 个样本）中 gfx/res/wg 仍全为 0；
+- gdb 条件断点追踪显示初始化链**仍停在同一点**：
+  `F_7d5bb0` 之后不再前进（GLES 惰性初始化 `0x7d7d30` 的 `pthread_cond_wait` 仍不返回）。
+
+即：换用真实驱动并没有解除阻塞——问题不在"驱动缺失"，而在 **GLES 初始化任务本身的完成
+条件**：驱动打印 "GLES Vecgen disabled" 表明它进入了降级/禁用路径，可能因此不再回复某些
+初始化命令，或渲染线程执行初始化任务时进入了无法完成的等待。
+
+### 现状
+
+```text
+[可用] UIPC 消息系统（368 队列，无投递错误）
+[加载] 原始 grm_gles.ko 成功，但 "GLES Vecgen disabled"
+[阻塞] grm_init → GLES 惰性初始化 cond_wait（同上轮结论）
+[未完成] WidgetSystem=0、无画面、无输入
+```
+
+### 下一步
+
+1. 反汇编原始 `grm_gles.ko`：定位打印 "GLES Vecgen disabled" 的条件（哪个硬件寄存器探测
+   失败），并在 QEMU `cxd90045` 机器上补齐该寄存器/硬件块的最小语义，让驱动进入正常路径；
+2. 同时追踪 GLES 初始化任务在渲染线程内的执行路径（条件断点进入 `0x7d7d30` 投递任务后，
+   观察 worker 处理该任务时的调用序列与阻塞点）；
+3. 若驱动降级路径本身可接受，则需确认它应在何时回复"初始化完成"，必要时在 QEMU-only 探针
+   中模拟该回复以推进到 WidgetSystem 创建，再回头解决渲染真实性问题。
