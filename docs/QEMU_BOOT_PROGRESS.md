@@ -17407,3 +17407,49 @@ malloc 调用点、栈含 PhyKeyConfigAlloc）。
   越过堆分配块**；v51（c66）加入“拷贝前 BRDC 日志 + 栈区大拷贝保护”，但多线程字符级日志穿插；
 - v52（c67）：日志改单次 write 原子输出（BRDC/BRDE 成对），用于确定“最后一条只有 BRDC 没有 BRDE”
   的调用 = 越界调用；拿到 caller 偏移后反汇编调用方，确定其缓冲真实大小与 d 的含义。
+
+---
+
+## 二百二十五、Round 253：**首次干净 appinit 状态；abort 根因=GPE /dev/mem 寄存器区 mmap 失败**
+
+### 首次“干净状态”（v52-1）
+
+- `R9 i=0..59` 60 次采样全部打印；**`w0=w2=0` 全程成立（base+0x145df44 的 DMP allocator
+  mutex 一次未被破坏）**、AAS=0、res=115501664、gfx=0/wg=0；
+- 说明 libbackup PLT 文件级自绑定 + Backup 读 clamp 系列修复把“堆损坏→锁死”链彻底压住了。
+
+### 新阻塞（干净状态下可分析）：GPE HW 初始化 mmap /dev/mem 失败 → abort
+
+v52-1 在 16.001s 出现 AAB3 abort，之前日志：
+
+```text
+!!! GPE HW: PSC dummywrite disabled.
+mmap to register area with /dev/mem failed
+AAB3 lr=…（栈含 GraphicsEngine::updateResource(0x6131de) →
+        ResourceManager::getImageSize(0x610fb4) → uxengine_init(0x6271f8)）
+```
+
+即：GLES/GPE 初始化在 dmpgles2 ioctl 之后尝试用 `/dev/mem` 映射 GPU/GPE 寄存器物理区，失败即 abort。
+需要拿到该 mmap 的**物理地址/长度**，再二选一修复：
+1) QEMU cxd90045 机器把该物理区映射为 RAM/设备，让 mmap 成功；
+2) patch libObj 的 GPE HW 路径跳过寄存器 mmap、走 dummywrite（日志已有 “PSC dummywrite disabled”
+   提示可能存在开关）。
+
+### 另一条已排除/定位的越界路径（InfraDial）
+
+- 越界调用锁定：`BRDC id=0x11b0003 d=r=63487(0xF7FF) buf=0x49044/0x4b71c
+  call=libObj+0x8b56f9`（InfraDial 区）；`buf+0xF7FF` 越过低地址堆末 0x58000 → fault=0x58000；
+- 反汇编调用点：调用方只传 **1 字节栈槽/结构体字段**，只 `cbz r0` 检查非零 → **r=0xF7FF/0xBFFC
+  不是长度**，`Backup_get_datasize` 对 0x11b000x 返回的 49–63KB 也不能当拷贝长度；
+- 策略：对 `0x11b0000–0x11b000f` **直接返回 0（失败）**，其它 id 继续 scratch+datasize clamp
+  （镜像 ab_v54，c69）；此路径另有一个疑点：这些 id 的“记录长度”异常大，可能与 backup 分区
+  数据内容/版本不匹配有关，后续若持续异常可转“使用固件包 0110_backup 默认数据”方向。
+
+### 镜像/状态
+
+```text
+ab_v49/v50  libbackup PLT 文件级修复（递归根除）
+ab_v52      c67 原子日志（定位越界调用；v52-1 首次干净 60 采样）
+ab_v53      c68 白名单 clamp（过窄，已弃）
+ab_v54      c69 InfraDial 黑名单失败 + 其它 clamp + mmap 取证（task-22 验证中）
+```
