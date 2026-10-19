@@ -16701,3 +16701,61 @@ S obj1=67375144（= 占位数组地址）
    的软件路径里），确认其调用条件；必要时由探针按真实布局构造最小对象后继续推进；
 3. gdb 硬件观察点方案本轮因 gdb/QEMU batch 连接状态问题未能命中（`continue` 被拒绝），
    后续可换用交互式 gdb 或内核侧辅助。
+
+---
+
+## 二百一十六、Round 243：**跳过软件 GLES 初始化后 ResourceManager 成功创建**
+
+### 关键实验
+
+在 n15 的 libObj 中，把 `grm_init` 里对软件 GLES 初始化的调用（`0x685eee: bl 0x7d5bb0`）
+改为 `movs r0,#0; nop`（即视为成功），其余保持（VDF 配置修复 + Vecgen 保持 disabled）：
+
+```text
+ab_v9.img = ab_v3.img + libObj(0x685eee → 002000bf)
+```
+
+3/3 运行结果：
+
+```text
+M i=0  gfx=0 res=0            wg=0
+M i=1  gfx=0 res=115501664    wg=0     ← ResourceManager 已创建！
+M i=2..59  res=115501664      （持续 60 秒稳定）
+!!! GLES Vecgen disabled.
+无异常、无崩溃；t≈74.9s EXIT im.elf.real code=0
+```
+
+**这是首次让 resmgr 的 ResourceManager 单例真正创建出来**（此前 res 恒为 0）。说明：
+
+1. 资源加载器（0x640398）内部的 `grm_init` 之前卡在软件 GLES 初始化（`0x7d5bb0`
+   →0x7d7d30 的 cond_wait），把它视为成功后 resmgr 初始化得以继续并创建 ResourceManager；
+2. 但 GraphicsEngine（gfx）与 WidgetSystem（wg）仍为 0 → resmgr 初始化在后续步骤
+   （很可能是 `0x610fa4 → 0x610184 → 0x8558c4` 图形系统初始化）仍未完成。
+
+### 双跳过对照实验（失败）
+
+再把 resmgr 初始化中的图形系统初始化调用（`0x610fa4: bl 0x610184`）也改为返回 0：
+
+```text
+ab_v10.img = ab_v9 + libObj(0x610fa4 → 002000bf)
+3 次运行：2 次异常、1 次 res=0（比单跳过更差）
+```
+
+结论：`0x610184`（图形系统初始化）不能简单跳过，它是后续流程所必需的；正确做法是让它
+在 QEMU 环境中**真正执行成功**（需要图形后端/设备支持）。
+
+### 当前最佳状态
+
+```text
+[配置] VDF 配置修复（/dev/stream offset 0x20312000/len 0x100000）+ Vecgen disabled
+      + libObj GLES-init 调用视为成功（诊断 patch）
+[成果] resmgr 资源加载器通过；ResourceManager 单例创建成功（res≠0）
+[阻塞] 图形系统初始化（0x610184 → 0x8558c4）未完成 → GraphicsEngine/WidgetSystem = 0
+```
+
+### 下一步
+
+1. 反向分析 `0x610184`/`0x8558c4`：它需要哪些图形设备/属性（很可能就是 QEMU 侧需要补齐的
+   DMM/HDMI/OSD/GPU 语义）；
+2. 用同样"提供真实默认值"的方式让图形系统初始化成功，从而创建 GraphicsEngine；
+3. 之后 resmgr 尾部（0x618ed0）会自动创建 WidgetSystem，再验证 View 层与画面。
