@@ -16773,3 +16773,55 @@ ab_v10.img = ab_v9 + libObj(0x610fa4 → 002000bf)
 
 下一步聚焦：确认 `osal_snd_sync_direct` 的目标队列/服务 id（可由 libObj 的 UIPC 包装层
 调用链与内核 UIPC 队列表交叉定位），再决定由探针、fake 驱动或 QEMU 设备侧提供最小应答。
+
+---
+
+## 二百一十七、Round 244：**OSAL 调用拦截取证（同步发送全部返回，接收方为基础设施线程空闲等待）**
+
+### 新能力：LD_PRELOAD 拦截 OSAL 同步/接收 API
+
+在探针中实现（App-only preload，`dlsym(RTLD_NEXT)` 取真实实现）：
+
+```text
+osal_snd_sync_direct / osal_snd_sync_msg   → 记录参数，调用真实实现
+osal_rcv_msg_tmo / osal_wai_sem_tmo        → 记录序号(seq)/线程 tid/参数 + 返回
+```
+
+用全局 seq + 进出配对，可判断哪次调用**有进入无返回**（即真正阻塞的调用）。
+
+### 实验结果（`ab_v12/ab_v13/ab_v14.img`，均基于 ab_v9 最佳配置）
+
+```text
+ab_v12: OSD(144 次) / OSM(737 次)，运行 60 样本稳定，res=115501664
+ab_v13: 进出配对 884/884（全部返回！）→ 图形初始化阻塞不在 sync 发送
+ab_v14: SEM 148/148 全返回；RCV 17 进入 / 4 返回 → 13 次接收未返回
+```
+
+13 次未返回的 `osal_rcv_msg_tmo` 详情（seq/tid/qid 参数）：
+
+```text
+seq 90  tid 143 a=5570846  c=-1 d=-1
+seq 94  tid 144 a=5570847  c=-1 d=-1
+seq 95  tid 147 a=5570848  c=-1 d=-1
+seq 103 tid 148 a=5570849  c=-1 d=-1
+seq 109 tid 151 a=5570850  c=-1 d=-1
+seq 111 tid 150 a=13271442 c=-1 d=0
+...
+```
+
+这些 tid（143–161）对应 THREAD_INFRA 等基础设施线程的消息接收循环（空闲等待消息，属正常）。
+
+### 结论
+
+- `osal_snd_sync_direct/msg` 在本配置下**全部成对返回**，图形初始化卡点不是"同步消息无人应答"；
+- 阻塞接收集中在基础设施线程（正常空闲等待），也非图形初始化线程；
+- 因此 `0x8558c4` 的阻塞点需要更精确的线程级定位（例如给探针的 interposer 加线程过滤
+  或用内核侧追踪该线程的 syscall 序列）。
+
+### 下一步
+
+1. 在 interposer 中记录 tid，并在 appinit 后识别"哪个 tid 是 uxengine 初始化线程"（可通过
+   pthread_create 拦截记录新线程 tid）；
+2. 对该 tid 的 syscall/OSAL 调用序列单独追踪（或用内核 ZZIOCTL/ZZFUTEX 按 tid 过滤），
+   找出它最后一个未返回的调用；
+3. 按该调用的语义在 QEMU-only 环境提供最小应答/数据。
