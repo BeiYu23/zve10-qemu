@@ -17488,3 +17488,18 @@ ab_v49/v50  libbackup PLT 文件级修复
 ab_v52      c67（首次干净 60 采样 + abort；但日志有竞争）
 ab_v56      c71 日志自旋锁 + InfraDial 黑名单 + clamp + mmap 取证（默认数据 / 真机数据两跑）
 ```
+
+### 追加（Round 254 修正）：c71 自旋锁在 boot 期会死锁 → 改用 c72“无日志”稳定版
+
+- v56（c71，日志自旋锁）两次默认 + 一次真机数据：**第一条 BNRC 日志后整机 app 挂死**
+  （之后无 `C libObj`/无采样/无异常，内核仍在跑、只有 eMMC tuning 警告到 64/67s）；
+- 复核镜像内探针：ab_v56 的 n7 `/lib/libgrmlog.so` md5 = `6c50c3…` = c71 本体
+  （启动打印仍是 `U9 alive` 是构建时前缀未改的笔误，并非装错镜像）；
+- 死锁判断：`lk()` 为纯 ldrex/strex 自旋、**无优先级继承**，boot 期 RT 线程下低优先级持锁线程
+  可被高优先级自旋线程永久饿死 ⇒ 放弃“全局缓冲 + 锁”的日志方案；
+- c72：**彻底移除原子日志**（BRDC/BRDE/BNRC/BNDE/MMAPFAIL 全删），只保留功能性 clamp：
+  - `Backup_read`：InfraDial `0x11b0000–0x11b000f` 返回 0；其它 id scratch 接收 + 按
+    `Backup_get_datasize` 截断拷回 + 栈区大拷贝保护；
+  - `Backup_nread` clamp、VDF key、rm_init/appinit/采样不变；
+- 镜像 `ab_v57`（n7 探针 md5 `4684a6a9…`，前缀 `X9`）已拆分核对正确，task-25 验证中；
+  后续需要的诊断信息（尤其 GPE `/dev/mem` 物理地址）改用 gdb 断点获取，不再依赖探针原子日志。
