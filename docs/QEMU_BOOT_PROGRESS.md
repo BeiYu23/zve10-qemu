@@ -15712,3 +15712,68 @@ framebuffer 图形后端”完全吻合：真实硬件上该状态位会由显�
    直方图，找到具体轮询函数（预期在 GRM/resmgr 初始化内）。
 2. **补 QEMU 图形状态源**：让对应状态寄存器/中断按访客预期变化（最小可先让状态位恒为
    “就绪”），使自旋退出，从而让 resmgr 初始化继续走到 GraphicsEngine/WidgetSystem 创建。
+
+---
+
+## 二百、Round 227：**UI 初始化触发 abort()，而 abort 在 QEMU 环境里死循环**
+
+### 受控实验：abort() 本身就会卡死
+
+写一个只做一件事的 preload：在 libObj 加载后调用 `abort()`：
+
+```text
+AB alive
+AB lib
+AB abort= call
+（之后 "AB after" 永不打印；无异常；系统其他日志继续到 t≈63.75s）
+```
+
+说明 **`abort()` 在这个 guest 环境中不会正常终止进程**，而是卡住/自旋。
+
+### 现场证据：UI 线程的“忙等”就是 abort
+
+用 QMP 在 appinit 之后（自旋期间）连续 15 次 stop/采样 CPU 寄存器：
+
+```text
+sample 0..10,12..14: PC=0x4277ae0  LR=0x60c9085  SP=0xb9ddbb8  USR/Thumb
+sample 11:           PC=0x6014f2bc（内核侧采样落点）
+```
+
+本次运行 `/proc/self/maps` 显示 `libc-2.11.2.so` 代码段为 `0x04252000-0x0433f000`，
+因此：
+
+```text
+0x4277ae0 - 0x4252000 = 0x25ae0 = libc 的 abort@@GLIBC_2.4 入口
+```
+
+即 UI 线程在 `Application_System_Init` 之后调用了 `abort()`，随后一直停在 abort 路径里自旋
+（PC/SP 恒定，idle 增量为 0、busy=1000‰，与 Round 226 的 CPU 采样完全吻合）。
+
+### 直接抓到 abort 调用
+
+给 App-only preload 加 `abort()` interposer（打印 LR 后死循环），正常 UI 生命周期流程运行：
+
+```text
+A3 appinit
+A3 returned
+A3 tick
+AAB lr=101474437        ← 101474437 = 0x60C6085
+A3 tick ...
+```
+
+确认 UI 初始化过程中确实调用了被 interpose 的 `abort()`。注意该 LR 值 `0x60C6085` 落在
+内核直映射区（不是用户返回地址），说明注册的 LR 不可靠（interposer 的 C 序言可能已改写
+LR，或该 vendor 内核在信号/异常返回时把 LR 设成了内核地址）。要拿到真实调用者需要：
+
+1. 用 **naked 汇编** interposer 在函数最入口处取原始 LR（`push {r0-r3,lr}; mov r0,lr; bl log`）；
+2. 同时 interpose `__assert_fail` / `__stack_chk_fail`，区分“断言失败”还是“显式 abort”；
+3. 在 abort 之前抓取 stella/UX 日志（可能会给出具体失败原因，例如 GRM/GLES 初始化失败）。
+
+### 意义
+
+之前把 UI 初始化自旋解释为“轮询硬件状态”并不准确：**它是初始化失败后调用 abort()，
+而 abort 在本 guest 环境中死循环，占满 CPU 并把串口输出饿死**。下一步应聚焦：
+
+1. 拿到 abort 的真实调用点（naked interposer）；
+2. 找到 abort 前最后的错误日志（可能是 GLES/GRM/framebuffer 初始化失败）；
+3. 修复该失败原因（大概率仍指向 QEMU 图形后端缺失），使 UI 初始化不再 abort。
