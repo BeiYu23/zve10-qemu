@@ -15594,3 +15594,59 @@ GraphicsEngine 构造函数 `0x612b34` 内 `bl 0x63d2d8`（取 framebuffer 宽�
    `0x63fb14`/`0x8558c4` 是否等待硬件/线程，需要进一步追踪）。
 2. 若 `0x8558c4` 依赖 GRM/OSD 硬件服务，则应按路线图补 QEMU 图形后端；若只是等待某个
    线程/信号量，可在探针中补齐。
+
+---
+
+## 一百九十八、Round 225：**跳过图形系统初始化后依然卡在 framebuffer**
+
+在已跳过资源加载器（`0x640398`）的镜像上，再把图形系统初始化 `libObj+0x8558c4`
+（`0x610184` 内部调用的初始化函数，包含多个虚接口调用 + 空指针日志检查）改为直接返回 1，
+构建 `ab_i.img`。连续 3 次 55 秒运行，结果完全一致：
+
+```text
+B16 pre   gfx=0 res=0 wg=0
+B16 appinit call / returned
+B16 i=0   gfx=0 res=0 wg=0
+→ 异常：program=(null)(Appframework) pid=166
+        address=0x0  trap=0xe  error=0x17
+        pc=libObj+0x63d240   lr=libObj+0x6124b9
+```
+
+解析：
+
+- `lr=libObj+0x6124b9` 位于 `0x61248c` 函数内（resmgr 初始化调用的 `0x6131d4` 里第一步
+  `bl 0x61248c`）；
+- `pc=libObj+0x63d240` 是 `0x61248c` 内部发起的又一次 framebuffer/图形对象访问，`r0=0`
+  导致空指针解引用。
+
+即：即使强行让资源加载和图形系统初始化“返回成功”，resmgr 初始化继续走到 `0x6131d4`
+（GraphicsEngine 创建前的准备）时，仍会在 framebuffer 相关调用上空指针崩溃。**没有任何用户态
+捷径能绕过 QEMU 图形后端缺失这一根本原因。**
+
+### 完整依赖链（最终形态）
+
+```text
+uxengine_init body (libObj+0x6271d4)
+  └─ resmgr init (libObj+0x610f74)
+       ├─ 资源加载器 (libObj+0x640398)                      ← 卡点1（QEMU 下不返回）
+       ├─ 图形系统初始化 (libObj+0x610184 → 0x8558c4)        ← 卡点2（依赖图形服务）
+       ├─ GraphicsEngine 创建 (libObj+0x6131d4 → 0x613134)   ← 需要 framebuffer
+       └─ tail-call WidgetSystem 创建 (libObj+0x618ed0)
+            └─ ViewManager / viewUnified2 初始化
+```
+
+两个卡点都指向同一根因：**QEMU 侧缺少可用的 GRM/OSD/framebuffer 图形后端**。这不再是
+“再打一个用户态补丁”能解决的问题，而是需要按既定路线第 4 步实施 QEMU 图形设备：
+
+1. 在 `cxd90045` 机器上提供可被 guest GRM 使用的 framebuffer/OSD 服务（或让现有
+   `bionz_cpyfb`/`bionz_vip` 模型真正对接 QEMU display / ramfb）；
+2. 让 `uxengine_init` 的 GRM 初始化完成，进而 framebuffer 尺寸可读；
+3. 然后 GraphicsEngine/WidgetSystem 会沿 resmgr 的 tail-call 自动创建，继续 View 层验证。
+
+### 下一步（QEMU 图形后端）
+
+1. 检查 `bionz_cpyfb.c`/`bionz_vip.c` 的寄存器语义与中断路径，确认 guest GRM 初始化等待的是
+   哪个设备/中断；
+2. 增加最小 framebuffer 呈现路径（ramfb 或 console surface），并让 `/dev/dmpgles2`
+   对应的内核侧 fake 设备提供一致的 framebuffer 信息；
+3. 用 B16 探针验证：`gfx`/`wg` 是否在 appinit 后变成非零。
