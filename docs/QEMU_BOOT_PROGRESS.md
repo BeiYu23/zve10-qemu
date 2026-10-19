@@ -16905,3 +16905,94 @@ INJ begin n=13 → 13 个阻塞队列逐一 send=0（投递成功）
 
 下一步：反汇编 `0x571590` / `0x5a0000` / `0x570e40`，确定哪一个返回错误及其期望的应答
 内容（很可能仍是"缺少某个服务/配置默认值"，与 VDF 的修复思路相同）。
+
+---
+
+## 二百一十九、Round 246：**启用队友并行机制；a7c2 移植交付；定位并修复 SystemImpl assert**
+
+### 团队并行（Agent Teams）
+
+按用户要求启用队友机制，划分三块互不冲突任务（共享文件系统，唯一 QEMU 运行者 = init-unlocker）：
+
+```text
+task-1  a7c2-porter     移植 a7c2-re 软件渲染/服务模型 → ARMv7（只写 /root/fw/port_a7c2）
+task-2  ramfb-planner   QEMU 侧 /dev/stream 帧缓冲呈现方案 + 可应用补丁（只写 /root/fw/port_ramfb）
+task-3  init-unlocker   继续解锁 ZV-E10 UI 初始化链（唯一允许跑 QEMU；OUT=oss/artifacts/tb-*）
+```
+
+Lead 负责：内核改动、跨线集成、文档与 git 提交、镜像构建的分发。
+
+### task-1 交付（已完成）
+
+`/root/fw/port_a7c2/`：
+
+- `src/`+`include/`：上游 18 文件逐字节拷贝（sha256 校验）；
+- `armv7/patched/`：gpe-raster（1 行 size_t 适配）、headless-osd-32（64 位物理地址/FNV 修正）、
+  ramfb-viewer-32（32 位 barrier/__fxstat 适配）+ 可评审 diff；
+- `tests/`：新写 6 个 selftest；`scripts/build_host.sh`、`build_armv7.sh` 可复跑；
+- `build/armv7/fwlibc/liba7c2port.so`：softfp ABI，链接固件 libc-2.11.2 + libgcc_s 成功，
+  20 个动态未定义符号均可在固件 DSO 解析（可注入件候选）；
+- 验证：host gcc **22/22** selftest PASS；ARMv7 交叉 **31/31** 检查 PASS（未运行 QEMU/二进制）。
+
+关键结论：5 个纯协议组件（sony-lz77、dmm-service、hdmi-format-service、capid-service、
+sa-address-service）可直接复用；gpe-sprite 直接用、gpe-raster 需 1 行；headless-osd/ramfb-viewer
+需 32 位与 sink 适配；menu-observe/file-media-config 仅策略参考。ZV-E10 侧已确认存在对应物：
+libObj 导出 17 个 `GRM_*`、`CapIdSync_Init`、`DmmAccess`/`mcmn_dmm_*`，以及 `MSGID_CAPIDTBL_UPDATE_REQ_CMD`、
+`MSGID_DMM_ALLOC_UNIT_NEW(_COMP)`、`MSGID_SET_HDMI_PREMIUM_PHOTO_CMP`、`MSGID_DISPLAY_INFO`、
+`MSGID_RENDERER_SET_YUV_LAYOUT_CMD` 等字符串（服务语义可移植，队列 id/结构需反推）。
+硬差异：ZV-E10 是 ARMv7 **soft-float EABI**+glibc 2.11.2（无 GLIBC_2.17/无 fstat），
+且内存图为 DDR0@0x0(1G)/DDR1@0x80000000(256M)，a7c2 的 0x41e100000/0x9020000 均不存在。
+
+### task-3 关键进展（init-unlocker）
+
+**A. 找到当前硬阻塞：不是 futex 等 worker，而是 assert**
+
+用扩展后的内核 ZZSTK（128 字用户栈）取证：Appframework(pid=166) 在若干 condvar 上来回等待
+（均被正常唤醒），最终进入 `dmpNative::SystemImpl::initialize_setting()` 并触发
+`AAS bret == sizeof(this->setting) @SystemImpl.cpp:156`，而探针的 `__assert_fail` 死循环
+把该线程挂死（伪装成“卡住”）。
+
+静态解析 assert 点（Lead）：
+
+```text
+libObj+0x6f4c74:
+  r1 = this+100 (setting 缓冲), r2 = 4
+  r0 = 0x01700000          ; Backup id
+  blx Backup_nread
+  cmp r0, #4               ; 必须返回 4
+  否则 __assert_fail("bret == sizeof(this->setting)", ...)
+```
+
+**B. 修复：interpose `Backup_nread`（id=0x01700000, size=4 → 填 0 并返回 4）**
+
+Lead 构建 `ab_v26.img`（`ab_v20` n15 + n7 探针 `libgrmlog-c49.so`，日志前缀 B3；同时打印所有
+`BNR id/sz/r`）。实测（成功样本 tb-v26-2）：
+
+```text
+BNR id=0x1700000 sz=4 r=26747   ← 真实实现返回异常值
+BNR patched-zero
+→ SystemImpl.cpp:156 assert 不再出现（第一道 assert 已修复）
+```
+
+**C. 新阻塞（下一层）**：
+
+```text
+AAS new_prio == -1 || (new_prio >= __sched_fifo_min_prio && new_prio <= __sched_fifo_max_prio)
+    @tpp.c:63   （glibc __pthread_setschedparam SCHED_FIFO 优先级非法）
+出现在 initialize_setting 之后 19ms，同一初始化线程
+```
+
+Lead 静态定位优先级来源：`libObj+0x86356c` 线程启动 helper：
+
+```text
+prio = [this+4]（osal 风格，负数编码）
+if (prio >= 0) pthread_prio = prio
+else pthread_prio = default_prio + prio + 100
+pthread_attr_setschedparam(attr, &param)   ← policy 若为 FIFO/RR 且 prio∉[1,99] → assert
+```
+
+推测非法值来自 prio=-100（→ pthread 0）或 prio=0；init-unlocker 正在用 tb3 拦截
+`pthread_attr_setschedparam`/`pthread_setschedpolicy` 实测 policy/prio 并 clamp 验证。
+
+另：BNR 还有三个失败项（0xbd0000 sz=4800 r=65535、0xbd0001 sz=512 r=579、
+0xbd0002 sz=1200 r=685）待分析，可能是同类 Backup 读取语义问题。
