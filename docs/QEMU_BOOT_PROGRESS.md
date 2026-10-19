@@ -15905,3 +15905,62 @@ r0..r3=0  r6=0  r7=0x0b9c3b88  r8=0x06e2906c  r9=2
 
 本轮提交：`5e1815f`（abort 发现）、`29e5ac2`（VDF 根因与修复）。
 实验镜像：`ab_m.img`/`ab_n.img`（VDF 修复版），`n15_vdf.img`（libObj VDF abort patch）。
+
+---
+
+## 二百零三、Round 230：**VDF 端口对应 /dev/stream；映射成功后转入阻塞等待**
+
+### 设备路径
+
+`libObj` rodata 中与显示相关的设备路径：
+
+```text
+f08894 /dev/stream2
+fec63a /dev/stream
+1009524 /dev/dmpgles2
+100ed08 /dev/fb0
+```
+
+VDF（video display frontend）端口实际对应 **`/dev/stream`**（major 249:7，此前 32MB
+`QMMAP name=stream` 即来自它）。
+
+### 给 VDF 两个 Backup key 填不同值的效果
+
+| key(0xfa00a3) offset | key(0xfa00a4) length | 结果 |
+|---|---|---|
+| 0 | 0（跳过映射） | 无 abort，但下游拿到 NULL → Appframework 在 `libObj+0x776a56` 空指针崩溃 |
+| 0 | 0x100000（1MB） | appinit 后立刻出现 stream mmap；无异常；串口在 t≈18s 后静默 |
+| 0 | 0x2000000（32MB） | 内核 `ksoftirqd` 崩溃（大 memset 破坏内核内存），不可用 |
+
+1MB 配置下用 QMP 采样 15 次（若仍用户态自旋应看到 libc/用户 PC）：
+
+```text
+sample 0  PC=0x602cea0c  mode=SVC   （amba console 写路径）
+sample 1  PC=0x60152d88  mode=SVC   （tmonitor/set_led 区域）
+sample 2-5,8,10 PC=0x60152e80 mode=SVC （errind_delay 区域）
+...
+```
+
+**全部落在内核地址、SVC 模式**：系统不再用户态自旋，而是进入内核空闲/定时器处理，说明
+用户态线程都已阻塞等待。
+
+### 当前状态
+
+```text
+[已修复] VDF 显示端口 abort（Backup 配置默认值 + abort patch）
+[已修复] abort 死循环导致的 100% CPU 忙等
+[新状态] VDF 端口以 1MB 长度成功映射 /dev/stream；随后 UI 线程转入阻塞等待（内核态空闲）
+[未完成] GraphicsEngine/WidgetSystem 创建（仍为 0）
+[未完成] 显示输出、菜单像素、输入交互
+```
+
+系统静默 + 内核空闲，表明 UI 初始化在等待**某个真实显示/视频设备事件**（VDF/stream 的
+完成信号、VSYNC 或 OSD 状态）。这与路线第 4 步“移植软件 GPE、DMM/HDMI/OSD、ramfb”
+完全对应：必须给 guest 提供可产生这些事件的 QEMU 设备，而不是继续在用户态打补丁。
+
+### 下一步
+
+1. 在 QEMU 侧为 `cxd90045` 增加可响应 VDF/stream 请求的设备（先最小：open/mmap/ioctl
+   返回成功并给出 640×480 framebuffer 语义，周期性产生 VSYNC/完成中断）；
+2. 观察 `gfx`/`wg` 单例是否随之创建；
+3. 通过 ramfb 或 console surface 把 guest framebuffer 呈现到 GTK 窗口，实现“画面可见”。
