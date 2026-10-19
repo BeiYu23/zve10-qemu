@@ -17370,3 +17370,26 @@ malloc 调用点、栈含 PhyKeyConfigAlloc）。
 [基线]   ab_tb_s1（P1+P2+c59）、ab_v43（P1+P2+c61）、ab_v44（真实路径+c61）
 [当前]   InfraInput/PhyKey 路径；gfx/wg=0
 ```
+
+### 关键更正（Round 251 追加）：v42/v43 的崩溃真因是 **Backup_read interpose 递归**，不是 brk
+
+- v42-2（c60，brk scratch）与 v43-1（c61，malloc scratch）的崩溃签名**完全相同**：
+  THREAD_INFRA0、fault=0x08de2000（栈 guard page）、pc=libgrmlog+0x98c（探针内）、
+  lr=libbackup+0x1227（Backup_read 内 blx 返回点）、sp=0x08de0bd8
+  ⇒ 换 malloc 无变化，brk 假设**不成立**（但改用 malloc 仍是正确方向，保留）；
+- `readelf -r libbackup.so`：`.rel.plt` 里有 **`Backup_read` 的 R_ARM_JUMP_SLOT**
+  （库内部经 PLT 自调用 Backup_read）→ 我们 interpose 后形成
+  `wrapper → real(libbackup) → 内部 PLT → wrapper → …` **无限递归 → 线程栈溢出**
+  （fault 地址正是栈旁 guard page，pc 在 wrapper、lr 在 libbackup，全部吻合）；
+- 结论：**不能 interpose libbackup 内部会 PLT 自调用的符号**；`Backup_nread`/`Backup_read_4Byte`
+  没有该问题（重定位表确认）。
+
+### 修正：c62（前缀 O9）
+
+- 去掉 `Backup_read` / `Backup_get_datasize` interpose（避免递归）；
+- 保留 `Backup_nread` clamp（malloc 96KB scratch，按调用方 size 截断）、`Backup_read_4Byte`
+  VDF key 默认值、nread 的 -1020/-1024 重试、rm_init/appinit/采样；
+- 镜像：
+  - `ab_v45` = ab_tb_s1（伪造路径 P1+P2）+ c62；
+  - `ab_v46` = ab_v38（真实路径）n15 libObj = libObj_cur + P1+P2，n7 = c62；
+- 这解释了 c59→c63 期间大量“崩点漂移/野指针”：相当一部分是我们的递归自伤。
