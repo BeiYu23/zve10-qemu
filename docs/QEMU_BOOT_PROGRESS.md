@@ -16133,3 +16133,63 @@ libObj+0x1463c94 / +0x1463cf4  （间距 0x60，典型 pthread_cond_t + mutex �
    调用点，看哪个对象地址等于该 BSS 偏移，从而确定所属子系统；
 2. 找到“应发出 signal/broadcast”的线程或事件源（可能与显示/OSD/VIP 中断有关）；
 3. 继续推进 QEMU 图形后端，为事件源提供真实触发。
+
+---
+
+## 二百零七、Round 234：**UI 线程 futex 等待点属于 libObj 任务/事件队列**
+
+### 静态定位方法
+
+生成 `libObj` 全量反汇编（524 万行），搜索 `blx pthread_cond_wait@plt`（PLT 桩
+`0x10d9c0`），共找到约 27 个调用点；对每个调用点回溯其 r0（cond 指针）的 pc 相对计算，
+筛出落在 libObj BSS `0x1463c10` 附近的调用：
+
+```text
+7d79d0 -> 0x1463cd0
+7d7dea -> 0x1463c26
+7d7e4a -> 0x1463d76
+7d7ec4 -> 0x1463c28
+7d7f1c -> 0x1463c28
+7d7fa6 -> 0x1463cce
+7d804e -> 0x1463c26
+...
+```
+
+这些基址 + 偏移正好覆盖运行时观察到的 futex 地址
+`libObj+0x1463c94` / `libObj+0x1463cf4`。
+
+### 代码语义
+
+查看 `0x7d7920-0x7d79f0` 的反汇编，该区域是一个**任务/事件队列**实现：
+
+```text
+pthread_mutex_lock(queue+4)
+bl  7d7840                ; 把任务插入队列
+pthread_cond_signal(queue+0x20)
+...
+pthread_mutex_unlock(queue+4)
+
+; 等待方：
+pthread_mutex_unlock(queue+4)
+r0 = queue+0x68
+r1 = queue+0x50
+blx pthread_cond_wait    ; <-- Appframework 卡在这里
+pthread_mutex_lock(queue+0x50)
+```
+
+任务结构为 `malloc(12)`，字段含状态位 `0x8000`/`0x8001`；队列对象挂在 libObj BSS
+（`queue+4` mutex、`queue+0x20` signal 用 cond、`queue+0x50` wait 用 mutex、
+`queue+0x68` wait 用 cond）。这与运行时看到的两个 futex 地址（相差 0x60）一致。
+
+### 结论
+
+**`Appframework` 线程当前在该任务/事件队列的 `pthread_cond_wait` 上等任务**，即它处于
+“等待下一条事件/消息”的空闲状态。它并非崩溃、也并非被锁死；真正的问题是**应当向该队列
+投递消息的生产者没有出现**（最可能是显示/VIP/OSD 事件、或启动完成通知）。
+
+### 下一步
+
+1. 定位 `bl 7d7840`（入队函数）的所有调用者，确定事件/消息的合法来源与消息格式；
+2. 找到首选应投递的“启动完成/显示就绪”事件，用 App-only 探针按真实格式投递一条，
+   观察 Appframework 是否被唤醒并继续创建 GraphicsEngine/WidgetSystem；
+3. 若确认为显示驱动事件，则回到 QEMU 图形后端（VDF/stream 已完成 mmap，缺事件源）。
