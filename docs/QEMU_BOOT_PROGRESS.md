@@ -16244,3 +16244,56 @@ Application_System_Init 已启动图形渲染线程（Appframework）
 2. 或在 QEMU-only 探针中先手动创建最小 WidgetSystem（真实构造函数 `0x618ed0`），
    再触发 viewUnified2 初始化，观察渲染线程是否收到第一个绘制任务；
 3. 渲染线程一旦跑起来，再配合 QEMU framebuffer 呈现即可验证画面。
+
+---
+
+## 二百零九、Round 236：**任务清单取证：图形子系统活跃、渲染线程等待绘制任务**
+
+### 全量任务清单（SysRq `t`，`ab_u.img`）
+
+共 237 个任务条目。与 UI/图形相关的任务：
+
+```text
+Appframework   ×6（4 个 futex_wait=S，2 个 R 运行态）
+grm_dn_vdf_if  R（futex_wake —— 正在唤醒渲染线程）
+hdmi_inter_req_ / hdmi_workqueue / hdmi_state  D（schedule_timeout 周期性轮询）
+im.elf.real    ×4（S/R 混合）
+THREAD_INFRA0/1/2 R
+uipc_proxy_0..3, IFsys ×8, KIKILOG_MAIN 等 S
+```
+
+### 关键栈样本
+
+- `grm_dn_vdf_if`（R）：`futex_wake → wake_up_state → try_to_wake_up` —— **VDF 图形接口线程
+  正在主动唤醒等待者**，说明图形软件流水线并非死锁；
+- `hdmi_workqueue` / `hdmi_state` / `hdmi_inter_req_`（D）：`schedule_timeout` —— HDMI
+  驱动线程在周期性轮询（带超时），属正常等待；
+- `Appframework` 的 6 个线程中 4 个在 `futex_wait`，2 个处于运行态。
+
+### Appframework 的 futex 地址分布
+
+```text
+op=0x81 uaddr=0x08b48d2c   （栈上，唤醒操作）
+op=0x80 uaddr=0x06e2dc94   （libObj BSS：渲染任务队列 condvar）
+op=0x80 uaddr=0x06e2dcf4   （同上，另一 condvar，间距 0x60）
+op=0x80 uaddr=0x0b88db24 / 0x0b9cbb24 （堆上，随运行变化）
+```
+
+没有发现 resmgr/资源加载专属的 futex 等待——说明 `Application_System_Init` 的
+`uxengine_init` 线程已经创建出渲染工作线程（它们继承 `Appframework` 线程名），当前是
+**渲染线程在任务队列上空等绘制命令**的状态，而负责提交绘制任务的 View/场景层未启动。
+
+### 现状与下一步
+
+```text
+[活跃] VDF 接口线程在 futex_wake；HDMI 驱动线程按超时轮询
+[等待] 4 个渲染线程等待绘制任务；2 个运行态
+[缺失] View/场景层未启动（WidgetSystem=0 → viewUnified 初始化未完成）
+[未完成] 画面显示、输入交互
+```
+
+下一步：
+1. 确认 `uxengine_init` 线程是否已退出：若已退出而 WidgetSystem 仍为 0，说明 resmgr
+   尾部创建 WidgetSystem 的路径根本没执行到，需要重新检查 resmgr 资源加载器的返回值/分支；
+2. 对 `0x0b88db24` 这一堆上 condvar 的调用方做静态定位（它可能是资源加载完成通知）；
+3. 继续以 QEMU 图形后端（VDF/stream 已完成 mmap，缺事件/中断）为主线推进。
