@@ -17266,3 +17266,52 @@ B. Backup 家族 API（`Backup_read`/`Backup_read_multi`/`Backup_read_rst_attr`/
    InfraIndctr/PhyKey 崩溃是否消失；
 C. 若证据指向输入硬件缺失，则用 kernel uinput（`/dev/uinput`，CONFIG_INPUT_UINPUT=y）创建
    虚拟输入设备满足 InfraInput/PhyKey 初始化（为后续输入注入铺路）。
+
+---
+
+## 二百二十三、Round 250：**UIPC 超时重试、崩点漂移与 NULL-site bypass 策略**
+
+### 新线索：Backup 的 UIPC 同步调用超时
+
+- v38 运行统计：`im.elf.real cmd=0x80000005 (osal_snd_sync_msg)` ret=-1020 共 60 次、
+  ret=0 51 次；`sen.elf cmd=0x80000006` ret=-1024 20 次；libbackup 全部是 UIPC sync-msg 薄包装
+  ⇒ boot 期配置读取近一半超时。
+- c59 探针对 `Backup_read`/`Backup_get_datasize`/`Backup_nread` 做 -1020/-1024 自动重试
+  （≤200×1ms）。实测（ab_v39/v40，3 次）：**`BRD fail` = 0**（全部最终成功），
+  -1020 尝试 120 次/成功 102 次。
+
+### 但重试不是根因修复：崩点漂移
+
+- v39-1（伪造路径+重试）：崩 `CmnViewMenuData::CmnViewMenuData()+0x114`（libObj+0x15b5d4，
+  fault@0），且 `DMP_2D_Initialize` 已打印（比 SvcCautionIF 更靠后）；
+- v39-2（同镜像）：仍崩 SvcCautionIF 原点（libObj+0x14e422/lr+0x8bf19f）；
+- v40-1（真实路径+重试）：更早崩 THREAD_INFRA2 @11.2s，`pc=0xbdfe / lr=0xb813` 低地址野跳，
+  fault=0xf51cf200；samples=0。
+⇒ “Backup 读超时”不是 InfraIndctr/媒体 NULL 的根因；崩溃是时序相关状态机/内存破坏，
+  重试可作为稳定性手段保留。
+
+### 额外排查
+
+- v38 运行中 `FAKEGLES ioctl` 计数 = 0 ⇒ 真实路径未走到 dmpgles2 ioctl，fake GLES 不是
+  野指针来源（排除）。
+- rootfs/bootin 分析：正常 user 模式由 `/usr/bin/bootin.elf` 启动 `qsi.elf`（本机型固件中
+  不存在，属设计差异）+ `im.elf <mode>`；我们的链为 init→sen.elf/bootin→im.elf（无参数）。
+  `sen.elf/net_cmdd/launch_shell` 均正常启动，故服务缺失不是简单原因。
+
+### 新策略：NULL-site bypass 链（task-14）
+
+v37/v39 证明“逐个绕过缺失硬件/状态的 NULL 查询”能让 boot 每步前进（崩点位置不断后移）。
+分工：
+- init-unlocker：以 ab_v39 为基线，逐个 patch 崩点（每步单独镜像、记录 patch 列表、2-3 次验证），
+  目标推进到 appinit/gfx；野指针/内存破坏类崩点单独上报；
+- Lead：静态分析各 NULL 点的语义（区分“硬件不存在”与“服务数据未到”），并准备合并 patch 列表。
+
+### 当前状态
+
+```text
+[已解决] 启动/加载、VDF、GLES 死锁、两级 assert、Backup_nread 越界（根因）
+[已打通] QEMU 呈现链（bionz-streamfb 像素级验证 PASS）
+[基线]   ab_v36（BNR 修复/伪造路径）、ab_v38（真实路径）、ab_v39（+UIPC 重试）
+[当前]   boot 期 InfraIndctr/媒体状态 NULL，崩点可绕过但会漂移；gfx/wg=0
+[待做]   NULL-site bypass 推进 + 野指针内存破坏根因（gdb watchpoint）
+```
