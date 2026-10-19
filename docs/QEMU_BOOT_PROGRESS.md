@@ -15268,3 +15268,35 @@ got[-01] @0407d1c8 = 04091de9
 1. 用同一镜像做无延迟调用的 150 秒对照，确认该异常是否由 UI 生命周期调用触发；
 2. 若确认相关，则对 `Backup_read`/`backup_sync_msg` 路径提供合法默认返回，避免近零跳转；
 3. 同时继续定位 GRM `QMMAP` 之后 UI 线程的等待点。
+
+---
+
+## 一百九十二、Round 219：**基线本身也会崩溃；fake GLES 大 mmap 嫌疑最大**
+
+三个 150 秒对照运行的异常对比：
+
+| 镜像 | 是否加载延迟探针 | 异常任务 | 异常地址 |
+|---|---|---|---|
+| `ab_fakegles.img`（纯基线） | 否 | `im.elf.real(InfraIndctr)` pid 163 | `0x0` |
+| `ab_getsub.img`（libObj 诊断补丁） | 否 | `im.elf.real(im.elf.real)` pid 137 | `0x490`，pc `0x5fd38f8` |
+| `ab_aitc.img`（干净基线+延迟探针） | 是（真正调用尚未发生） | `im.elf.real(THREAD_INFRA2)` pid 142 | `0x106` |
+
+结论有两层：
+
+1. 之前把“延迟调用后 guest 停摆/崩溃”归因于 UI 生命周期是不完整的；**纯基线运行 150 秒后也会在
+   infra 线程崩溃**（`InfraIndctr`，地址 `0x0`）。因此 UI 生命周期调用不是这些崩溃的唯一原因。
+2. 崩溃任务不同、故障地址不同（`0x0`/`0x106`/`0x490`），符合**内存被随机破坏**的特征，而不是
+   固定代码路径缺陷。
+
+首要嫌疑：我们的自定义 GLES 设备模块 `/kmod/grm_gles.ko`（QEMU 镜像 n15 内，30648 字节，
+`fake_init/fake_open/fake_ioctl/fake_mmap/fake_release`，见 Round 217 提取的
+`/mnt/build/grm_gles.fake.ko`）。它用 `__get_free_pages` 只分配一页级缓冲，但用户态
+`QMMAP len=0x2000000`（32 MB，出现两次且返回同一地址）时，`fake_mmap` 很可能无条件
+`remap_pfn_range` 整个 32 MB —— 把从 64 KB 分配起始的**相邻物理页全部映射给用户态**，用户态
+一写就破坏内核内存，导致后续在不同线程、不同地址崩溃。
+
+下一步（高优先级）：
+1. 反汇编 `fake_mmap` 确认是否忽略 `len`；
+2. 重写该 fake 模块：按 `len` 分配（或对超出部分映射零页/只映射真实分配长度并返回错误），
+   保证用户态写入不越过实际分配；
+3. 在纯基线上验证 150 秒不再随机崩溃，然后再继续 UI 生命周期实验，避免再被内存破坏污染结论。
