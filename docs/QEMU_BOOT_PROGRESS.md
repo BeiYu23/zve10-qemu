@@ -15465,3 +15465,77 @@ uxengine_init 线程（卡在 resmgr 字体/资源注册）
 
 下一步回到关键路径：继续深挖 resmgr 字体注册阻塞点，或直接以主线程方式调用
 `uxengine_init` 实体（`libObj+0x6271d4`）并逐步跟踪其内部等待，直到 GRM 初始化完成。
+
+---
+
+## 一百九十六、Round 223：**resmgr 初始化结尾会自动创建 WidgetSystem；调试稳定性问题**
+
+### 关键发现：resmgr 初始化 ≠ 只做资源加载
+
+重新完整反汇编 `resmgr` 初始化函数 `libObj+0x610f74`，其结尾是：
+
+```text
+610fc4: bl  615d10
+610fce: b.w 618ed0      ; 尾调用 = WidgetSystem 创建包装！
+```
+
+即 **`resmgr` 初始化完成后会自动 tail-call WidgetSystem 创建包装**（`0x618ed0`：
+`malloc(0x528)` → 构造函数 `0x618d7c` → 发布到全局槽）。因此根本不需要我们手动创建
+WidgetSystem——只要 `uxengine_init` 线程把 resmgr 初始化走完，WidgetSystem 自然建立。
+
+### 运行时时序实测（`ab_b13.img`，RT 优先级观测线程）
+
+```text
+B13 pre gfx=0 res=0 wg=0
+B13 appinit call / returned
+B13 i=0  gfx=0 res=0 wg=0
+...（每秒一次，连续 20 次）
+B13 i=19 gfx=0 res=0 wg=0
+```
+
+`Application_System_Init` 返回后 20 秒内 GraphicsEngine / ResourceManager / WidgetSystem
+始终为 0，期间无异常。证明 `uxengine_init` 线程确实没有走完，卡点仍在 resmgr 资源加载器
+（`libObj+0x640398`）内部。
+
+### GraphicsEngine 创建也依赖 framebuffer
+
+GraphicsEngine 创建包装 `libObj+0x613134`（`malloc(0x240)` → ctor `0x612b34` → 发布槽）。
+在 appinit 之后手动调用时崩溃：
+
+```text
+pc=libObj+0x63d2e2  lr=libObj+0x612b49  r0=0  fault=0
+```
+
+`0x612b49` 是 ctor 内 `bl 63d2d8`（取 framebuffer 宽）之后的返回地址；`0x63d2d8`
+因 framebuffer/GraphicsSystem 未初始化而空指针解引用。依赖链进一步确认：
+
+```text
+uxengine_init（卡在 resmgr 资源加载）
+  → GRM/GraphicsSystem 初始化
+    → GraphicsEngine ctor 可完成
+      → resmgr 初始化结尾 tail-call WidgetSystem 创建
+        → ViewManager/viewUnified2 可用
+```
+
+### 调试稳定性问题（重要）
+
+为让 gdb 条件断点追踪熬到 appinit，尝试消除随机基线崩溃：
+
+1. **全局 interpose `backup_sync_msg`（返回错误）** → 破坏早期启动：im.elf.real 在加载
+   libObj 之前就崩溃（`pc=0x05714372`，pid 122），不可用。
+2. **单点 patch**：把镜像内 `/lib/libbackup.so` 偏移 `0x1222` 的
+   `blx backup_sync_msg@plt`（字节 `ff f7 c2 ed`）改为 `00 bf 00 bf`（NOP×2）→
+   THREAD_INFRA2 的 `pc=0x106` 崩溃消失，但运行又出现另一个基线崩溃
+   `(null)(liro_entry)` pid 139 `address=0x0`。
+
+说明这些随机崩溃是多个 infra/liro 线程共同的环境相关缺陷，单纯压制一处会暴露另一处。
+后续追踪策略：把 appinit 触发时间提前（10 秒级），在随机崩溃窗口之前完成
+`uxengine_init/resmgr` 追踪；或改用用户态高频采样（RT 线程 + 直接内存读写）替代 gdb
+断点，避免 gdb 暂停放大竞态。
+
+### 下一步
+
+1. 以“提前 appinit + RT 观测”的方式复现并定位 resmgr 资源加载器的具体阻塞调用
+   （0x640398 内部 22 个调用点已枚举，可用用户态单步/返回值检测替代 gdb）。
+2. 或者直接给 0x640398 内部可疑调用做 App-only 安全 shim（如字体文件相关 read/mmap），
+   让 resmgr 初始化返回，观察 WidgetSystem 是否被 tail-call 创建。
