@@ -16510,3 +16510,68 @@ MSGQ  A=4096 F=39    ← 4096 个消息队列 id 只剩 39 个空闲
    观察 worker 处理该任务时的调用序列与阻塞点）；
 3. 若驱动降级路径本身可接受，则需确认它应在何时回复"初始化完成"，必要时在 QEMU-only 探针
    中模拟该回复以推进到 WidgetSystem 创建，再回头解决渲染真实性问题。
+
+---
+
+## 二百一十三、Round 240：**Vecgen 开关定位并成功启用；UI 推进到新崩溃点**
+
+### 开关定位（静态分析）
+
+`grm_init` 中 "GLES Vecgen enabled/disabled" 的判断来自 `__xstat`（`0xe4aee0` 是
+`stat()` 包装），对三个路径做存在性检查：
+
+```rodata:
+file, GRM_TRACE, /dev/null
+/tmp/tv_gpe
+/tmp/tv_log
+/tmp/phi_ocp.txt
+/tmp/tv_enable
+!!! GLES Vecgen enabled.
+!!!   filename: %s
+!!!   hwctrl  : %d
+!!! GLES Vecgen disabled.
+```
+
+对应代码：
+
+```text
+stat("/tmp/tv_gpe")   → 存在则 hwctrl 标志 = 1
+stat("/tmp/tv_log")   → 存在则记录 filename
+stat("/tmp/tv_enable")→ 失败 => "GLES Vecgen disabled"；成功 => "enabled"
+```
+
+### 实验：提前创建配置文件
+
+探针在 constructor 里创建 `/tmp/tv_gpe`、`/tmp/tv_log`、`/tmp/tv_enable`
+（open(O_CREAT|O_WRONLY)），再调用 `Application_System_Init(0)`（`ab_v4.img`）。
+
+结果（首次成功运行）：
+
+```text
+N mkfiles
+N appinit
+N returned
+N i=0 gfx=0 res=0 wg=0
+!!! GLES Vecgen enabled.        ← Vecgen 已启用！
+随后 Appframework 线程异常：
+  pc=libObj+0x7a3dee  lr=libObj+0x7a3e1b
+  address=0x0  error_code=0x17
+  r0=0x06e27ce0(BSS) r1=0 r2=0x33c8 r3=0 r5=0x0699d6f1 r6=0x08e154d8
+```
+
+即：**Vecgen 路径已成功启用**，GLES 初始化不再卡在 `0x7d7d30` 的等待上，UI 线程继续推进
+到了渲染子系统内部的下一处空指针崩溃（`libObj+0x7a3dxx`，一个新区域）。
+
+### 意义
+
+- 证明「Vecgen disabled」不是硬件能力缺失导致的死路，而是**可通过配置文件控制的软化路径**；
+- 说明此前所有阻塞的最后一环可以被用户态配置绕过，GLES 初始化能继续执行；
+- 新崩溃点 `0x7a3dxx` 位于渲染/任务处理代码（大量 `str/ldrb` 写结构体），是下一个待补齐的
+  数据结构依赖（很可能是渲染任务结构或 tile 参数表）。
+
+### 下一步
+
+1. 反汇编 `libObj+0x7a3d00–0x7a3f00`，确认崩溃指令与 r0=0 的来源（BSS `0x06e27ce0` 附近
+   的对象是什么）；
+2. 若需要初始化数据，按真实协议补默认值（继续"配置/状态软化"的方法）；
+3. 保持 `/tmp/tv_enable` 等文件创建（仅 QEMU 实验镜像内），继续推进到 WidgetSystem 创建。
