@@ -17315,3 +17315,58 @@ v37/v39 证明“逐个绕过缺失硬件/状态的 NULL 查询”能让 boot �
 [当前]   boot 期 InfraIndctr/媒体状态 NULL，崩点可绕过但会漂移；gfx/wg=0
 [待做]   NULL-site bypass 推进 + 野指针内存破坏根因（gdb watchpoint）
 ```
+
+---
+
+## 二百二十四、Round 251：**NULL-site bypass 推进；发现并修正我们自己的 brk scratch 堆破坏 bug**
+
+### NULL-site bypass（init-unlocker，task-14 第一轮）
+
+在 ab_v39 基线上逐个绕过缺失硬件/状态的 NULL 查询，崩点确实逐步后移：
+
+| # | libObj 地址 | 原字节 | 新字节 | 语义 |
+|---|---|---|---|---|
+| P1 | 0x14e418 (4B) | — | `00 20 70 47` | SvcCautionIF 包装函数 `movs r0,#0; bx lr` 安全返回 |
+| P2 | 0x15b5ce (12B) | `02 68 80 b5 00 af 12 68 02 60 80 bd` | `02 68 00 2a 01 d0 12 68 02 60 70 47` | 链表 next helper 空表安全返回 |
+
+组合镜像 `ab_tb_s1`（P1+P2+c59）：推进链 SvcCautionIF → CmnViewMenuData → **InfraInput**，
+`DMP_2D_Initialize` 已打印；但新崩点为确定性野指针（`address=0x4620eb80` 未映射、
+pc=libc+0x5b4ba 即 **malloc 内部**、lr=libObj+0x8c527d = `InfraInput::SetEventKeyList` 返回
+malloc 调用点、栈含 PhyKeyConfigAlloc）。
+
+### 静态定位与假设修正
+
+- 崩溃点代码模式（libObj+0x8c525e..0x8c5288）：
+  ```text
+  r0 = Backup id 0x7a0001
+  blx Backup_get_datasize(0x7a0001) → d
+  blx malloc(d)
+  blx Backup_read(0x7a0001, malloc_ptr)   ; driver 按记录实际长度拷贝
+  ```
+- 初判“datasize 偏小导致堆溢出”；但 c60 clamp 版实测
+  `BRD id=0x7a0001 d=16385 r=16385 n=16385` ⇒ **d == r，无溢出**；而崩溃变为
+  `pc=0x0000fffe` 低地址野跳、线程 comm 乱码 → 说明另有内存破坏源。
+- **真凶：我们探针自己的 `brk` scratch**。c58/c59/c60 在首次 Backup 调用时
+  `brk(0)+0x40000` 扩展堆，但 glibc malloc 自己缓存堆顶（`mp_.sbrk_base`），外部改 brk
+  会让 glibc 堆状态错乱 → 后续 malloc 内部崩、野跳、comm 乱码。该现象自 c58（v36）开始，
+  与无 brk 的 v28（c50）稳定 60s 形成对照。
+
+### 修正
+
+- c61 探针：scratch 改为 **glibc `malloc(0x18000)`（96KB，低于 mmap 阈值）**，不再调用 brk，
+  也不在 libObj 加载前分配 mmap；保留 Backup datasize clamp/重试/VDF key 默认值。
+- 新镜像：
+  - `ab_v43` = ab_tb_s1（P1+P2）+ c61（前缀 N9）；
+  - `ab_v44` = ab_v38（真实路径）+ c61。
+- 待验证：v36→v42 期间的一串“野指针/崩点漂移”是否大量由该 bug 造成；修正后能否得到
+  干净的真实下一阻塞。
+
+### 当前状态
+
+```text
+[已解决] 启动/加载、VDF、GLES 死锁、两级 assert、Backup_nread 越界（根因）
+[已修正] 探针 brk scratch 堆破坏 bug（改用 glibc malloc）
+[bypass] P1（SvcCautionIF）、P2（链表 next helper）已过，boot 推进到 InfraInput 之后
+[基线]   ab_tb_s1（P1+P2+c59）、ab_v43（P1+P2+c61）、ab_v44（真实路径+c61）
+[当前]   InfraInput/PhyKey 路径；gfx/wg=0
+```
