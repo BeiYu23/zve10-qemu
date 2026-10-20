@@ -18597,3 +18597,24 @@ a334: bl a74c            ; 把它当对象写 [+0x3c] → NULL 崩
   `( sleep 40; echo t > /proc/sysrq-trigger; sleep 22; echo t > /proc/sysrq-trigger ) &`
 - 目的：抓 ~40s/62s 任务栈，直接看 Appframework 线程睡在 futex/osal_rcv/驱动 read 还是别处，
   从而定位“首帧未提交”的真正等待点（而不是盲猜 qid）。
+
+---
+
+## 二百七十、Round 297：SysRq 任务栈确认卡点=futex；UI 框架入口梳理
+
+### SysRq（ab_tb_v99 = ab_v92 + c107；init-unlocker）
+- ab_v96 的 wrapper 方案失败（`exec >log` 重定向 + sysrq 在 bootin.real 返回后，永不执行）；
+- c107（探针内 i=30/45 写 /proc/sysrq-trigger）成功拿到 2 段 dump；
+- 线程状态：
+  - **Appframework(194) D**：`msleep ← fake_ioctl+0x12c [fake_gles] ← vfs_ioctl`（GPE 循环空转在我们的 820d sleep）；
+  - **im.elf.real(134) / grm_gpe(148) / grm_result(146) / uxengine_res1/2(191/192)：futex_wait**；
+  - AV_DDS/Infra*/grm_dn_vdf_if 等：osal_rcv_msg_tmo（正常 idle）；
+  - hdmi_workqueue/hdmi_state/cec_state：msleep（驱动内部）。
+- 内核 backtrace 只有 futex_wait（无用户态调用者）→ 需 pthread cond/mutex interpose 才能定位 uaddr 与唤醒者；
+- 结论：**没有线程卡在 UIPC/backup**；首帧门控 = 某 futex/条件变量（grm_gpe/uxengine 等在等）。
+
+### UI 框架入口（Lead 梳理 libObj 导出）
+- `ObjDisplay_Create/Destroy/RegisterCommand/UnregisterCommand`、`pViewManager`(B)、
+  `ViewBase`/`DefRootView`/`ScalarView::Open`、`GRM_fbrmSetScreenPreference`、`GRM_screenGetOnBitmap`；
+- 对照 a7c2 的“生命周期入口 + 9 参数建屏”思路，ZV-E10 的建屏很可能走 `pViewManager`/`ObjDisplay_*` 或
+  ViewManager 的 view 创建函数；后续可用探针主动请求建屏测试。
