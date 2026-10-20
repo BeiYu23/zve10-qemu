@@ -18374,3 +18374,23 @@ w4=0x0044f000 w5=0x00000000 w6=0x0010f000 w7=0x12345678 (magic)
 - md5 `207d77b9bd4ecc812d932985d75391f3`，备份 `/mnt/build/qemu-system-arm.a5d32-gpereg-r`；
 - 待 init-unlocker 抓 poll offset → 实现最小状态机（kick → 解析描述符(magic) → 置完成位/计数 → irq），
   再让 UI 首帧命令到达、把绘制落到 VDF。
+
+---
+
+## 二百五十九、Round 286：**App 空闲的上游门控 = Backup 服务 UIPC 应答超时（0x3e014d）**
+
+### 证据（tb-gperegr-1 日志）
+- `ZZGPEREG r = 0`：guest 从不读 GPE 寄存器 → QEMU 侧状态机不会被看到；
+  真机由内核驱动 grm_gles 读 GPE 状态；我们换 fake_gles 后没人读 → 状态机应做在内核模块里；
+- GPE 写 28 条后 85s 无新提交 → UI 首帧/绘制命令未入队；
+- **UIPC 统计**：Appframework 持续 `0x80000005`（snd_sync_msg，qid=`0x3e014d`），大量 **ret=-1020 超时**；
+  伴随 `0x8000000a`（valloc_msg_wait）/`0x8000000b`（free_msg）各 7k+ 次循环；
+- **`0x3e014d` = Backup 服务 UIPC id**；`backup.ko` 内含该 id 且导出
+  `osal_reg_msg_queue_cb` / `osal_reg_sync_msg_queue_cb` → **应答者在 backup.ko**；
+- 我们镜像里的 `backup.ko` 与原件仅差 **3 字节**（file offset 0x951–0x953，早期 safe 补丁），怀疑破坏应答。
+
+### 对照镜像（Lead）
+- **ab_v85.img**：n15 `/kmod/backup.ko` 换回 ref_e10 原版；
+- **ab_v86.img**：ab_v85 + initrd `/sbin/init` 中 `Backup_load=0` → **`Backup_load=1`**（File offset 0x2f03）。
+- 判据：UIPC 0x80000005 的 -1020 是否减少、ZZGPEREG 写是否超过 28 条、VDF 是否出现像素。
+- 后续（若不成）：反汇编 backup.ko 的 sync-msg 回调，按协议补一个 Backup 应答者。
