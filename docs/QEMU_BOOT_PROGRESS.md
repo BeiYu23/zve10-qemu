@@ -17802,3 +17802,36 @@ zImage 已更新，旧版备份 `/mnt/build/zImage.nq.bak`）。这将让固件�
 对我们的含义：与现有 `/dev/stream`(249)/VDF、fake_gles、DMM 方向一致；
 后续若做实时取景/背景帧，按该层注入 JPEG/NV12，而不是补 V4L2。
 已 `git pull --ff-only` 到最新；后续定期 fetch 该仓库跟踪新成果。
+
+---
+
+## 二百三十六、Round 263：qemu 模式 A/B 实测 + 可控 bootin 包装镜像 ab_v62
+
+### A/B 实测（init-unlocker）
+镜像 ab_tb_v61b.img（P1+P2+P4+tb21+VIP禁用），各 2 次 85s：
+| | A：qemu 内核（`…-qemu` #130） | B：老内核（`zImage.nq.bak` #129） |
+|---|---|---|
+| 崩溃 | **无（2/2 跑满 85s）** | 2/2 早期随机崩（0x1b42/0x5b） |
+| 采样 | 0 | 0 |
+| 行为 | init qemu 分支在挂 /usr 前 ko_insmod → 大量 `/usr/kmod/*.ko` 打不开 →
+  `/proc/udm/upm_bootmode` 失败 → bootin.elf EXIT 255，**无 im.elf** | bootin EXIT 255，但随后 **im.elf 执行成功**，到 ~13–14s 崩 |
+
+结论：**qemu 模式消除了早期随机崩**（换掉了会崩的路径），但 init 的 qemu 分支
+挂载/insmod 时序与我们的 rootfs 布局不匹配，bootin 起不来。dmode="0" 双保险无效（同样无 im.elf）。
+
+### 应对：ab_v62（可控 bootin + 显式 target=qemu + 回落 im.elf）
+n15（/usr）改动（已校验）：
+- `/bin/bootin.elf` → wrapper 脚本（426B），原版存 `/bin/bootin.real.elf`（15336B）；
+- wrapper：记录 `/proc/version`、`/proc/mounts`、`/proc/udm/drivers`、`/usr/kmod` 列表与
+  bootin 输出到 `/tmp/bootin_wrap.log` 并 cat 到 `/dev/console`；
+  执行 `/usr/bin/bootin.real.elf 'target=qemu ' dmode=3`；打印 rc；
+  **最后无条件 `exec /usr/bin/im.elf target=qemu`**（/bin/im.elf 仍为探针 wrapper，带 LD_PRELOAD）；
+- n7 探针与 n15 libObj（P1+P2+P4）沿用 ab_v61。
+目的：normal init 保证 /usr/dnflasha15 正常挂载加载，避开 qemu 分支时序问题，
+同时取得 bootin 失败原因（串口可见）。
+
+### Loader 路线定位（暂降优先级）
+- rom-loader 打开 console 后定位真实失败点：PowerIC type7/SIO3 协议 CRC 不匹配 →
+  `LDR_E:Init Power[-206]`；跳过 -206 后前进到 FAT/BootMode，仍卡 `LDR_E:Pwr bootmode[-205]`；
+- 4 个电源 IC 模型均 CRC 不匹配（hibari/mb89083/sc901572/upd79f；ca 触发 QEMU 断言）；
+- 结论：不盲目跳 Pwr 错误分支；loader 要过必须实现 ZV-E10 期望的 PowerIC 应答/CRC（后续逆向）。
