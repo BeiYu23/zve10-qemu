@@ -17648,3 +17648,40 @@ GPE 之后是否继续（HeapAllocator/GraphicsEngine/新 abort），gfx/res/wg 
    满足固件电源/硬件探测；
 3. 干净样本确认 GPE mmap 是否成功（fake_gles 已修）；
 4. 后期用 OpenMemories-CI 的 sendKey/screenshot 框架做“可交互”证据。
+
+---
+
+## 二百三十一、Round 258：**发现被遗漏的“真机 Loader2 启动链”并开始验证**
+
+### 发现
+- 真机整盘 `/root/fw/zve10_delivery/ZVE10_EMMC_FULL.img` **偏移 0 是 EXBL + Loader2**
+  （`Astra LPDDR3 Initialize Ver.40.00.01`、`Loader2 Ver.50.02.17`、`LDR:` 字符串）；
+  EXBL 头字段：`boot_base=0xfe040000, loader_base=0xfe047000, boot_size=0x27800`；
+- 真机分区布局：eMMC 0x0–0x400000 = boot0/boot1（loader），nflasha 设备在 0x400000，
+  nflasha1 FAT 在 **0x410000**、nflasha5 在 0x5c00000 —— 与机器 `cxd90045_load_wbi()` 的硬编码
+  偏移（2×0x200000 + 0x5800000）完全一致；
+- 我们的 `cxd90045_init` **早已实现真机 boot-block 路径**：读 EXBL、把真 Loader2 装到
+  `boot_base`、写 trampoline 跳到 `loader_base`；且无 `-kernel` 时自动走该分支；
+- 但此前所有实验都传了 `-kernel`，**一直绕过了真 Loader2**（也绕过真机 LPDDR/电源初始化）。
+
+### 首轮 loader 实验（真机 dump，无 -kernel）
+- QEMU 启动后 Loader2 确实执行：`ZZWBI: loaded 7 segments from nflasha5`、SDHCI `ZZTRACE cmd=1`、
+  反复 `NORINTSTS` 读取；
+- 但 serial 全空、320x240 screendump 全黑；QMP PC 采样集中在 `0xfe04d978`，对应 Loader2 内
+  `0x1140e` 的 timer 等待循环（读 timer 等 ~1000 ticks）→ 卡在某个硬件操作等待；
+- 原因（对照 OpenMemories-CI `test_cxd90045.py`）：
+  1) kemco.txt 里 `amba2.console=0` → loader 无输出；
+  2) 上游对 boot 分区 `0x87c4` 4 字节清零（`patchInitPower`，跳过电源 IC 初始化调用），
+     否则 loader 会等电源 IC 响应。
+
+### 已构建实验镜像（写回偏移已修正为 0x410000）
+- `emmc_console.img`：真机 dump + boot@0x87c4 清零 + 真实 nflasha1 的 kemco `amba2.console=1`；
+- `emmc_ours.img`：上述镜像 + `/boot/vmlinux.bin` 换为**我们的 zImage**、
+  `/boot/initrd.img` 换为**我们的 ext2 initrd**；
+- 说明：真机 `vmlinux.bin` 本身就是 zImage（magic `0x016f2818`），可直接替换。
+- 新 runner：`tb_run_loader2.sh`（4 路 UART 抓取 + gtk + immut icount + hibari/piroshki 设备）。
+
+### 待验证（init-unlocker）
+1. `emmc_console.img` → Loader2 日志（console 打开）→ 真机内核是否启动（原生固件链）；
+2. `emmc_ours.img` → 真 Loader2 启动我们的 kernel/initrd（App 链 + 正确 loader 初始化）；
+若原生链能起来，将改为“真机固件原生启动”路线，可能显著缩短到 UI 的距离。
