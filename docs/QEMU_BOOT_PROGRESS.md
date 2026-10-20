@@ -18279,3 +18279,26 @@ n7 探针 c86 = c83b + **mmap hook**（记录 >32KB 映射：`MMP va len off`）
 （dest 落在已跟踪映射内打印 `MC5/MM5 dst len src caller_lr`，限 200 条）；memset 同样扩展到已跟踪映射；
 探针 69,148B，布局不变；镜像 ab_v83 = ab_v82 + c86（md5 校验通过）。
 - 目的：免猜 maps，直接抓“往 ring 写命令/数据”的 caller LR。
+
+---
+
+## 二百五十五、Round 282：ring 数据判定为 GPU 纹理/命令块；ab_v84 打 GRM 入口跳板取证
+
+### ring 离线分析（Lead）
+- t20→t40 变化区 0x22000–0x3d1ed，按 **32×32 tile × 4B（4KB/tile）** 重组成图 → 彩色条纹/纹理（非 UI）；
+- 描述符区（0x18000/0x3d000）含 app 栈/libObj 指针 → GPU 命令+资源句柄；
+- 结论：ring 是“给 SUGILITE 的纹理/命令”，不是可直接呈现的 framebuffer；必须截获绘制请求。
+
+### ab_v83 作废
+- c86（mmap/memcpy hook）破坏 pthread_create（dlsym 未解析时 mmap 返回 -1 的递归问题）→ 只打印 `W0 alive`；
+- 且 MMP 里没有 dmpgles/stream/mem 目标 → app 的这些映射不走 libc mmap（可能 mmap2 syscall）。
+
+### ab_v84（Lead）：GRM 入口跳板
+- n15 libObj 打 8 字节 Thumb-2 跳板（`ldr.w pc,[pc,#0]` + 绝对地址）：
+  - `GRM_gpermFillrect @0x683f4c` → 0x0402237c（c87 `grm_hook_fillrect`）
+  - `GRM_gpermRectblit @0x684086` → 0x040223a4（c87 `grm_hook_rectblit`）
+- hook 打印 `GRMF/GRMB r0 r1 r2 r3 lr` 后 return 0（跳过原绘制）；
+- 探针 c87 md5 e05bbe45e812fdf93e5e9c59b17623fd（加载基址假设 0x04021000，历史 maps 确认）；
+- 镜像 ab_v84.img 已校验（入口字节 dff800f0 7c230204 / a4230204）。
+- 待验证：GRMF/GRMB 是否出现（app 是否走这两个 API）、参数与 lr、主链路是否仍稳定；
+  若 app 不走这两 API，改 patch 内部提交链或 GRM_bitmapWriteUnlockBits 等。
