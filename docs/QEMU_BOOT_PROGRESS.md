@@ -19412,3 +19412,28 @@ LOAD#2 off=0xb78af0 vaddr=0xb80af0 memsz=0x2cf020 R W
 - i=40：打印 VF、调 `_init`、逐个调 1768 个 init_array 条目（每 100 个打印 ida）；
 - 然后 static=pVM → openView → 观察 ida 是否大跳、ZZGPEREG/VDF 是否变化。
 - 备选：如果个别 ctor 崩，分批/按崩溃地址定位依赖。
+
+---
+
+## 三百零五、Round 332：**RW = RX + 0xB80000 固定关系成立**（5 run 验证）→ init_array 地址 = RX+0xB80AF0，无需 RW base
+
+### c157 结果：seed 无效
+- `add(tbl, id, "view/SCALAR", 0)` ret=0 但 **tbl[0..8] 前后完全相同** → 表未插入；
+- 说明 add 语义不是“按名字插入 view”（可能先要工厂/实例或表实例不对）→ 放弃 seed 路线。
+
+### c158 结果：只抓到 RX，RW=0
+- RX 记录成功（303362048）；RW 映射未被 hook 捕获（可能 mmap64/直接 syscall）。
+
+### Lead：从历史 QMMAP 配对算出固定关系
+```
+RX=0x0f84b000 → RW=0x103cb000  diff=0xB80000
+RX=0x0f93d000 → RW=0x104bd000  diff=0xB80000
+RX=0x10477000 → RW=0x10ff7000  diff=0xB80000
+RX=0x0f95e000 → RW=0x104de000  diff=0xB80000
+```
+- RW 段映射固定落在 `RX+0xB80000`（对应 vaddr 0xb80000）；
+- 因此：
+  - **`_init` = RX + 0x185CC8**（thumb）
+  - **`init_array` = RX + 0xB80AF0**，共 **1768** 项
+- c158 修正版：只用 RX，调 `_init` + 1768 个 init_array，然后 static=pVM → openView → 看 ida/ZZGPEREG/VDF。
+- 若数组条目不是绝对地址（未重定位），或某 ctor 崩，按打印的 i/addr/pc 继续定位。
