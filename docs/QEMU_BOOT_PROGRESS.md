@@ -19437,3 +19437,30 @@ RX=0x0f95e000 → RW=0x104de000  diff=0xB80000
   - **`init_array` = RX + 0xB80AF0**，共 **1768** 项
 - c158 修正版：只用 RX，调 `_init` + 1768 个 init_array，然后 static=pVM → openView → 看 ida/ZZGPEREG/VDF。
 - 若数组条目不是绝对地址（未重定位），或某 ctor 崩，按打印的 i/addr/pc 继续定位。
+
+---
+
+## 三百零六、Round 333：**init_array 手动执行成功（IdSoTable::add 529 次）**；openView 内部=投递事件；下一步事件消费/直接构造 View
+
+### c162 结果（init-unlocker）★★★
+- `/proc/self/maps` 验证公式：`rwstart - 0xB80000 = r-xp start` ✓；
+- 手动调用 `_init`（RX+0x185CC8）+ 1768 个 init_array 条目（RX+0xB80AF0）全部执行、无崩溃；
+- **`IdSoTable::add` 被调用 529 次** → view 工厂表注册成功；
+- `openView("view/SCALAR",0)` 仍 ret=0；ZZGPEREG w=28、VDF blank（无首帧）。
+
+### openView 内部（Lead 反汇编 0x1410a4）
+```
+Event::Event(id=0x11012001)
+addParameter(6, IdGenerator::Get("view/SCALAR"))
+addParameter(0x1a, ...)
+EventManager::push([pVM+0x10], event, 1)
+```
+- ⇒ openView 只是**入队 ModelExecute 事件**，ret=0=入队成功；真正的 view 创建/绘制依赖 App 事件循环消费。
+
+### c163 实验（派发）
+1) 读 `[pVM+0x10]`=EventManager，调用 `EventManager::count(ev,0)`（libObj+0x8a1848）前后对比 → 判断事件是否被消费；
+2) 直接构造 View 并绘制：
+   - `ViewRootToInstance`(viewUnified2 RX+0x324a54)、`ViewRootSelectorToInstance`(+0x41b6a8)、
+     `ViewRootUtilityToInstance`(+0x4288b8)，调用 `(0,0)`，返回 ViewBase*；
+   - 调 `View::drawDirect()`（libObj+0x8a0074，this=v）；
+3) 观察 ZZGPEREG w 是否增长（GPE 提交）、VDF/screendump 变化、崩溃现场。
