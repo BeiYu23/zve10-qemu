@@ -18118,3 +18118,24 @@ poison 说明该区域与内核内存管理发生重叠/被释放后复用。
 - 新镜像 **ab_v77.img** = ab_v73（我的模块：per-open DMA + 8211/8212 写回 0 + FB 256KB + 无 VIP
   写内核 RAM，md5 `c36065b1…`）+ n7 c83b 追踪探针（md5 `4063dbc1…`，含 MS5/BZ5 标签）。
 - 待验证：8211 次数正常、MS5/BZ5（用户态）或 ZZPOISON（内核态）定位 0x5a 写入者。
+
+---
+
+## 二百四十八、Round 275：**0x5a 写入者 = 固件 App 自己的 VDF 清屏**；ab_v78 决定性实验
+
+### 证据（init-unlocker，ab_v77）
+- MS5：`memset(dst=0x0f37e000, val=0x5a, len=0x100000)`，caller LR=`0x060c336b`；
+  maps 显示 `0f37e000-0f47e000 rw- off=0x20312000 mem` → dst 即 /dev/mem 映射的 phys 0x20312000（VDF 缓冲，1MB）；
+- ZZPOISON：16,384 条 `write addr=0x20312000..0x20321ffc size=4 val=0x5a5a5a5a pc=0x042aeaf0/0x042aeb1c
+  (libc memset) lr=0x060c336b`，与 MS5 一致；
+- LR 换算：`0x60c336b - libObj base 0x59ce000 = 0x6F536B`（Thumb bit）→ 调用点 **0x6f5366 `bl 0x6fc11c`**；
+  `0x6fc11c` 先 `Backup_read_4Byte` 再**尾调用 memset**清缓冲；外层函数 0x6f534e 在 VDF/port init 区。
+- 结论：**0x5a 是固件 Appframework 自己的 VDF 端口清屏（1MB blank）**，与探针/fake_gles/内核无关；
+  grm_ma 的 mspace 恰好也建在 phys 0x20312000（VDF 缓冲），被清屏覆盖 → mspace_malloc 崩。
+
+### 决定性实验：ab_v78.img
+- n7 = **c84** 探针（c83b + 只拦截这一条清屏）：
+  `memset(dst∈[0x20300000,0x20400000), val=0x5a, len>=0x100000)` → 打 `MSKIP ...` 并**跳过填充**；
+- 镜像 ab_v78 = ab_v73（8211/8212 修复 + per-open DMA 模块）+ c84；
+- 期望：mspace 不再被覆盖 → 越过 grm_ma 崩点，看是否推进到 GPE/GraphicsEngine；
+- 若有效但画面异常，则下一步从 DMM extents 入手，把 VDF 缓冲与 grm_ma 池从根上分开。
