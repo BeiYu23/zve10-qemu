@@ -18470,3 +18470,22 @@ w4=0x0044f000 w5=0x00000000 w6=0x0010f000 w7=0x12345678 (magic)
 ### 下一步
 - init-unlocker 的 c100：只打印 r0–r3 + caller sp[0..15] + lr（naked 入口，不写内存）；
 - 确认映射后修 responder（只对合法栈指针写、size≤256），目标 -1020=0 且不崩。
+
+---
+
+## 二百六十四、Round 291：c100 栈参数确认；ab_v90 启发式安全 Backup 应答
+
+### c100 结果（init-unlocker）
+- 入口：r0=status(0x5efffbe4)、r1=0x3e014d、r2=size(4/8/30)、r3=type(1/3) ✓；
+- caller 栈：s[0]=id(62/148/0xbd000x/0xfa00a3…)、**s[1]=0x3e000b（编码值，非指针）**、
+  **s[2]=0x5efffbfc（真 buf）**、s[5]=-1 状态槽（即 r0 指向处）；
+- 不同调用者布局不同：Backup_nread → (id,buf,size)；libObj 族 → (id,attr,code,buf…)。
+
+### ab_v90.img（Lead，= ab_v82 + c101）
+- responder（qid 0x3e014d）：
+  - type1 → *status = key 值（0xfa00a3/0xfa00a4 特判，其它 0）；
+  - type3 → 在 a1/a2/a3 中选**第一个合法用户指针**
+    （[0x5e000000,0x61000000)/[0x6a000000,0x6c000000)/[0x08000000,0x12000000)/[0x46000000,0x48000000)）
+    作为 buf，仅清零 min(size,256)；都不像指针则完全不写（避免 0x3e000b 类错误）；
+  - 所有分支 *status=0；日志 K/k/P。
+- 待验证：P 行地址是否合法、0x3e000b 崩是否消失、-1020 是否≈0、ZZGPEREG w 是否 >28、VDF 是否出像素。
