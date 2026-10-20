@@ -18896,3 +18896,26 @@ view/SCALARDUMMY0、view/STL_REC_SMILE_AUTO
 ### 另注
 - 0x8a4b60 prologue 有 `mov r9,r1`（arg1=2），尾部 `ldr [r9,r3]` 取 pViewManager 的 GOT，
   字段/寄存器约定仍需以 gdb 实测为准。
+
+---
+
+## 二百八十二、Round 309：模块加载错误核对；/proc syscall 诊断方案
+
+### insmod 错误（tb-v95-1）
+```
+init ko_insmod:(1228): error(14): insmod /usr/kmod/indctr.ko
+init ko_insmod:(1228): error(1):  insmod /usr/kmod/osal_ulogio.ko ulogio_initfile=/setting/ulogio.bin
+init ko_insmod:(1213): error: open file: /usr/kmod/msen_drv.ko / nfc.ko / sata_drv.ko
+```
+- indctr.ko（LED/指示器）与 osal_ulogio.ko（日志）加载失败；msen_drv/nfc/sata 在固件里本就不存在；
+- 模块文件与 ref_e10 一致（md5 相同），失败应为环境/依赖问题，暂视为非致命。
+
+### 现象确认
+- App 主循环（0x8a3104）在跑（IMNANOSLEEP 1s/次）；
+- app/sen.elf 都向 **qid 0x20** 发 0x80000006（24B payload），返回 -1024（无效 id）；两侧都在等/发未知服务；
+- 未见 UI 初始化（IdSoTable::add 0 次、pViewManager=0、ScalarView API 0 次）。
+
+### 下一步诊断（c134，派发）
+- 探针在 i=40/50 读取 `/proc/self/task/*/syscall` 与 `comm`，打印每个线程的
+  **syscall 号 + 参数**（尤其是 futex 的 uaddr、sem 操作、poll/read fd）；
+- 目的：精确看到 App 各线程当前阻塞在哪（替代 gdb 断点，避开 QEMU gdbstub target-running 问题）。
