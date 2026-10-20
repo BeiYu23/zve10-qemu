@@ -18618,3 +18618,22 @@ a334: bl a74c            ; 把它当对象写 [+0x3c] → NULL 崩
   `ViewBase`/`DefRootView`/`ScalarView::Open`、`GRM_fbrmSetScreenPreference`、`GRM_screenGetOnBitmap`；
 - 对照 a7c2 的“生命周期入口 + 9 参数建屏”思路，ZV-E10 的建屏很可能走 `pViewManager`/`ObjDisplay_*` 或
   ViewManager 的 view 创建函数；后续可用探针主动请求建屏测试。
+
+---
+
+## 二百七十一、Round 298：卡点=信号量/C++ 同步原语；c110 计划（sem + 线程创建钩子）
+
+### c108/c109（init-unlocker）
+- c108：L=142/U=139、W/V/N/B=0（mutex 日志刷满 300 条上限）；
+- c109：cond 600/mutex 40 → W=14-15、N=12-13、V=0、B=0、L=18、U=11；
+  - `W cond=0x6EDE650` ×2、`W uxengine_res1 cond=0x0B3428 lr=0x622B401`、`uxengine_res2 0x0B3668`；
+  - `N tid190/194 ...` → **Appframework(194) 在 signal cond**，有配对；
+  - **grm_gpe(148)/grm_result(146) 从未出现在 cond hook** → 不是 pthread_cond。
+
+### Lead 分析
+- libObj 导入：`sem_init/sem_wait/sem_timedwait`（各 3/3/2 个 PLT 调用点）；`sem_post`/`osal_wai_sem_tmo` 无 PLT 调用点；
+- 线程名 `grm_gpe`(0xfd2fa9)/`grm_result`(0xfd2e97) 在 libObj .rodata，但无直接 literal 引用 →
+  推测经 `osal_create_thread(name, fn, ...)` 传入；
+- ⇒ c110 = c109 + `sem_wait/sem_timedwait/sem_trywait/sem_post/sem_init` + `osal_wai_sem_tmo`
+  + `osal_create_thread`/`osal_create_waitable_thread`/`pthread_create`（记录 name→fn 映射）；
+- 目标：拿到 grm_gpe/grm_result 的入口函数地址（反汇编其等待逻辑）+ sem 地址/post 配对，定位缺失的唤醒者。
