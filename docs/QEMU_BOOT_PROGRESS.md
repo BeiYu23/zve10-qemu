@@ -18574,3 +18574,26 @@ a334: bl a74c            ; 把它当对象写 [+0x3c] → NULL 崩
   - `0x00fa005d` → 0x00080000（size 512KB）
 - 预期 /dev/mem mmap 成功 → MonQueue 真正创建 → MonQueue 空指针崩溃应自然消失；
 - 待验证：是否出现超过 0x53000+ 的越界（则调大 size）、ZZGPEREG w 是否 >28、VDF 是否出像素。
+
+---
+
+## 二百六十九、Round 296：ab_v95 新基线；剩余门控排查（UIPC qid / SysRq 任务栈）
+
+### ab_v95（c105）结果
+- ✅ MonQueue 崩溃自然消失（根因=MonDrv::Init 的两个 Backup key 返回 0）；
+- ✅ 60 采样、gfx=560336~914848、res=115534432、wg≈gfx+2168、85s 无崩溃；
+- ❌ ZZGPEREG w=28（无首帧提交）、VDF blank；UIPC 0x80000005：ret=0 166 / -1020 122。
+
+### 剩余门控排查（Lead）
+- UIPC qid 分布（tb-v95-1）：valloc 等待 0x3e014d 4590、**0x8f013a 193**、**0x14c0424 128**、0x80003b 14；
+  sync 发送 0x3e014d 4602、**0x14c0424 130**、0x8f013a 120；
+- 还有 `0x80000006 ret=-1024`（无效 id，f0=0x20）；
+- 归属：**0x14c0424 只出现在 libObj + grm_ma.ko**（grm_ma.ko 导出 osal_reg_sync_msg_queue_cb）→ 图形内存/GRM 服务；
+  **0x8f013a 出现在 89 个库** → 公共框架服务；0x80003b 在 libBizFw+libObj；
+- 系统侧：udm_grm_ma 2.49s 完成；liro.ko 12.24s 加载完成（LIRO rev:4-MUSASHI）、udm_liro 完成。
+
+### ab_v96.img（Lead）— SysRq 全任务栈
+- ab_v95 + n15 /bin/bootin.elf wrapper 里加后台
+  `( sleep 40; echo t > /proc/sysrq-trigger; sleep 22; echo t > /proc/sysrq-trigger ) &`
+- 目的：抓 ~40s/62s 任务栈，直接看 Appframework 线程睡在 futex/osal_rcv/驱动 read 还是别处，
+  从而定位“首帧未提交”的真正等待点（而不是盲猜 qid）。
