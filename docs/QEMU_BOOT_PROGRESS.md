@@ -17685,3 +17685,35 @@ GPE 之后是否继续（HeapAllocator/GraphicsEngine/新 abort），gfx/res/wg 
 1. `emmc_console.img` → Loader2 日志（console 打开）→ 真机内核是否启动（原生固件链）；
 2. `emmc_ours.img` → 真 Loader2 启动我们的 kernel/initrd（App 链 + 正确 loader 初始化）；
 若原生链能起来，将改为“真机固件原生启动”路线，可能显著缩短到 UI 的距离。
+
+---
+
+## 二百三十二、Round 259：**发现固件自带 is_qemu 模式（/proc/version 含 "qemu"）；Loader2 卡点=icount 拖慢 udelay**
+
+### 新增仓库调研（其他仓库）
+- `qn06142/zv-e10-re`（已 clone）：ZV-E10 RE 文档（service shell/OSAL/图形路径），
+  其 `BURIED_TREASURE.md` 给出 init 的 `check_mode_file`/`is_qemu`、
+  `/setting/mode/dmode` 字符表（`0`=is_qemu、`k`=kernel-only、`g`=gdb、`d`=DUMA、`e`=oreore env）；
+- `Lost-week-1025/CXD90045-FPSU`（已 clone）：CXD90045 固件包结构 + UI 交互结论
+  （菜单机制完整，缺“触摸手势→方向”输入层）；
+- `ChambersXDU/sony-a7c2-research`、`ice21415/a6000-firmware-platform`、
+  `BI2QFA/a6300_updater_emu`（已 clone/已知）：A7C2 取证、A6000 离线 RE 平台、A6300 QEMU 更新器模拟。
+
+### ★ 固件自带 QEMU 模式（重大发现）
+反汇编 Sony `/sbin/init`（28,580B，带符号）：
+- `check_qemu()`（0x94ac）读 **/proc/version**，搜索子串 `qemu`；命中则 `is_qemu=1`（bss 0x14880）；
+- `main` 在 insmod 后检查 `is_qemu`，为 1 时跳 **QEMU 分支 0x9b78**：
+  `set_oreore_env()` → 向 **/proc/udm/drivers** 写入 **"set"**（UDM 驱动集切换）→ 继续 mount/emmc；
+- 等价触发路径：`/setting/mode/dmode` 含字符 `0`（`check_mode_file` 设置 is_qemu）。
+
+**实施**：用 `make LOCALVERSION=-qemu` 重编内核（`Linux version 3.0.27_nl-rt106-qemu`，
+zImage 已更新，旧版备份 `/mnt/build/zImage.nq.bak`）。这将让固件自动进入 QEMU 模式
+（可能跳过/替换传感器等硬件依赖），是比 loader 更直接的加速路线。
+
+### Loader2 链卡点澄清
+- 机器自动从 image 第 0 分区 EXBL 加载真 Loader2 到 0xfe047000，无需 -kernel；
+- PC 采样恒在 Loader2 的 `udelay`（`0xfe04d95c: ldr r1,[timer+0xc]; cmp; bcc`），
+  目标 2,000,000/4,000,000；timer counter 在 **`-icount shift=2`** 下仅 ~35k counts/s
+  → 真实耗时 60s+，故看起来“卡死”；
+- 处理：先去 `-icount` 用真实时间跑（延时恢复毫秒~秒级）；仍死等再用 udelay 入口 `bx lr` 补丁兜底。
+- 新脚本：`tb_run_loader2_noicount.sh`；`emmc_ours.img` 已用 qemu 版 zImage 重打。
