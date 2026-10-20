@@ -19068,3 +19068,24 @@ new(0x70)+ctor 0x8a4e28  -> ★ViewManager（ctor 末尾 0x8a4f62 写 pViewManag
   （magic 0x12345678 @+0x1c），把状态字 **w3(+0x0c) 清 0** 模拟硬件完成，打印 `FAKEGPE complete desc[i]`；
 - 其余保持 ab_v95（820a=0 等）；模块 md5 59b1d595809748e7041de907bc59e545；镜像 ab_v131。
 - 待验证：FAKEGPE 是否出现、pViewManager/IdSoTable::add 是否非 0、ZZGPEREG w 是否 >28、VDF 像素、是否崩。
+
+---
+
+## 二百九十、Round 317：ab_v131 回归（驱动侧盲写 reserved RAM）；改用户态探针 ab_v132
+
+### ab_v131 回归
+- gfx/wg=0、ZZGPEREG w=0（基线 28）、FAKEGPE=0 行；dmpgles2 ioctl 40,746（8212 13,634）；
+- 原因判定（Lead）：fake_gles 在 8212/820d 里**盲写 phys 0x2056e270（reserved RAM）**，
+  该地址在运行时可能非 descriptor 区/或写入破坏 app 早期数据 → GPE 初始化路径失败；
+- 注意：写前未做有效性判断（magic 检查也可能因地址变化而失败），风险高。
+
+### ab_v132.img（Lead，已构建）
+- 撤回模块改动，回到 **ab_v95 原模块**；
+- n7 探针 = **c140**：采样 i>=18 且 i%4==2 时：
+  - open("/dev/mem", O_RDWR) + mmap **phys 0x20000000, 8MB**；
+  - 以 0x20 步长扫描全区间找 magic `0x12345678`（descriptor w7）；
+  - 对找到项打印 `GP clear off=before=w3 w0/w1` 并 **w3(+0x0c) 清 0**；
+  - 每轮打印 `GP i found cleared first`。
+- 目的：先确认 descriptor 的真实物理地址与 w3 语义，再决定是否进内核模块实现；
+- 探针 md5 8aa490cd…；镜像 ab_v132。
+- 待验证：GP 行、gfx/wg 是否保持、ZZGPEREG 是否恢复 28、VDF 像素、是否崩。
