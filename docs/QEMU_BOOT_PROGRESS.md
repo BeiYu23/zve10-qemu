@@ -18233,3 +18233,26 @@ fake_gles 改为有状态：
 - 模块 md5 3c6e39ab94af23c347bb15bcf07942e4；镜像 **ab_v82.img = ab_v80 + 新模块**；
 - 待验证：0x774ED6 崩溃是否消失、gfx/wg 是否仍非 0、screendump 是否出现非 blank 内容；
 - 若仍越界（r0>0x10000）则 size 提 0x100000，或把寄存器区地址改到 QEMU 确信映射的 RAM（0x1F000000）。
+
+---
+
+## 二百五十三、Round 280：ab_v82 稳定 4/4；ring dump 分析；显示链路确认
+
+### ab_v82（GPE size 0x10000）验证
+- **4/4 稳定**：85s、60 采样、无 0x817 崩溃、gfx/wg 全程非 0（gfx 560336~914872, res 115518048）；
+- screendump 640×480 ✓；streamfb 日志：
+  `presenting 640x480 fmt=0 stride=2560 at phys 0x20312000` + `buffer is blank (all 0x00000000)`；
+- VDF 0x20312000 仍只有 297 字节非 0；VIP 寄存器全 0 → app 未提交帧（但 GPE 初始化已完整）。
+
+### ring dump 分析（Lead）
+- `ring_0_a7c0000.bin`（256KB）：非零 97,675 字节，范围 0x0–0x3fdf7；
+- 0x0 头部：`01000000 / ffffffff×3 / 0000… / ffffffff×2`（位图/空闲位图样式）；
+- **0x18000 起是一组含指针的结构**（0x6a7dxxxx=app 栈 8,616 个；0x604a/0x6085xxxx=libObj 段 6,154 个），
+  非纯数据命令流；按 320×240 RGB565/RGBA4444 渲染为条纹图（1540 色），**不是像素缓冲**；
+- 结论：ring 内容是“命令/对象表（带指针）”，需先定位**写入者**再定格式，硬解风险高。
+
+### 下一步（已派）
+- A) 运行中 20s/40s/60s 三次 ring dump → 对比增量定位提交位置/步长；
+- B) `/proc/<im.elf.real>/maps` 中 ring 映射的 VA/size 与 VDF 映射 → 探针加 memcpy/memmove 拦截
+  （dest 落在 ring VA 内即打印 caller LR），钉死“命令写入 libObj 函数”；
+- 并行：沿 `GRM_gpermFillrect/Rectblit` 内部调用链继续跟，或离线 patch 其入口跳探针 hook 记录参数。
