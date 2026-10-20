@@ -17835,3 +17835,30 @@ n15（/usr）改动（已校验）：
   `LDR_E:Init Power[-206]`；跳过 -206 后前进到 FAT/BootMode，仍卡 `LDR_E:Pwr bootmode[-205]`；
 - 4 个电源 IC 模型均 CRC 不匹配（hibari/mb89083/sc901572/upd79f；ca 触发 QEMU 断言）；
 - 结论：不盲目跳 Pwr 错误分支；loader 要过必须实现 ZV-E10 期望的 PowerIC 应答/CRC（后续逆向）。
+
+---
+
+## 二百三十七、Round 264：早期崩定位到 **PhyKeyConfig 初始化读 0x7a000x 按键配置**；c78 轨迹探针
+
+### 队友定位（符号解析）
+- ab_tb_v62b + initrd_q（init 不认 qemu）+ qemu 内核：exec 链正常
+  （bootin→im.elf→im.elf.real、Y9 alive、C libObj），但 ~11.5s **THREAD_INFRA0** 崩；
+- `pc=0x0628c722` → `infra_input_sus+0x38e`；`pc=0x06290722` → `PhyKeyConfigFree+0x12ca`；
+  fault=0xaf/0x1e3 等小整数 → 配置字段被当成指针解引用；
+- 证明 `target=qemu` 本身不消除早期崩（此前“qemu 内核 2/2 不崩”是 init qemu 分支没拉起 app 的假象）。
+
+### Lead 静态反汇编确认
+崩点函数实为 **PhyKeyConfig 初始化**（objdump 落在 `PhyKeyConfigFree` 符号后，起点 ~libObj+0x8c65fe）：
+- `r4=this`，初始化 `[r4+0x200/0x204/0x208/0x20c/0x210]`；
+- 随后连续 `Backup_read@plt` 读取 **id 0x007a0005 / 0x007a0007 / 0x007a0006**（字面量表 0x8c68a0），
+  每个 `cmp r0,#4`（期望 4 字节），成功则 `str r3,[r4+0x200]` 等写入；
+- 崩点 0x8c6722 正在这些 store 附近 → **0x7a000x 按键配置记录读到的尺寸/内容错误**。
+
+### 新取证工具：c78 轨迹探针 + ab_v63
+- `libgrmlog-c78.so`（68528B，布局不变，base 仍 0x59ca000）：在 Backup_read/Backup_nread 增加
+  **单次 write 轨迹** `BR5 id buf n r caller_lr` / `BN5 …`（限前 300 条），不改 clamp 逻辑；
+- `ab_v63.img` = ab_tb_v62b + n7 c78（md5 c4991654665f58d221f39572edeed1b1），
+  配 `initrd_q.img` + qemu 内核使用；
+- 目的：拿到 0x7a0005/6/7 的 datasize/返回值/调用者，确认是“尺寸异常大、读取失败还是内容为垃圾”。
+- 预案 c79：若确认该族期望 4 字节，则对 `0x007a0000–0x007a00ff` 强制 4B 语义
+  （成功即拷 4B；失败/尺寸异常写 0 并返回 4），避免垃圾值写入对象字段。
