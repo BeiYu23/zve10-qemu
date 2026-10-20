@@ -18919,3 +18919,17 @@ init ko_insmod:(1213): error: open file: /usr/kmod/msen_drv.ko / nfc.ko / sata_d
 - 探针在 i=40/50 读取 `/proc/self/task/*/syscall` 与 `comm`，打印每个线程的
   **syscall 号 + 参数**（尤其是 futex 的 uaddr、sem 操作、poll/read fd）；
 - 目的：精确看到 App 各线程当前阻塞在哪（替代 gdb 断点，避开 QEMU gdbstub target-running 问题）。
+
+---
+
+## 二百八十三、Round 310：从 kikilog 抓 App 自身日志（ab_v123）
+
+### 思路
+- `kikilog.ko` 内含 `/tmp/kikilog.dat`，App 通过 `libInfraKikiLogGenerator` 写日志；
+- `osal_ulogio.ko` 加载失败（error 1，args `ulogio_initfile=/setting/ulogio.bin`，文件存在），但 kikilog.dat 应仍在；
+- 在 bootin wrapper 里加 55s 后台 dump：`dd if=/tmp/kikilog.dat bs=4096 count=24 | tr -d '\0' > /dev/console`。
+
+### ab_v123.img（Lead，已构建）
+- = ab_v95 + wrapper 修改（仅加了后台 dump，不影响主链）；
+- 目的：直接读 App 内部日志中关于 boot/view/sensor/服务缺失的记录，定位“UI 初始化为何未触发”。
+- 其他线索：App/sen.elf 都向 qid 0x20 发 24B 消息（-1024 无效 id）；indctr.ko 加载失败。
