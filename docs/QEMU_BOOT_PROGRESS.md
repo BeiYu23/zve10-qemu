@@ -18413,3 +18413,21 @@ w4=0x0044f000 w5=0x00000000 w6=0x0010f000 w7=0x12345678 (magic)
   各打印前 300 条 r0–r3；
 - 镜像 ab_v87 = ab_v82 + c93；
 - 目的：确定 Appframework 到底在等待哪个 UIPC qid / 哪个服务，从而补最小应答者。
+
+---
+
+## 二百六十一、Round 288：**Backup 服务协议解析 + 最小应答者 ab_v88**
+
+### libbackup 协议（Lead 反汇编）
+- `Backup_nread(id,buf,size)`：栈消息 `[msg0=-1][id][buf][size]` → `backup_sync_msg(msg, uipc_id=0x3e014d, 30, type=3)`；
+- `Backup_read(id,buf)`：`[msg0=-1][id][buf]`，type=2；
+- `Backup_read_4Byte(key)`：`[msg0=-1][key]`，type=1；
+- 调用返回后客户端读 **msg[0] 作为服务状态**。
+⇒ 最小应答者：把 msg[0] 置 0、返回 0 即可让客户端认为成功。
+
+### ab_v88.img（Lead）
+- n7 = c94（基于 c93）：interpose `osal_snd_sync_msg`；
+- 条件 `qid==0x3e014d && msg[0]==0xffffffff`：打印 `B <m0..m3>` / `b <m4..m7>`（前 40 条），
+  然后 **msg[0]=0，return 0**（模拟 Backup 服务成功）；
+- 其它消息原样转发；镜像 ab_v88 = ab_v82 + c94；
+- 待验证：Backup 心跳是否停止空转、ZZGPEREG 写是否 >28、VDF 是否出现像素、是否新崩点。
