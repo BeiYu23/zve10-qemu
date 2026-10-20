@@ -17939,3 +17939,28 @@ n15（/usr）改动（已校验）：
 - 旧内核备份：`/mnt/build/zImage.nq.bak`（无 qemu 串、无 NEON）。
 - 待验证：ab_v66 + zImage.neon → UNDEF 是否消失、是否出现 60 采样/gfx/wg 变化；
   若仍有 UNDEF 再试 `OPENSSL_armcap=0`；内核 `__list_del` Oops 单独用串口栈定位。
+
+---
+
+## 二百四十一、Round 268：NEON UNDEF 真根因 = QEMU A5 只给 16 个 D 寄存器（MVFR0.SIMDREG=1）
+
+### 证据链
+- 开 `CONFIG_NEON` 后 pc 从 `libcrypto.so.3+0x16B3C8`（`vld1.8 {d0-d1}`）前进到 **+0x16B3D8**：
+  `f96e 0aad vld1.32 {d16-d17},[lr :128]!` —— 使用 **D16–D31**；
+- QEMU `target/arm/translate-neon.inc.c::trans_VLDST_multiple`：
+  ```c
+  if (!dc_isar_feature(aa32_simd_r32, s) && (a->vd & 0x10)) return false; /* UNDEF */
+  ```
+  `aa32_simd_r32` = `MVFR0.SIMDREG >= 2`（32 个 D 寄存器）；
+- QEMU cortex-a5 原 `mvfr0 = 0x10110221` → **SIMDREG=1（仅 D0–D15）** → 访问 d16+ 即 UNDEF；
+- 原厂 libcrypto 使用 d16–d17 ⇒ 真机 CXD90045 Cortex-A5 为 **VFPv4-D32（32 个 D 寄存器）**，
+  我们的模型少给了寄存器。
+
+### 修复
+- `target/arm/cpu.c` cortex_a5_initfn：`mvfr0 = 0x10110221` → **`0x10110222`**；
+- 补装 gtk3/mad 开发包后 reconfigure（`--disable-werror`）并全量重编：
+  `arm-softmmu/qemu-system-arm`（16:28，69,498,400B，md5 980ab41718f5139421dd06bcfb7d76c1），
+  备份 `/mnt/build/qemu-system-arm.a5d32`；cpu.o 内已确认新常量（旧值 0 处）；
+- 该修复对所有使用 D16–D31 的固件库生效，不是绕过。
+- 待验证：ab_v66 + zImage.neon → libcrypto UNDEF 是否消失、是否进入 appinit/60 采样、
+  gfx/wg 变化与新崩点。
