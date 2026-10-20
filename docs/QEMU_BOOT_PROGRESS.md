@@ -18489,3 +18489,25 @@ w4=0x0044f000 w5=0x00000000 w6=0x0010f000 w7=0x12345678 (magic)
     作为 buf，仅清零 min(size,256)；都不像指针则完全不写（避免 0x3e000b 类错误）；
   - 所有分支 *status=0；日志 K/k/P。
 - 待验证：P 行地址是否合法、0x3e000b 崩是否消失、-1020 是否≈0、ZZGPEREG w 是否 >28、VDF 是否出像素。
+
+---
+
+## 二百六十五、Round 292：ab_v90 崩点真实语义 = `osal_reg_sync_msg_queue_cb` 输出句柄为 NULL；ab_v91 最小跳过
+
+### ab_v90 结果（init-unlocker）
+- `P 5efffbfc 8`：启发式选 buf 正确，不再写 0x3e000b；`-1020` 降到 18；
+- 但崩：`im.elf.real+0x2330`、`address=0x3c`、写 NULL+0x3c。
+
+### 反汇编定位（Lead）
+```asm
+a31a: bl osal_reg_sync_msg_queue_cb(..., r1=&[r7+0x3c], ...)
+a320: cbz r0,a330
+a330: ldr r0,[r7,#60]    ; 注册输出句柄（栈上为 0）
+a334: bl a74c            ; 把它当对象写 [+0x3c] → NULL 崩
+```
+- 崩因是**注册函数没有写回有效句柄**，不是 backup 返回数据；该路径在 backup 超时时未走到，backup “成功”后被暴露。
+
+### ab_v91.img（Lead）
+- ab_v90 + im.elf.real VMA 0xa334（file 0x2334）`00 f0 0a fa`(bl a74c) → `00 bf 00 bf`(2×NOP)；
+- 目的：越过“服务注册返回空句柄”点，验证能否推进到 GPE 首帧；
+- 待验证：0x3c 崩是否消失、ZZGPEREG w 是否 >28、VDF 是否出现像素。
