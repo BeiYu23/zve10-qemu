@@ -18870,3 +18870,29 @@ view/SCALARDUMMY0、view/STL_REC_SMILE_AUTO
 ### c130（派发）
 - `vm[0x14] = &{0,NULL}`；调 `0x8a4b60(vm,2,0)` → 读 pViewManager(base+0x149221c) → openView("view/SCALAR",0)。
 - 后续可能需补 [this+0x60]/[this+0x6c] 等字段。
+
+---
+
+## 二百八十一、Round 308：ViewIdSoTable 确为零；0x8a4b60 未写 pVM；转 gdb 断点 + 事件钩子诊断
+
+### c130/c131（init-unlocker）
+- c130：`0x8a4b60(vm,2,0)` 不崩、ret 非零，但 **pViewManager 仍 0**（未走到写 pVM 的尾部）；
+- c131：`ViewIdSoTable`（base+0x1492444）**t0=t1=0**（连 vtable 都没有）→ 静态构造/注册从未执行；
+- `0x8a4d20(vm)` 崩在 address=0x14（需要对象字段）。
+
+### 结论
+- 手工“零对象 + init”走不通：view 子系统在 App 当前流程里**从未初始化**；
+- 需要确认 App 的 UI 初始化路径是否被进入、以及 App 收到哪些事件。
+
+### c132/c133（Lead 派发）
+1) **c132**：interpose `EventManager::push(Event*,bool)`（libObj 通过 PLT 导入）打印 event id + flag + caller，
+   看启动期事件流（对照 a7c2 的 INIT/MENU 事件）；
+2) **c133**：QEMU `-s` + gdb-multiarch 硬件断点：
+   `BASE+0x8a3104`（应用主循环）、`BASE+0x8a4b60`（ViewManager init）、
+   `BASE+0x8a20a8`（IdSoTable::add）、`BASE+0x8a69bc`（ViewIdSoTable::getInstance）；
+   - 若主循环命中而 manager init 不命中 → App 主循环在跑但未进入 UI 分支；
+   - 若全不命中 → UI 初始化代码从未执行，必须找触发事件。
+
+### 另注
+- 0x8a4b60 prologue 有 `mov r9,r1`（arg1=2），尾部 `ldr [r9,r3]` 取 pViewManager 的 GOT，
+  字段/寄存器约定仍需以 gdb 实测为准。
