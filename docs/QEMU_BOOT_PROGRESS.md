@@ -18769,3 +18769,25 @@ view/SCALARDUMMY0、view/STL_REC_SMILE_AUTO
 ### c124 实验（派发）
 - 探针 i=40 直接调 `libObj+0x14117c("view/SCALAR",0)`（依次再试 mode 1/2、ROOT_SELECTOR、HARDKEYMENU_DISP 等）；
 - 判据：新 IMOPEN、ZZGPEREG w>28、VDF 像素、screendump 变化、是否崩。
+
+---
+
+## 二百七十七、Round 304：**pViewManager 唯一写入点定位**；c126 手动创建 ViewManager 实验
+
+### 静态分析（Lead）
+- `pViewManager`（libObj+0x149221c）GOT 槽 0x13dc7b4（GOT 基址 0x13d7c28 → 槽内偏移 **0x4b8c**）；
+- 全 libObj 仅 4 处引用该偏移；**唯一写入**在 **0x8a4f5a–0x8a4f62**：
+  `ldr r3,[pc] (0x4b8c)` → `str r5,[r3]`（pViewManager = this）；
+- 该代码位于函数 **0x8a4a5c**（this=r0），唯一调用者是 **0x8a5e9c**：
+  事件分发器（0x8a5b5e 的大 switch）中 **case event_id==1** → `r0=this; bl 0x8a4a5c`；
+- ⇒ ViewManager 对象需先由别处创建，再经事件 id=1 的 init 写入 pViewManager。
+
+### c121/c124/c125 复盘
+- ScalarView::Open 等 API 0 调用；openView 5 个 view 全部崩在 `address=0x10`；
+- pViewManager=0（c125 实测）；viewUnified2 已加载（23.6s）、工厂函数可 new 出对象。
+
+### c126 实验（派发）
+- 探针 i=40：静态零缓冲 vm[0x400] → 调 `(libObj+0x8a4a5c)(vm)` → 读 pViewManager → 若非 0 调
+  `(libObj+0x14117c)("view/SCALAR",0)`；
+- 判据：是否仍崩 address=0x10、ZZGPEREG w 是否 >28、VDF 像素、screendump；
+- 若 init 崩 → 按对象字段（+0/+4/+32/+0x60/+0x6c）准备结构或改走 dispatcher 路线。
