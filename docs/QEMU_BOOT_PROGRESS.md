@@ -18063,3 +18063,27 @@ poison 说明该区域与内核内存管理发生重叠/被释放后复用。
 运行期 dump：`/proc/udm/dmm_extents`、`dmm_units`、`dmm_info`、`dmm_log`、`dmesg | grep dmm`，
 并在 ~16s 用 QMP `pmemsave` 存 `phys 0x00312000`（mspace）与 `phys 0x11000000`（首个 extent）。
 据此判断 DmmConfig 解析是否失败（extents 空 → 回退 kmalloc），再决定修 dmm 参数/内存预留或 fake。
+
+---
+
+## 二百四十五、Round 272：**更正 PAGE_OFFSET=0x60000000 → grm_ma mspace 在 /dev/stream VDF 缓冲 0x20312000**
+
+### 更正
+- 内核 `.config`：`CONFIG_VMSPLIT_1_5G=y` → **CONFIG_PAGE_OFFSET=0x60000000**；
+  启动日志 `high_memory: b0000000` 与 1280MB 总量吻合（0x60000000+0x50000000=0xB0000000）；
+- 因此 `mspace r4=0x80312008` → 物理 **0x20312008**（不是此前误算的 0x00312008）；
+- **0x20312000 = /dev/stream 的 VDF 图形缓冲基址**（历史：`stream mmap off=0x20312000 len=0x2000000`，
+  bionz-streamfb 呈现的就是这块）⇒ grm_ma 的 mspace 建在 VDF 图形缓冲上，语义合理；
+  0x5a5a5a5a 是 **其元数据被 0x5a 填充覆盖**，而不是“DMM 回退到内核 RAM”。
+
+### 问题性质变化
+候选写入者：
+- firmware 自身 stream/VDF 初始化（可能用 0x5a 作“未初始化/毒化”填充）且时序在 mspace 创建之后；
+- 我们的显示侧：bionz-streamfb 只读，但 VIP/cpyfb 模型或 machine 的 WBI 装载可能写这块
+  （WBI 段 `wbimem=0x2A48000@0x20200000` 覆盖 0x20200000–0x22C48000，含 0x20312000）；
+- 或 app 内某模块对整块 VDF buffer memset 0x5a。
+
+### 取证计划（已派 init-unlocker）
+- QMP 在 ~8s 与 ~16s 各 dump `phys 0x20312000 size 0x4000`，对比 0x5a 出现时机；
+- guest 读 `/proc/udm/dmm_extents`、`dmm_units`、`dmm_info`；`dmesg | grep -iE 'stream|vdf|dmm'`；
+- 由第一个 0x5a 偏移反推写入者范围。
