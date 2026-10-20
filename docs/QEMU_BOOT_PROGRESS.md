@@ -17912,3 +17912,30 @@ n15（/usr）改动（已校验）：
 - **P5**（ab_v66）：n15 libObj `0x8c2718`：`1b b9`(cbnz) → `00 bf`(nop)，
   插入节点时直接替换头并跳过对垃圾头的遍历（防御性验证；不改其它逻辑，P1/P4 保留）；
 - 待队友跑 ab_v65×2 / ab_v66×2（initrd_q + qemu 内核）验证。
+
+---
+
+## 二百四十、Round 267：P5 有效；NEON UNDEF 根因=内核 CONFIG_NEON 未开，已重编
+
+### P5 验证结果（init-unlocker）
+- ab_v65（c80 单独）：2/2 仍崩 `infra_input_sus+0x38e`（libObj+0x8C2722）→ c80 不是该崩点原因；
+- ab_v66（c80+P5）：**0x8C2722 崩点消失**（P5 的“直接覆盖链表头、跳过坏头遍历”有效），
+  但暴露两类新崩点：
+  1) **THREAD_INFRA2 UNDEF（trap_no=6）@ `libcrypto.so.3`**：
+     `pc=0x044c23c8`(libcrypto+0x16B3C8) `f921 0a0d vld1.8 {d0-d1},[r1]!`（NEON），
+     `lr=0x044c1720`；
+  2) 一次回到内核 Oops：`__list_del`(list.h:89) pc=0x601ae0dc（老 f2fs/list 类）。
+
+### NEON 根因（Lead 定位）
+- QEMU cortex-a5 **有 NEON**（`set_feature(ARM_FEATURE_NEON)`，has_neon 默认 true）；
+- 但内核 `.config` **CONFIG_NEON 未开** → `vfp_init()` 不会置 CPACR 的 NEON 位（CP10/CP11 SIMD）
+  → 用户态执行 NEON 指令即 UNDEF；
+- 故 `OPENSSL_armcap` 类环境变量未必有效——不是选路错，而是**硬件访问未使能**。
+
+### 修复
+- `.config` 开启 `CONFIG_NEON=y / VFPv3=y / VFPv4=y`，重编内核
+  **`/mnt/build/zImage.neon`**（1,769,456B，md5 5c986fcc2cdcb4cccff9c58fa80dc34f，
+  `Linux version 3.0.27_nl-rt106-qemu #131`），已替换默认 `arch/arm/boot/zImage`；
+- 旧内核备份：`/mnt/build/zImage.nq.bak`（无 qemu 串、无 NEON）。
+- 待验证：ab_v66 + zImage.neon → UNDEF 是否消失、是否出现 60 采样/gfx/wg 变化；
+  若仍有 UNDEF 再试 `OPENSSL_armcap=0`；内核 `__list_del` Oops 单独用串口栈定位。
