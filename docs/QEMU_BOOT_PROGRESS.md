@@ -18690,3 +18690,25 @@ a334: bl a74c            ; 把它当对象写 [+0x3c] → NULL 崩
 - 探针在 i=40 调 `createEvent(0x1ab,1)` + `pushFilterEvent(ev)`，100ms 后 `createEvent(0x1ab,0)` + push；
 - 判据：ZZGPEREG w 是否 >28（开始提交绘制）、VDF 像素、是否崩；
 - 备选键码 0x1ab(MENU)/0x1ac(ENTER)/0x306；备选路径 snd_InfraInputEvent_to_InputServant 直接投 24B 事件。
+
+---
+
+## 二百七十四、Round 301：**总根因：UI 视图库 viewUnified2.so 从未被加载**
+
+### 证据链
+- `InputService::activate/createEvent/pushFilterEvent` 的调用方是 **viewUnified2.so**（UI 视图库）；
+- 运行日志中 71 个 IMOPEN 库**没有任何 viewUnified/scalar/scene 库**；
+- ⇒ App 从未打开 View → `InputService::m_pMyInstance = NULL`（c117 实测 `INJ2 inst=0`）
+  → 输入注入无效（c115/c116）→ 无绘制请求（ZZGPEREG w=28）→ VDF/0x22bb2000 全空。
+- `viewUnified2.so` NEEDED 仅 CautionConfig.so/libgcc_s.so.1/libc.so.6，依赖均满足，可手动 dlopen。
+
+### 菜单视图入口（Lead 反汇编 viewUnified2.so）
+- `ViewGlobalMenuToInstance` @0x2e4c0e：`new(0x16c)` + ctor(this, r1)，**返回视图对象**；r0 未用、r1=父/上下文；
+- `ViewBaseMenuToInstance` @0x2de0f6：`new(0x15c)` + ctor；
+- `ViewSettingMenuToInstance` @0x2f36f4：同样形态。
+
+### c118 实验（派发）
+1) 探针 i=40 时 `dlopen("/usr/lib/viewUnified2.so", RTLD_NOW|RTLD_GLOBAL)`；
+2) 调 `ViewGlobalMenuToInstance(0,0)`（每次运行一个入口）；
+3) 观察是否新增 IMOPEN、ZZGPEREG w 是否 >28、VDF 像素、是否崩。
+- 备选：若工厂函数不崩但无绘制，改走“找 App 正常触发 dlopen(view) 的上游事件”，或使用 `pViewManager`(libObj 0x149221c) 注册/切换视图。
