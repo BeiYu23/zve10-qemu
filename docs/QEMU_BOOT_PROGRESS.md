@@ -18037,3 +18037,29 @@ poison 说明该区域与内核内存管理发生重叠/被释放后复用。
 - 保留：8211/8212 写回 0、FB=256KB、不写 VIP/内核 RAM；模块 38,560B md5 c36065b1…；
 - `ab_v73.img` = ab_tb_v66v + 新 `/kmod/grm_gles.ko`（md5 校验通过）；
 - 待验证：grm_ma poison 是否消失、是否推进到 GPE/GraphicsEngine 初始化。
+
+---
+
+## 二百四十四、Round 271：grm_ma 崩点精确解码 → mspace 建在**内核可用 RAM**（DMM 走了 kmalloc 回退）
+
+### 寄存器↔反汇编对齐（Lead）
+- grm_ma.ko（ARM 模式）`mspace_malloc`=`0x20CC`；崩点 `0x25FC = mspace_malloc+0x530`：
+  ```asm
+  25d0: ldr r3,[r4, r3, lsl #2]   ; mspace smallbin 链表头
+  25fc: ldr r1,[r3,#4]            ; 崩：r3=0x5a5a5a5a → 访问 0x5a5a5a5e
+  ```
+- 寄存器：`r4=0x80312008` = mspace；Sony 内核 `PAGE_OFFSET=0x80000000` ⇒ 物理 **0x00312008**；
+- 0x00312008 位于内核 **available RAM**（启动日志：`Memory: 120840k/120840k available`，
+  首个可用区约 1MB–15MB）；该内存被 SLUB 以 0x5a（POISON_INUSE）填充 → smallbin 头被毒化。
+- ⇒ **grm_ma 的 mspace 被建在内核普通 RAM 上**，而不是 DmmConfig 的预留 extents
+  （0x11000000/0x15800000/0x23e00000…，对应 VA 应为 0x91xxxxxx 级）；即 **DMM 走了 kmalloc 回退**。
+- 与 fake_gles 的 mmap 缓冲无关（per-open DMA 已验证两次 open 不同 phys、ctx 顺序复用）。
+
+### 已排除
+- `/setting/DmmConfigExtra.bin`：固件包与实盘 /setting 均无此文件（可选），不是缺失；
+- `libInfraUpmPro.so`（7564B, md5 874222fd…）：ab_v3/v9/v38/v49/v52/v73 全部一致，非近期替换。
+
+### 下一步取证（已派 init-unlocker）
+运行期 dump：`/proc/udm/dmm_extents`、`dmm_units`、`dmm_info`、`dmm_log`、`dmesg | grep dmm`，
+并在 ~16s 用 QMP `pmemsave` 存 `phys 0x00312000`（mspace）与 `phys 0x11000000`（首个 extent）。
+据此判断 DmmConfig 解析是否失败（extents 空 → 回退 kmalloc），再决定修 dmm 参数/内存预留或 fake。
