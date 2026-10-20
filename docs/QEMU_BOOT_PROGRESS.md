@@ -19220,3 +19220,32 @@ new(0x70)+ctor 0x8a4e28  -> ★ViewManager（ctor 末尾 0x8a4f62 写 pViewManag
   - pVM 非 0 → 线程确实卡在 sem（且 ViewManager 创建成功）；
   - pVM 仍 0 → 线程卡在 uxengine_init 内部（未到 0x8a2ee0）；
 - 修复了 ab_v136 的次生崩溃问题（不跳过 uxengine_init，WidgetSystem 不会为 NULL）。
+
+---
+
+## 二百九十七、Round 324：**真正卡点 = /dev/ldec LDEC_EXIT 等 DMA 完成**；patch dmac.ko 修复（initrd_q4 / ab_v139）
+
+### 突破（init-unlocker c146/c147/c148）
+- SysRq 抓到 Appframework D 状态栈：
+  `schedule_timeout ← boss_hw_dmac_start_wait+0x1ec [dmac] ← ldec_exit+0x110 [ldec] ← ldec_ioctl`;
+- 用户态 interpose ioctl 跳过 `cmd=1 (LDEC_EXIT)` 后：**pViewManager 从 i=12 起非 0**（ViewManager 创建成功！），
+  app 开始大量操作 `/dev/ui`（19k 次），但 ZZGPEREG w=28、VDF blank、无崩溃；
+- openView 仍崩（address=0x10），因 view 未注册（IdSoTable::add=0）。
+
+### 根因分析（Lead）
+- `dmac.ko` 的 `boss_hw_dmac_start_wait`（0x0fc8）写完 DMA 寄存器后等“完成标志 + 等待队列”：
+```
+11a0: ldr r3,[r6,#0x100]   ; 完成标志
+11a4: cmp r3,#0
+11a8: bne 0x11c4 (done, r7=0)
+11ac: schedule_timeout(6000) ; 循环
+```
+- QEMU 无该 DMA 硬件/中断 → 永远等不到。
+
+### 修复（干净、无需用户态 hack）
+- `initrd_q4.img`（/root/fw/handoff_p0/）：
+  - `/kmod/dmac.ko` vma 0x11a0（file 0x11d4）：`00 31 96 e5`(ldr r3,[r6,#0x100]) → **`01 30 a0 e3`(mov r3,#1)**；
+    ⇒ 完成检查恒真，start_wait 直接成功返回；
+  - `/lib/libgrmlog.so` = c142 探针（打印 PV pVM）；
+- 同时构建 **ab_v139.img**（镜像内 n7 分区同样 patch dmac.ko + c142 探针）；
+- 待验证：pVM 是否非 0、/dev/ui 活动、ZZGPEREG w 是否 >28、VDF 像素、是否崩。
