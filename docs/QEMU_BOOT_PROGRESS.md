@@ -17717,3 +17717,36 @@ zImage 已更新，旧版备份 `/mnt/build/zImage.nq.bak`）。这将让固件�
   → 真实耗时 60s+，故看起来“卡死”；
 - 处理：先去 `-icount` 用真实时间跑（延时恢复毫秒~秒级）；仍死等再用 udelay 入口 `bx lr` 补丁兜底。
 - 新脚本：`tb_run_loader2_noicount.sh`；`emmc_ours.img` 已用 qemu 版 zImage 重打。
+
+---
+
+## 二百三十三、Round 260：**is_qemu 逻辑全链路逆向完成**
+
+### 三层判定（都以 /proc/version 含 "qemu" 为准）
+1) **Sony init**（28,580B）：
+   - `check_qemu()`(0x94ac) 打开 **/proc/version**，扫描子串 `qemu` → 置 `is_qemu`(bss 0x14880)=1；
+   - 等价路径：`/setting/mode/dmode` 含字符 `0`（`check_mode_file` 0x93b0）；
+   - `main` 0x9a64 检查 is_qemu：为 1 → 跳 **QEMU 分支 0x9b78**：
+     `set_oreore_env()` → `open("/proc/udm/drivers",O_WRONLY)` 写入 **"set"**（UDM 驱动集切换）
+     → 继续 insmod/check_oreore3/mount → 启动 `/usr/bin/bootin.elf`；
+2) **bootin.elf**：
+   - 0x939c 函数读 **/proc/version**（同款 "qemu" 扫描）→ 返回 1 时 `flags |= 4`；
+   - target 选择（0x9956-0x9984）：
+     `Backup_read(0x1b0092)&0xff0000==0x10000` → **" target=resub "**；
+     否则 `flags&4` → **" target=qemu "**；否则默认 " "；
+   - 同时读 `/setting/mode/dmode`（字符表：`'0'..'3'`→四个 target 字符串指针，`p`=flag 0x40、
+     `l`=0x42、`w`=8、`g`=0x10、`s`=0x20）与 `/setting/mode/preload`（读 498B，与 4 个已知
+     LD_PRELOAD 串比较后 `putenv LD_PRELOAD=...`，即受限的预加载注入点）；
+   - 最终以 `target=qemu`、`dmode=<…>` 等参数启动 `/usr/bin/im.elf`；
+3) **im.elf**：argv 选项表含 `target=`/`qemu`/`cipa`/`usbj`/`normal`/`nodebug`/`notrace`/`test`/
+   `killall`/`dummy_susres`/`imdb`/`imssi` 等（0x4573 起字符串表 + 0xaa64 起指针表解析），
+   `target=qemu` 命中后走 QEMU 目标分支；
+4) **libIMDB.so**：含 `IMDB:qemu` 模式字符串（六种 manifest 模式之一），用于 QEMU 模式下
+   选择不同的模块/库初始化清单。
+
+### 已实施与待验证
+- 已重编内核 `LOCALVERSION=-qemu`（`Linux version 3.0.27_nl-rt106-qemu`）→ 同时触发 init、bootin
+  两层 qemu 判定；
+- 待验证：`ab_v61/tb21` 等 App 链镜像用 qemu 版内核跑 → 观察 `/proc/udm/drivers="set"`、
+  im.elf target=qemu 后的初始化差异（传感器/HDMI/媒体是否被跳过）、早期崩是否减少；
+- 备选触发路径：initrd 内加 `/setting/mode/dmode`（内容 `0`）可独立于内核版本启用 is_qemu。
