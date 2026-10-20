@@ -18959,3 +18959,21 @@ bootin.elf { file=<mode_file> } { dmode=<debug_mode> } { amode=<app_argv> }
   `ls -l /tmp/kikilog.dat` + `dd if=/tmp/kikilog.dat bs=4096 count=32 > /dev/console` + `ls -l /tmp`；
 - 去掉 `tr`（guest 无该命令，上次失败原因）；
 - 目的：拿到 App 自身日志，直接看“UI 初始化为何未触发/缺什么”。
+
+---
+
+## 二百八十五、Round 312：kikilog 二进制格式；ab_v128 在 guest 内提取日志字符串
+
+### kikilog.dat（init-unlocker c136）
+- 1,957,888 字节，二进制环形日志（尾部全 0xFF）；记录含 `xx xx 68/69 6a`（时间戳 0x6a68xxxx/0x6a69xxxx）等字段；
+- 直接 dd 到串口不可读（且会因 115200 带宽阻塞，需 loglevel=1 的 lowlog cmdline）。
+
+### ab_v128.img（Lead，已构建）
+- = ab_v95 + c138 探针：i=45 时**在 guest 内**流式读取 `/tmp/kikilog.dat`，
+  提取可打印 ASCII 串（≥6 字符），以 `KL0 <text>` 输出（≤700 行，~40KB），结束 `KL done`；
+- 避免传 1.9MB 二进制；n15 /bin/bootin.elf 权限 0755 已确认。
+- 待验证：能否提取出 App 日志文本，内容是否指出 UI 初始化缺失项。
+
+### 其他
+- bootin.elf 权限若为 0644 会导致 app 无法启动（samples=0）——后续所有镜像构建后需检查权限；
+- 低带宽 dump 大文件需配 `real_cmdline_lowlog.txt`（loglevel=1）。
