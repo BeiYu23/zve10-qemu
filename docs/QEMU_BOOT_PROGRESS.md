@@ -19249,3 +19249,25 @@ new(0x70)+ctor 0x8a4e28  -> ★ViewManager（ctor 末尾 0x8a4f62 写 pViewManag
   - `/lib/libgrmlog.so` = c142 探针（打印 PV pVM）；
 - 同时构建 **ab_v139.img**（镜像内 n7 分区同样 patch dmac.ko + c142 探针）；
 - 待验证：pVM 是否非 0、/dev/ui 活动、ZZGPEREG w 是否 >28、VDF 像素、是否崩。
+
+---
+
+## 二百九十八、Round 325：ViewManager 创建确认（initrd_q4）；新基线 ab_v140/initrd_q5（registration 观测）
+
+### 验证结果（init-unlocker）
+- IMAGE=ab_tb_v144（c146：fa+FK8+PV+sysrq）+ INITRD=initrd_q4：
+```
+PV i=0/4/8 pVM=0 → PV i=12 起 pVM=1402896/1417080（★非 0，ViewManager 已创建）
+dev=ldec: 1（ioctl 正常返回，不再阻塞）
+dev=ui: 19,178 次（app 驱动 /dev/ui）
+Appframework: fake_ioctl 820d msleep（GPE idle）
+ZZGPEREG w=28、VDF blank、无崩溃
+```
+- 对照：ab_v139（c142，无 FK8）+ initrd_q4 → pVM 全 0；
+  ⇒ **dmac patch + fake 0x8f013a 缺一不可**（两个修复叠加才能让 view init 继续）。
+
+### 新基线（Lead 构建）
+- **initrd_q5.img** = initrd_q4（dmac patch）+ /lib/libgrmlog.so = c147；
+- **ab_v140.img** = ab_v139（n7 dmac patch）+ c147；
+- c147 探针：fake 0x8f013a（FK8）、interpose IdSoTable::add 计数（IDA）、每 4 采样 `PV i pVM ida`、无 sysrq。
+- 待验证：pVM 是否非 0、**ida 是否 >0（view 注册）**、IDA id/name、后续 openView、ZZGPEREG/VDF。
