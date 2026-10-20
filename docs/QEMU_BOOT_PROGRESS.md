@@ -19271,3 +19271,23 @@ ZZGPEREG w=28、VDF blank、无崩溃
 - **ab_v140.img** = ab_v139（n7 dmac patch）+ c147；
 - c147 探针：fake 0x8f013a（FK8）、interpose IdSoTable::add 计数（IDA）、每 4 采样 `PV i pVM ida`、无 sysrq。
 - 待验证：pVM 是否非 0、**ida 是否 >0（view 注册）**、IDA id/name、后续 openView、ZZGPEREG/VDF。
+
+---
+
+## 二百九十九、Round 326：ab_v140/c147 回归（探针问题）；回到 c146 基线；openView 崩溃点解析
+
+### ab_v140（c147）+ initrd_q5/q4 结果
+- FK8=4、gfx/wg 非 0、dev=ui 23k+，但 **pVM=0、ida=0**、dev=ldec=0；
+- 对照：同一 initrd_q4 下 c146 探针 → pVM 从 i=12 起非 0；
+- ⇒ **回归来自 c147 探针本身**（我的 osal_snd_sync_msg hook 在 dlsym 未就绪时对非目标 qid 返回 -1，破坏早期 UIPC/ldec 路径）。
+- 结论：丢弃 c147；工作基线 = **ab_tb_v144 (c146) + initrd_q4**。
+
+### openView 崩溃点解析（Lead）
+- 崩点 `0x8a3b72`：`ldr r0,[r0,#16]` → 取对象的 +0x10（EventManager*），然后 `EventManager::push`;
+- 之前 address=0x10 说明 manager 对象 +0x10 为 NULL（手工伪造的 ViewManager 没设置该字段）；
+- 现在 app 自己创建的 ViewManager（pVM 非 0）应已设置 +0x10，可重试 `viewManagerIf::openView`。
+
+### 下一步（派发 c148）
+- 基于 c146：去掉 sysrq、保留 FK8/ida/PV；
+- 在 i=30 调 `(libObj+0x14117c)("view/SCALAR", 0)` 并打印返回值；
+- 观察：是否还崩 address=0x10；若成功 → ZZGPEREG w 是否增长、VDF 是否出像素。
