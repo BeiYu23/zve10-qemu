@@ -19024,3 +19024,24 @@ sen/im      0x80000006 qid=0x20     -> -1024（无效 id）
 - interpose osal_snd_sync_msg：qid==0x8f013a 时打印 msg[0..7]+lr 后**直接 return 0**（伪造成功）；
 - interpose osal_snd_msg：qid==0x20 时直接 return 0；
 - 判据：gfx/wg 保持、ZZGPEREG w>28、VDF 像素、pViewManager/IdSoTable::add 是否终于非 0。
+
+---
+
+## 二百八十八、Round 315：0x8f013a 非 UI 门控；怀疑 ulogio 加载早于 /setting 挂载（ab_v130 延迟重载）
+
+### c143/c144 结果（init-unlocker）
+- c143：伪造 osal_snd_sync_msg(qid=0x8f013a) 成功 → **-1020 122→2**（证实 0x8f013a 是同步 log/ulogio 服务）；
+- c144：60 采样、gfx/wg 非 0、无崩溃、-1020=2，但 **pViewManager=0、IdSoTable::add=0、ZZGPEREG w=28** →
+  **log 服务缺失不是 UI 门控**；
+- c142 的 osal_snd_msg(qid 0x20) hook 方式破坏启动（samples=0），弃用。
+
+### 时间线推断（Lead）
+- `osal_ulogio.ko` 加载于 **2.134s**，参数 `/setting/ulogio.bin`，模块报 `[ulogio] setting data not specified!`；
+- app 直到 **3.815s** 才成功 SENOPEN `/setting/sen/smode` → **/setting 在 2.1s 可能尚未挂载**；
+- 若成立：ulogio 因文件不可读而 init 失败（error 1）；延迟加载应可修复，并让 0x8f013a/0x20 服务自然出现。
+
+### ab_v130.img（Lead，已构建）
+- = ab_v95 + wrapper 后台任务（exec im.elf 前）：
+  `( sleep 12; insmod /usr/kmod/osal_ulogio.ko ulogio_initfile=/setting/ulogio.bin; echo rc; lsmod|grep ulog; insmod /usr/kmod/indctr.ko; echo rc ) > /dev/console &`
+- bootin.elf 权限 0755；其它保持 ab_v95。
+- 待验证：ulogio/indctr 重载是否 rc=0、-1020/-1024 是否消失、pViewManager/IdSoTable::add 是否变非 0、ZZGPEREG/VDF 变化。
