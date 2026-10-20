@@ -18107,3 +18107,14 @@ poison 说明该区域与内核内存管理发生重叠/被释放后复用。
    写入 0x5a5a5a5a/0x5a 时打 `ZZPOISON write addr=.. size=.. val=.. pc=.. lr=..`；
    已重编 QEMU（18:10，md5 c8a6788f719d025991e89f4e10724a2f），备份 `qemu-system-arm.a5d32-watch`。
 - 待验证：ab_v76 → MS5/BZ5（用户态）或 ZZPOISON（内核态）出现即定位写入者。
+
+---
+
+## 二百四十七、Round 274：镜像基底纠错（v66v 模块无 8211 修复）→ ab_v77
+
+- 发现 `ab_tb_v66v.img` 的 `/kmod/grm_gles.ko` md5=`29dc7024…`，**不含 0xc0048211 写回 0 修复**；
+  基于它的 ab_v75/v76 因此重新出现 8211 轮询（tb-v76-1：66,060 次，跑到 77s）；
+- ab_v75 另有探针 bug（memset 拦截在 dlsym 解析前返回空操作）→ 已修（手写循环兜底 + 递归 guard）。
+- 新镜像 **ab_v77.img** = ab_v73（我的模块：per-open DMA + 8211/8212 写回 0 + FB 256KB + 无 VIP
+  写内核 RAM，md5 `c36065b1…`）+ n7 c83b 追踪探针（md5 `4063dbc1…`，含 MS5/BZ5 标签）。
+- 待验证：8211 次数正常、MS5/BZ5（用户态）或 ZZPOISON（内核态）定位 0x5a 写入者。
