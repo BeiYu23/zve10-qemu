@@ -19107,3 +19107,30 @@ new(0x70)+ctor 0x8a4e28  -> ★ViewManager（ctor 末尾 0x8a4f62 写 pViewManag
   - w3!=0 时清 0 并打印 `GP clear before=`;
   - 每轮打印 `GP i found cleared`。
 - 探针 md5 ee9d3964…；目的：确认 11 条 GPE 命令 descriptor 的真实位置/字段/随时间变化，以及清 w3 是否触发 App 前进。
+
+---
+
+## 二百九十二、Round 319：解码 FAKEGLES ioctl 输入；ab_v133 清 w3 无效；ab_v134 事件值轮询实验
+
+### ab_v133 结果（init-unlocker）
+- 精确找到 **11 个 descriptor @0x2056E270**，字段与 QMP dump 一致（w0=0x116F000,w1=0x2056DB0,w2=0x117F000,w3=1,w5=0,w6=0x10F000）；
+- i=10 把 11 个 w3 全清 0 → **app 行为完全不变**（ZZGPEREG 28、VDF blank、gfx/wg 正常、无崩溃）；
+- ⇒ **w3 不是 app 等待的完成位**；app 不读也不回写这组 descriptor。
+
+### FAKEGLES ioctl 输入解码（Lead，tb-v95-1 前 64 条）
+稳态循环：
+```
+8211 w=[2, 0f848d38, 061577b1, 06e2fca8]
+8211 w=[1, 0,        0f848d48, 06e2fca8]
+8212 w=[1, 06e2fca8, 0f848d48, 0f848d38]
+8212 w=[2, 061577b1, 061577b1, 0f848d48]
+820d w=[0, 0f848d38, 061577b1, 06e2fca8]
+```
+- w[0] = op id（1/2）；820d 的 w[0]=0 = 等事件；
+- 我们 820d 一直返回事件值 1（固定），可能是错的。
+
+### ab_v134.img（Lead，已构建）
+- fake_gles：820d 返回**轮询候选事件值** {1,0x10,0x100,0x1000,0x10000,0x80}（msleep 1ms）；
+- 探针 c142：每 4 个采样打印 `PV i=<i> pVM=<pViewManager>`（base+0x149221c）；
+- 目的：一次运行内找出能否解锁 uxengine_init（pVM 变非 0 = ViewManager 创建成功）。
+- 待验证：PV 是否变非 0、gfx/wg、ZZGPEREG、VDF、崩溃。
