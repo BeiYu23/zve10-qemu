@@ -19291,3 +19291,26 @@ ZZGPEREG w=28、VDF blank、无崩溃
 - 基于 c146：去掉 sysrq、保留 FK8/ida/PV；
 - 在 i=30 调 `(libObj+0x14117c)("view/SCALAR", 0)` 并打印返回值；
 - 观察：是否还崩 address=0x10；若成功 → ZZGPEREG w 是否增长、VDF 是否出像素。
+
+---
+
+## 三百、Round 327：ViewManager 基线确认；openView 静态单例缺失；转向输入注入（InputService 可能已实例化）
+
+### c148b 结果（init-unlocker）
+- ab_v95 + c148b + initrd_q4：PV i=12 起 pVM 非 0（ViewManager 创建 ✓）；
+- i=30 调 `openView("view/SCALAR",0)` 仍崩 `address=0x10`（pc=libObj+0x8a3b72，lr=+0x141159）；
+- IDA=0（IdSoTable::add 仍 0）；ZZGPEREG w=28、VDF blank、dev=ui≈19k。
+
+### openView 崩溃解析（Lead）
+- `0x14114c: ldr r3,[pc,#40]`（GOT 偏移 0x4b30）→ r3 = &static（libObj 静态 0x145977c）→ `ldr r0,[r3]` = NULL；
+- 该 static 由 `0x140e66: str r0,[r3]` 设置（某 init/setInstance 函数），但 app 未调用；
+- 崩点 0x8a3b72 读 [r0+0x10]（EventManager*）→ NULL 崩；
+- 结论：openView 依赖一个 **viewManagerIf 静态入口对象**，需要在 app 流程里初始化；探针线程直接调不可行（除非先设置该静态）。
+
+### 新方向：输入注入（现在才可能成功）
+- 管理器图创建函数 0x8a2ee0 会 new **InputService(0x28)**；pVM 非 0 ⇒ InputService 可能已实例化；
+- 之前输入注入失败（c115/c116/c117）是因为 InputService NULL；
+- c149 探针（基于 c146）：i=40 读 `libObj+0x1459548`（InputService::m_pMyInstance）；
+  若非 0：调 `createEvent(inst,0x1ab,1)`（libObj+0x11c89a）→ `pushFilterEvent(inst,ev)`（+0x11e5d4），100ms 后释放；
+  每 4 采样打印 `IN i pVM inst`。
+- 判据：inst 是否非 0、ev/push 返回、**ZZGPEREG w 是否 >28、VDF 是否出现像素**。
