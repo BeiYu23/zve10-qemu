@@ -17750,3 +17750,36 @@ zImage 已更新，旧版备份 `/mnt/build/zImage.nq.bak`）。这将让固件�
 - 待验证：`ab_v61/tb21` 等 App 链镜像用 qemu 版内核跑 → 观察 `/proc/udm/drivers="set"`、
   im.elf target=qemu 后的初始化差异（传感器/HDMI/媒体是否被跳过）、早期崩是否减少；
 - 备选触发路径：initrd 内加 `/setting/mode/dmode`（内容 `0`）可独立于内核版本启用 is_qemu。
+
+---
+
+## 二百三十四、Round 261：a7c2-re「原生 QEMU 相机」成果复盘与移植路线
+
+### a7c2-re 已交付的（A7C II，aarch64 virt）
+`report/2026-10-17-qemu-native-camera/`：**已验收**原固件菜单 + 原生窗口 + 九步操作：
+- 原内核→BusyBox→原 bootin/im/appFw→菜单经原管理器生命周期进入；
+- 软件 GPE（10 条精确 copy + 59 条显式模型、BitBlit 144B、callback +0x80）+ Sony LZ77 CPU 解码；
+- AP 帧容器 HOSDAP02：128B 头 + 24930B 元数据 + 614400B 像素（640×480 RGBA4444）=
+  **639458B**，冻结元数据/位图租期锁内复制、完整写入读回后才 ACK；
+- 独立 ramfb-viewer（fw_cfg DMA，地址 `[0x41e100000,0x41e600000)`）→ QEMU GTK 真窗口，
+  QMP 截帧与 AP 逐像素一致；
+- 输入：MENU 0x1ab / ENTER 0x1ac / ↑0x3 ↓0x30 ←0x15 →0x1af / Delete 0x1f8 /
+  右后拨盘 0x10000013 ±1024；50ms 短按、拨盘有符号增量；
+- 未完成：退出菜单后的拍摄主界面、实时取景、CMOS/镜头/AF、编码/拍照/录像。
+
+### 与我们已有工作的关系
+- `runtime/analysis/` 的 `gpe-raster.c`、`gpe-sprite.c`、`sony-lz77.c`、`headless-osd.c`、
+  `menu-observe.c`、`ramfb-viewer.c` 与 `/root/fw/port_a7c2/src/` **逐字节相同**（已移植）；
+- 差异在**集成方法**而非代码：他们用“固件自身的 9 参数生命周期入口在首帧返回后请求菜单”
+  （A7C2 libObj `0x1e78870`，菜单屏 0x346、计数 44），而不是直接构造 presenter/controller；
+  并用显式软件 GPE 替换硬件 GPE 请求（拒绝未知 callback 但真实写入后才完成请求）。
+
+### 对 ZV-E10 的移植要点（下一步）
+1. 先拿 **ab_v61（fake_gles 已修）+ qemu 版内核** 的干净样本：确认 GPE `/dev/mem` mmap 成功、
+   GraphicsEngine 是否继续创建（gfx/wg 是否离开 0）；
+2. 找 ZV-E10 对应的**生命周期入口**（等价 A7C2 `0x1e78870`）与菜单屏 ID/计数
+   （此前 openView(0x75,0) 为空 Manager，需改为“在真实 UI 线程首帧返回后请求”）；
+3. 把 gpe-raster/gpe-sprite 接入我们的 libObj GRM 命令钩子（先核 ZV-E10 GRM BitBlit 结构尺寸/
+   callback 偏移是否同族）；
+4. LZ77 接到 `/dev/ldec` 缺失路径；AP 容器（639458B）接到我们的 bionz-streamfb/VIP 呈现；
+5. 输入按 a7c2 的验证方法（guest 输入队列 + 短按 + 拨盘增量）逐层核对 ZV-E10 键码。
