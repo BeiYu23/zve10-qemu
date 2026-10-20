@@ -18210,3 +18210,26 @@ fake_gles 改为有状态：
 - 镜像 **ab_v81.img**（= ab_v80 + 探针模块，md5 8c4ab61e…）。
 - 判据：nz4k>0 且 head 有结构 → app 在提交绘制命令，按 140B/槽解码 + 实现 Fill/BitBlit 软件 GPE 写 VDF；
   否则继续推“首帧/建屏”事件（a7c2 生命周期入口思路）。
+
+---
+
+## 二百五十二、Round 279：GPE 寄存器写崩溃 = fake 区 size 太小（0x1000）→ 修 0x10000（ab_v82）
+
+### 现象（init-unlocker）
+- 新 QEMU（streamfb）下 4/4 早期崩：Appframework，`pc=libObj+0x774ED6`（`str r1,[r3,r0]`，GPE 寄存器写），
+  `lr=libObj+0x775091`，`trap=0xe error=0x817`（写权限 fault）；
+- fault 地址末 3 位**恒为 0x3804**（0x0bcf3804/0x0a8f3804/0x0bafd804）→ 寄存器偏移 r0≈0x3804；
+- 这是之前 1/5 偶发崩的同一个点，换新 QEMU 后变高频（时序被放大+FAKERING printk 扰动）。
+
+### 根因判断（Lead）
+- app 的寄存器区映射来自 `rm_reg_init`：ioctl `0x80048206` 取 size → `0xc0048202` 取 addr →
+  `mmap(/dev/mem, addr, size)`；
+- fake_gles 返回 **size=0x1000（4KB）**，但 app 在 **+0x3804** 处写寄存器 → **越界写** → 0x817；
+- 真机 GPE 寄存器区显然 >0x3804（至少 0x8000+）。
+
+### 修复：ab_v82.img
+- `0x80048206` → **0x10000（64KB）**；
+- 移除 FAKERING ring 探针（其每 256 kick 的 printk 扰动时序，放大竞态）；
+- 模块 md5 3c6e39ab94af23c347bb15bcf07942e4；镜像 **ab_v82.img = ab_v80 + 新模块**；
+- 待验证：0x774ED6 崩溃是否消失、gfx/wg 是否仍非 0、screendump 是否出现非 blank 内容；
+- 若仍越界（r0>0x10000）则 size 提 0x100000，或把寄存器区地址改到 QEMU 确信映射的 RAM（0x1F000000）。
