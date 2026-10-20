@@ -17619,3 +17619,32 @@ QEMU: /mnt/build/src/qemu-sony/arm-softmmu/qemu-system-arm（5.1, cxd90045+GTK�
 ### 下一步
 ab_v61 多跑（≤10 次）命中干净样本：确认 `mmap to register area ... failed` 是否消失、
 GPE 之后是否继续（HeapAllocator/GraphicsEngine/新 abort），gfx/res/wg 是否变化。
+
+---
+
+## 二百三十、Round 257：upstream 资源调研（老机型 QEMU 模拟器）
+
+### 检索结果（GitHub，经 mihomo 代理搜索）
+- **未找到 A7M3（ILCE-7M3）专属 QEMU 模拟器**；最接近的老机型方案是：
+  - `ma1co/qemu`：Sony 相机 QEMU 分支，`hw/arm/bionz.c` 支持 cxd4108/4115/4132/90014/**cxd90045**；
+    `hw/display/bionz_vip.c` 带 `qemu_console`+`dpy_gfx_update`（与我们的显示模型同源）；
+    `hw/input/bionz_buttons.c`、`bionz_touch_panel.c`、`hw/misc/bionz_power/{hibari,piroshki}.c`；
+  - `ma1co/OpenMemories-CI`：在多款老机上跑 QEMU 并截图验证菜单；其中 **`tests/test_cxd90045.py`**
+    是 CXD90045（DSC-HX99）完整启动用例（bootrom/内核/initrd/emmc 构建、`-icount shift=2`、
+    hibari/piroshki 电源 IC 设备接线）；`tests/test_cxd4108.py` 演示 **QMP sendKey 注入 +
+    screenshot 逐像素比对**的交互验证框架；
+  - `BI2QFA/a6300_updater_emu`：α6300（CXD90014）更新器固件在 QEMU（Windows）运行，基于 ma1co/qemu。
+- 已克隆到本地：`/mnt/build/ref-ma1co-qemu`、`/mnt/build/ref-openmem-ci`。
+
+### 两个可复用情报
+- `Lost-week-1025/CXD90045-FPSU`：ZV-E10 菜单机制本身是完整的，缺的是“触摸手势→方向”的
+  输入消费层 → 后期可从“移植 UI”降级为“补输入层”；
+- `qn06142/zv-e10-re`：确认图形路径为 DMP SUGILITE（`/dev/dmpgles2` 17 命令 ioctl，仅 1 条到硬件），
+  与 fake_gles 分析一致。
+
+### 下一步实验（据 upstream 配方）
+1. runner 加 `-icount shift=2`（确定性时序）→ 目标压掉 ~4/5 的随机早期崩；
+2. 按 test_cxd90045.py 接 `bionz_hibari`/`bionz_piroshki`（/sio3、/sio1 + gpio5 接线）→
+   满足固件电源/硬件探测；
+3. 干净样本确认 GPE mmap 是否成功（fake_gles 已修）；
+4. 后期用 OpenMemories-CI 的 sendKey/screenshot 框架做“可交互”证据。
