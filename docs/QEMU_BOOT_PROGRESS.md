@@ -18977,3 +18977,24 @@ bootin.elf { file=<mode_file> } { dmode=<debug_mode> } { amode=<app_argv> }
 ### 其他
 - bootin.elf 权限若为 0644 会导致 app 无法启动（samples=0）——后续所有镜像构建后需检查权限；
 - 低带宽 dump 大文件需配 `real_cmdline_lowlog.txt`（loglevel=1）。
+
+---
+
+## 二百八十六、Round 313：Appframework 线程入口 = uxengine_init；fake GPE 查询命令响应实验（ab_v129）
+
+### 线程描述符解析（Lead）
+- `Application_System_Init` 的 osal_create_thread 参数是静态 desc（libObj+0x1455f24）：
+  `+0 name="Appframework", +4 flags=4, +8 fn=0x8a2399(thumb), +0x10 stack=0x83`；
+- **Appframework 线程入口 = 0x8a2398**，反汇编：
+  `bl 0x6271d4(uxengine_init+8)` → 构造对象(0x8a2ee0) → 调用 0x8a2314 → **0x8a3104 (app 主循环)**；
+- 结合 SysRq（Appframework 在 fake_ioctl 820d 的 msleep 中）⇒ **Appframework 卡在 uxengine_init 内部的 GPE 等待循环**，
+  即 UI 引擎初始化在等待 GPE 响应——这就是 UI 初始化未完成的直接原因。
+
+### ab_v129.img（Lead，已构建）
+- ab_v95 + 新 fake_gles：对 GPE 查询命令给“像真驱动”的响应：
+  - `0x8004820a`（查询）：返回 1（非零）；
+  - `0xc0048203`（in/out 控制寄存器，app 置 0x4000000 后查 bit24）：返回 `w[0] | 0x01000000`；
+  - 8211/8212/820d 等保持原样；
+- 模块 md5 764d7e0f890eadf44fef6bf24ec19b4c；镜像 ab_v129 = ab_v95 + 新模块。
+- 目的：若 uxengine_init 卡在 GPE 查询/状态位，新的返回值应让它通过，进而调用 ViewManager init / 产生绘制请求。
+- 待验证：GPE ioctl 计数变化、uxengine 线程状态、ZZGPEREG w 是否 >28、VDF 像素、是否崩。
