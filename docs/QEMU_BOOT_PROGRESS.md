@@ -18998,3 +18998,29 @@ bootin.elf { file=<mode_file> } { dmode=<debug_mode> } { amode=<app_argv> }
 - 模块 md5 764d7e0f890eadf44fef6bf24ec19b4c；镜像 ab_v129 = ab_v95 + 新模块。
 - 目的：若 uxengine_init 卡在 GPE 查询/状态位，新的返回值应让它通过，进而调用 ViewManager init / 产生绘制请求。
 - 待验证：GPE ioctl 计数变化、uxengine 线程状态、ZZGPEREG w 是否 >28、VDF 像素、是否崩。
+
+---
+
+## 二百八十七、Round 314：ab_v129 回归确认；UIPC 配对统计发现 0x8f013a 全部 -1020
+
+### ab_v129（820a→1）结果：回归
+- 60 采样、无崩溃，但 **gfx=0、wg=0、ZZGPEREG w=0**；
+- `0x8004820a` 被调用 **6794/6912 次**（基线 ~12）→ 陷入“pending 查询”循环；
+- `0xc0048203` 0 次；
+- 结论：**820a 返回非 0 = 有 pending 事件**，会让 app 走 kick 分支空转；**820a/8203 应保持 0**（ab_v95 行为）。
+
+### UIPC 配对统计（tb-v95-1，Lead）
+```
+im.elf.real 0x80000005 qid=0x3e014d -> 0     (83)
+im.elf.real 0x80000005 qid=0x8f013a -> -1020 (60)  ★ 全部超时
+sen.elf     0x80000005 qid=0x3e014d -> 0
+sen/im      0x80000006 qid=0x20     -> -1024（无效 id）
+```
+- **0x8f013a 服务从不回应**（sync 全超时）；该 id 出现在 89 个库，疑为 ulogio/log 服务；
+- `osal_ulogio.ko` 加载失败（error 1，"[ulogio] setting data not specified!"），但 /setting/ulogio.bin 与真机备份 md5 一致；
+- qid 0x20 疑为 log 接收队列（kikilog/ulogio），同样无效。
+
+### c142 实验（派发）
+- interpose osal_snd_sync_msg：qid==0x8f013a 时打印 msg[0..7]+lr 后**直接 return 0**（伪造成功）；
+- interpose osal_snd_msg：qid==0x20 时直接 return 0；
+- 判据：gfx/wg 保持、ZZGPEREG w>28、VDF 像素、pViewManager/IdSoTable::add 是否终于非 0。
