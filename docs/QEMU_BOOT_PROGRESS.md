@@ -19089,3 +19089,21 @@ new(0x70)+ctor 0x8a4e28  -> ★ViewManager（ctor 末尾 0x8a4f62 写 pViewManag
 - 目的：先确认 descriptor 的真实物理地址与 w3 语义，再决定是否进内核模块实现；
 - 探针 md5 8aa490cd…；镜像 ab_v132。
 - 待验证：GP 行、gfx/wg 是否保持、ZZGPEREG 是否恢复 28、VDF 像素、是否崩。
+
+---
+
+## 二百九十一、Round 318：用户态 descriptor 探测无回归但无效果；精确窗口扫描 ab_v133
+
+### ab_v132（c140）结果
+- 无回归：gfx/wg 正常、ZZGPEREG w=28、0x1800=11、60 采样、无崩溃；
+- 扫到 **1 个** descriptor：`0x2056DAC0`，w3=1→清 0；但 **app 行为不变**（VDF blank、无绘制）；
+- 原因：从 0x20000000 以 0x20 步长扫描，而目标 descriptor 在 **0x2056E270+0x20*i（%0x20=0x10）** → **被步长错过**；
+- 0x2056DAC0 是另一组/另一队列的 magic，w1=0x8000000（与已知 w1=0x02056db0 不同）。
+
+### ab_v133.img（Lead，已构建）
+- = ab_v95 + c141 探针：i=10/18/26/34/42/50 时 mmap phys 0x20500000(1MB)，
+  在 **0x2056E000–0x2056F000 步长 4** 找 magic 0x12345678；
+  - 每个命中打印 `GP desc i= off= w0..w3,w5,w6`；
+  - w3!=0 时清 0 并打印 `GP clear before=`;
+  - 每轮打印 `GP i found cleared`。
+- 探针 md5 ee9d3964…；目的：确认 11 条 GPE 命令 descriptor 的真实位置/字段/随时间变化，以及清 w3 是否触发 App 前进。
