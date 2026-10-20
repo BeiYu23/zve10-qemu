@@ -19180,3 +19180,26 @@ new(0x70)+ctor 0x8a4e28  -> ★ViewManager（ctor 末尾 0x8a4f62 写 pViewManag
 - 探针 c142（每 4 采样打印 PV pVM）；
 - 目的：让线程走到 0x8a2ee0 内部，看 ViewManager ctor 能否写 pViewManager；
 - 若崩，pc/lr 指示还缺哪些依赖；若 pVM 非 0，说明 ViewManager 可独立创建，下一步只跳过“等待点”而非整函数。
+
+---
+
+## 二百九十五、Round 322：0x8a2ee0 sem 推断；ab_v137 主动 signal 实验；0x617740 崩溃解析
+
+### ab_v136 崩溃解析（Lead）
+- 崩点 `0x617740`: `ldr r3,[r0,#0x514]; add; str`（自增计数）；
+- 调用者 `0x62c9e4`: `ldr r0,[global]; bl 0x617740` → r0 = **ux::wgtsys::WidgetSystem 单例**；
+- ab_v136 跳过了 uxengine_init → WidgetSystem 全局为 NULL → r0=0 → 写 NULL+0x514 崩；
+- 反证：ab_v95 里 uxengine_init 正常执行（gfx/wg 非 0 = WidgetSystem 已创建），线程是**之后**才卡住。
+
+### 推断
+- Appframework 线程：uxengine_init（成功，创建 gfx/wg）→ **0x8a2ee0**（管理器图）→ 开头
+  `osal_wai_sem_tmo(sem=0x83037a, -1)` 无限等待；
+- 该 sem 很可能是“GPE/显示初始化完成”信号（真机由 GPE 管理线程/驱动 post）；
+- 我们 fake GPE 不产生该 signal → 线程永远卡住 → ViewManager 从未创建（pVM=0）。
+
+### ab_v137.img（Lead，已构建）
+- 探针 c144（基于 c105）：每 4 采样打印 `PV i pVM`，并从 i>=8 起每 4 采样调用
+  `osal_sig_sem(0x83037a)`（dlsym 获取），打印 `SIG i r`；
+- 其余完全 ab_v95（无 patch、无回归风险）；
+- 目的：主动 signal 该 sem，看 0x8a2ee0 是否继续并创建 ViewManager（pVM 非 0）。
+- 待验证：SIG 返回码、pVM 是否非 0、后续绘制/崩溃。
