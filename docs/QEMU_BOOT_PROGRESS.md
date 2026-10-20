@@ -19045,3 +19045,26 @@ sen/im      0x80000006 qid=0x20     -> -1024（无效 id）
   `( sleep 12; insmod /usr/kmod/osal_ulogio.ko ulogio_initfile=/setting/ulogio.bin; echo rc; lsmod|grep ulog; insmod /usr/kmod/indctr.ko; echo rc ) > /dev/console &`
 - bootin.elf 权限 0755；其它保持 ab_v95。
 - 待验证：ulogio/indctr 重载是否 rc=0、-1020/-1024 是否消失、pViewManager/IdSoTable::add 是否变非 0、ZZGPEREG/VDF 变化。
+
+---
+
+## 二百八十九、Round 316：**ViewManager 真正 ctor = 0x8a4e28；管理器图创建 = 0x8a2ee0；GPE 完成模拟 ab_v131**
+
+### 反汇编突破（Lead）
+- 函数 **0x8a2ee0**（Appframework 线程入口 0x8a2398 调用；参数=栈对象+名字串）创建整个管理器图：
+```
+new(0x28)+ctor 0x8a1688  -> EventManager 类
+new(0x28)+ctor 0x8a196c  -> InputService 类
+new(0x58)+ctor 0x8a7124
+new(0xac)+ctor 0x8a8fbe  -> ModelManager
+new(0x70)+ctor 0x8a4e28  -> ★ViewManager（ctor 末尾 0x8a4f62 写 pViewManager=this）
+[r4+0] = ViewManager*
+```
+- ⇒ 之前把 0x8a4b60 当 init 是错的；**ViewManager 由 0x8a4e28 构造**，且必须在 0x8a2ee0 里创建；
+- pViewManager=0 ⇒ Appframework 线程**未走到 0x8a2ee0**，即卡在 uxengine_init（GPE 初始化等待）。
+
+### ab_v131.img（Lead，已构建）
+- fake_gles 新模块：每次 8212 kick / 820d 时扫描 phys **0x2056e270** 的 16 个 0x20 descriptor
+  （magic 0x12345678 @+0x1c），把状态字 **w3(+0x0c) 清 0** 模拟硬件完成，打印 `FAKEGPE complete desc[i]`；
+- 其余保持 ab_v95（820a=0 等）；模块 md5 59b1d595809748e7041de907bc59e545；镜像 ab_v131。
+- 待验证：FAKEGPE 是否出现、pViewManager/IdSoTable::add 是否非 0、ZZGPEREG w 是否 >28、VDF 像素、是否崩。
