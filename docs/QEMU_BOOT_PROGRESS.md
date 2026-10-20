@@ -18637,3 +18637,29 @@ a334: bl a74c            ; 把它当对象写 [+0x3c] → NULL 崩
 - ⇒ c110 = c109 + `sem_wait/sem_timedwait/sem_trywait/sem_post/sem_init` + `osal_wai_sem_tmo`
   + `osal_create_thread`/`osal_create_waitable_thread`/`pthread_create`（记录 name→fn 映射）；
 - 目标：拿到 grm_gpe/grm_result 的入口函数地址（反汇编其等待逻辑）+ sem 地址/post 配对，定位缺失的唤醒者。
+
+---
+
+## 二百七十二、Round 299：**重大线索：UI 帧缓冲可能是 0x22bb2000（0x96000=640×480×2），不是 0x20312000**
+
+### 发现（Lead，从 init-unlocker 早期 maps 快照）
+```
+0d4c9000-0f4c9000 rw- off=0x20312000 stream   (32MB, 视频 VDF 口；只写过 297B)
+0f6c9000-0f75f000 rw- off=0x22bb2000 stream   (0x96000 = 614400 = 640×480×2 !)
+```
+- 第二个 stream 映射大小**正好等于 640×480×2 字节** → 极可能是 UI/OSD 16bpp 帧缓冲；
+- 我们 streamfb 一直监视 0x20312000（视频口）→ 若 UI 画在 0x22bb2000，就能解释“gfx/wg 已建、线程 idle、VDF blank”。
+
+### 工具（Lead）
+- runner 增加 `EXTRA` 环境变量支持（提交 d6a000f），可现场覆盖 streamfb：
+  `EXTRA="-global driver=bionz-streamfb,property=addr,value=0x22bb2000"`（format 可 0/1/2）。
+
+### osal_create_thread 签名（Lead 反汇编 Hotplug_Init @0x89a1b4）
+- `osal_create_thread(struct thread_desc *d)` 单参数；desc 布局：
+  `+0x00 name, +0x04 flags(=4), +0x08 fn(Thumb), +0x0C arg, +0x10 u16(=200)`
+- 已告知 init-unlocker 按此修正 hook，以获得 grm_gpe/grm_result 的 name→fn 映射。
+
+### 下一步
+1) QMP dump phys 0x22bb2000（0x96000）看是否有 UI 像素；
+2) 用 EXTRA 让 streamfb 直接看 0x22bb2000，尝试出第一张原生 UI 截图；
+3) 并行修正线程创建 hook，反汇编 grm 线程入口确认等待对象。
