@@ -18531,3 +18531,22 @@ a334: bl a74c            ; 把它当对象写 [+0x3c] → NULL 崩
   （= /mnt/build/Backup.bin.real，1,235,836B，与 Backup.bak 同尺寸）；
 - initrd_q2 = initrd_q + /sbin/init 的 `Backup_load=0` → `Backup_load=1`；
 - 待验证：backup.ko 是否不再 size err/早崩、UIPC -1020 是否大减、ZZGPEREG w 是否 >28、VDF 是否出像素。
+
+---
+
+## 二百六十七、Round 294：真实 Backup 数据生效；libMWF MonQueue NULL 门控；ab_v93/v94
+
+### ab_v92 + initrd_q3 结果（init-unlocker）
+- ✅ 无 `backup size err`、无 backup.ko 崩溃 → 真实 Backup.bin + Backup_load=1 修好 backup.ko 初始化；
+- `-1020` 仍 72 次（部分应答）；
+- 新崩：`MonQueue::GetQueueRemain(this=0)` `libMWF.so+0x32372`（`ldr r3,[r0]`），
+  `lr=+0x323bb`（EnQueue 内）→ **MonQueue 对象 NULL 是下一个门控**，与 backup 成败无关。
+
+### initrd_q2 事故（Lead）
+- 写回时 dd 8MB 切片覆盖 2.18MB ext2（破坏 superblock）→ 废弃；统一用 init-unlocker 重建的 **initrd_q3.img**。
+
+### ab_v93 / ab_v94（Lead，均已校验）
+- ab_v92 基础上 patch n15 `/lib/libMWF.so`：
+  - **ab_v93**：`GetQueueRemain @0x32372` `03 68 80 b5` → **`00 20 70 47`**（movs r0,#0; bx lr），恒返回 0；
+  - **ab_v94**：ab_v93 + `EnQueue @0x32392` `42 68 98 b5` → **`00 20 70 47`**（null 直接返回）；
+- 待验证：libMWF 崩是否消失、是否出现新空对象、ZZGPEREG w 是否 >28、VDF 是否出像素。
