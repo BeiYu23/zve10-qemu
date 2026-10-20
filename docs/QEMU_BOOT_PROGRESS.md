@@ -18191,3 +18191,22 @@ fake_gles 改为有状态：
 - 新 QEMU 18:54（69,529,856B，md5 `d51eef5e92f5ff162919427af562a8b3`），备份
   `/mnt/build/qemu-system-arm.a5d32-sfb`；默认 addr=0x20312000/640×480/format=XRGB8888/blank-pattern=on；
 - 待验证：screendump 变 640×480；出现 blank-pattern（VDF 为空）还是有实际帧（格式需调）。
+
+---
+
+## 二百五十一、Round 278：显示链路与渲染缺失定位；ab_v81 命令队列探针
+
+### 队友取证（ab_v80 成功运行时）
+- `phys 0x79800000`（VIP 寄存器）**全 0** → bionz_vip 从未被编程（黑屏必然）；
+- `phys 0x20312000`（VDF）仅 **297 字节非 0** → **app 没有渲染/提交完整 UI 帧**；
+- 结论：真机 UI 由 SUGILITE GPU 渲染 → VDF → LDEC 扫描；QEMU 里两者都缺。
+
+### Lead
+- 判定路线 A（fake VIP 测试图案）**不需要**：已把 `bionz_streamfb` 移植进当前树，
+  直接把 VDF phys 0x20312000 镜像到 DisplaySurface（不依赖 VIP 寄存器），
+  且先于 bionz_vip 创建（默认 console）；新 QEMU md5 d51eef5e…；默认 640×480/XRGB8888/blank-pattern。
+- 路线 B（软件 GPE）第一步：在 fake_gles 的 `0xc0048212` kick 中加入 **ring 探针**：
+  每 256 次 kick 打印 `FAKERING kick=N nz4k=<前4KB非零数> head=<前48B hex>`（ring=per-open DMA 缓冲）。
+- 镜像 **ab_v81.img**（= ab_v80 + 探针模块，md5 8c4ab61e…）。
+- 判据：nz4k>0 且 head 有结构 → app 在提交绘制命令，按 140B/槽解码 + 实现 Fill/BitBlit 软件 GPE 写 VDF；
+  否则继续推“首帧/建屏”事件（a7c2 生命周期入口思路）。
