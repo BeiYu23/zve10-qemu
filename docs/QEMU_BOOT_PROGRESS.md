@@ -17517,3 +17517,35 @@ ab_v56      c71 日志自旋锁 + InfraDial 黑名单 + clamp + mmap 取证（�
 - 根文件系统 `/` 仍 94%（2.5G 空闲）——迁移前可另行清理 `/root/upstream-pr`(1.6G)、
   `/root/wechat-devtools`(1.2G)、`/root/fw/zve10_v12`(317M)、`/root/fw/ref_zv1f`(159M) 等
   与本项目无关/其它机型资料（/root/dev 为独立 89G 数据卷，不属于根盘）。
+
+---
+
+## 二百二十七、环境迁移完成（pve+lxc → 压平 Kubuntu 裸机）与恢复验证
+
+### 新环境
+```text
+主机: cokee-mini, Ubuntu (Kubuntu) 7.0.0-30-generic x86_64
+根盘: /dev/nvme0n1p3 111G
+数据盘: /dev/sdc (LABEL=build, 458G) → 挂载回 /mnt/build（23G 内容，资产完整）
+旧 /root/fw: 从 /mnt/restore/root/fw 恢复（6.4G），git 在 5f5d88d
+QEMU: /mnt/build/src/qemu-sony/arm-softmmu/qemu-system-arm（5.1, cxd90045+GTK）
+内核: /mnt/build/src/a7c-kernel/linux/arch/arm/boot/zImage
+工具链: /mnt/build/toolchain/armv7-eabihf--glibc--stable-2018.02-1/bin/arm-buildroot-linux-gnueabihf-*
+新装: libmad0（QEMU 运行库）、gdb-multiarch、imagemagick
+```
+
+### 25s 冒烟（ab_v58.img，c73 maps 可写性保护）
+- 启动正常：`Y9 alive`、`C libObj`、libObj base 0x59ca000；系统异常监视器正常；
+- **`BRDSKIP read id=0xd50097 / 0xd50093 / 0x1190001`**：c73 保护生效，
+  **原先确定性野写 0x6e63000 不再出现**；
+- 新崩点：`address=0x00000090`、pc=libObj+0x8c2722、lr=0x040715dd；
+  反汇编为 `ldr r2,[r3]`，r3 来自 `[r6,#0x9c]` 的链表头被写成小整数 0x90；
+  samples=0（appinit 前）；
+- 解读：跳过非法目标拷贝避免了野写，但调用方使用未初始化数据后继续执行并暴露下一个坏指针点；
+  可能与 0x1190001/0xd5009x 等“缺失记录/老数据”有关，待 gdb 定位调用方。
+
+### 恢复计划
+1. ab_v58（c73）2-3 次复核 BRDSKIP 清单与新崩点稳定性；
+2. gdb 在 Backup_read 入口抓 0x1190001/0xd5009x 的调用方（id/buf/caller 偏移）；
+3. 定位 libObj+0x8c2722 的 r6 对象与 `[r6+0x9c]` 写入来源；
+4. 继续向 appinit / GPE abort 推进。
