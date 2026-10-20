@@ -18821,3 +18821,26 @@ view/SCALARDUMMY0、view/STL_REC_SMILE_AUTO
 - 首次调用时构造静态对象（0x8a6998 构造，内含数组分配）并 `__cxa_atexit` 注册；
 - 返回 pc-relative 静态地址。
 ⇒ c127 直接调 `ViewIdSoTable::getInstance()` 即可获得有效表，无需手动 new。
+
+---
+
+## 二百七十九、Round 306：ViewIdSoTable 表内容来源分析（IdSoTable::add 由 viewUnified2 导入）
+
+### c127 结果（init-unlocker）
+- `ViewIdSoTable::getInstance()` 返回静态实例 `libObj+0x1492444`；
+- init(0x8a4a5c) 随后在 0x8a4ae4 `ldr r3,[r0]` 读到垃圾指针 **0x2247E1A4** 崩（表条目未填/未映射）。
+
+### Lead 分析
+- `ViewIdSoTable::getInstance()` @0x8a69bc 是懒加载单例：guard + `__cxa_guard_acquire` + ctor 0x8a6998：
+  只调基类 ctor 0x8a0128 并写 vtable，**自身不分配/不填表**；
+- `IdSoTable::add(int, char const*, char const*)` @0x8a20a8：libObj 与 **viewUnified2.so 都引用它**（viewUnified2 为 undefined import）；
+  ⇒ **表应由 viewUnified2 加载时的静态注册代码（C++ 静态构造）通过 add 填充**；
+- 疑点：0x2247E1A4 落在保留物理区（0x20000000+），可能是“未映射的数据/描述符指针”，
+  即表某些条目指向 viewUnified2 额外映射的数据（0x103cb000 len 0x228000 那块），而我们手动 init 的上下文里未映射/未初始化。
+
+### 下一步（候选）
+1) 运行期 dump `ViewIdSoTable` 静态对象（libObj+0x1492444）前 0x40 字节 + 条目数组内容，
+   判断表是否被 viewUnified2 静态 ctor 填过、条目是 id 还是指针；
+2) 若表为空 → 说明 viewUnified2 的静态 ctor 未跑/跑失败（可能因 lib 是“数据+代码”混合加载，或 dlopen 时机在 view 框架初始化之后）；
+3) 若条目指向未映射区 → 找 viewUnified2 加载时应建立的额外映射（0x103cb000 段）并复现；
+4) 备选：走 dispatcher(0x8a5b5e) 的 event_id==1 正规初始化（需要 Event layout）。
