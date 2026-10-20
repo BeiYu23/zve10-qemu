@@ -18431,3 +18431,24 @@ w4=0x0044f000 w5=0x00000000 w6=0x0010f000 w7=0x12345678 (magic)
   然后 **msg[0]=0，return 0**（模拟 Backup 服务成功）；
 - 其它消息原样转发；镜像 ab_v88 = ab_v82 + c94；
 - 待验证：Backup 心跳是否停止空转、ZZGPEREG 写是否 >28、VDF 是否出现像素、是否新崩点。
+
+---
+
+## 二百六十二、Round 289：**backup_sync_msg 协议确认**；ab_v89 直接 interpose 它绕开 UIPC
+
+### 协议（Lead 复核 libbackup 反汇编 + init-unlocker c98 实测）
+- `backup_sync_msg` **定义在 libbackup.so**（T），但通过自身 PLT 调用；
+- AAPCS：`backup_sync_msg(void *status, unsigned qid, unsigned size, unsigned type, varargs…)`
+  - r0=status, r1=0x3e014d, r2=size, r3=type；
+  - payload（id/buf/size）为第 5–7 参数（栈）→ 对应 c98 实测 m0=size/m2=type/m6=id/m7=buf；
+- 客户端返回后读 `*status`。
+- 仅把 `*status=0` 不够（init-unlocker c98 变体崩 libMWF.so 写 NULL）→ 需要按 type 填数据。
+
+### ab_v89.img（Lead，已校验）
+- n7 = c99：interpose `backup_sync_msg` 本体；qid==0x3e014d 时**不发送 UIPC**，本地应答：
+  - type1（read4Byte）→ `*status` = 0xfa00a3:0x20312000 / 0xfa00a4:0x100000 / 其它 0；
+  - type3（nread）→ buf 清零 ≤256B，`*status = size`；
+  - type2/其它 → `*status = 0`；
+  - 打印 `K/k` 前 64 条供核对；其它 qid 转发真实现；
+- 原有 Backup_read/nread/read_4Byte clamp 保留；镜像 ab_v89 = ab_v82 + c99。
+- 若 K/k 不出现（libbackup 自身 PLT 解析）→ 下一版把 backup_sync_msg 入口做**文件级跳板**（ab_v90）。
