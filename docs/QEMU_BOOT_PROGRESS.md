@@ -18302,3 +18302,22 @@ n7 探针 c86 = c83b + **mmap hook**（记录 >32KB 映射：`MMP va len off`）
 - 镜像 ab_v84.img 已校验（入口字节 dff800f0 7c230204 / a4230204）。
 - 待验证：GRMF/GRMB 是否出现（app 是否走这两个 API）、参数与 lr、主链路是否仍稳定；
   若 app 不走这两 API，改 patch 内部提交链或 GRM_bitmapWriteUnlockBits 等。
+
+---
+
+## 二百五十六、Round 283：ab_v84 GRM 跳板 = GRMF/GRMB 0；诊断版 ab_v84b（BASE/DLO）
+
+### ab_v84 结果（init-unlocker）
+- libObj 跳板字节正确；但 **GRMF=0、GRMB=0**（app 未调用导出 GRM_gpermFillrect/Rectblit）；
+- 探针只打印 `X0 alive`：**dlopen hook 未触发**（无 `C libObj`/worker/采样），尽管 IMOPEN 显示 libObj 已加载；
+- 无崩溃、GPE/FAKEFLES/UIPC 活跃 → app 主链在跑，只是绘制不走这两个公开 API。
+
+### Lead 分析/下一步
+- 怀疑点：探针加载基址非 0x04021000，或 app 加载 libObj 不经可拦截 dlopen；
+- 构建诊断版 **ab_v84b.img**（n7=c88）：
+  - 构造时打印 `BASE <hook_addr> <off> <computed_base>`；
+  - 每次 dlopen 打印 `DLO <path_ptr>`（≤16）；
+  - libObj 跳板按新符号重打：Fillrect→0x0402188c、Rectblit→0x04022414（假设 base 0x04021000）；
+- 依据 BASE 结果决定：改基址重打跳板，或改走“patch libObj 构造函数启动 worker”的路线；
+- 若 app 不走导出 GRM API，则改为 patch 内部提交链（0x683e04/0x684dc0/0x684e34）
+  或 `GRM_bitmapWriteUnlockBits` 等位图锁接口。
