@@ -18394,3 +18394,22 @@ w4=0x0044f000 w5=0x00000000 w6=0x0010f000 w7=0x12345678 (magic)
 - **ab_v86.img**：ab_v85 + initrd `/sbin/init` 中 `Backup_load=0` → **`Backup_load=1`**（File offset 0x2f03）。
 - 判据：UIPC 0x80000005 的 -1020 是否减少、ZZGPEREG 写是否超过 28 条、VDF 是否出现像素。
 - 后续（若不成）：反汇编 backup.ko 的 sync-msg 回调，按协议补一个 Backup 应答者。
+
+---
+
+## 二百六十、Round 287：safe backup.ko 补丁真相；osal 消息钩子探针 ab_v87
+
+### 原版 vs safe backup.ko（Lead 对比）
+- 差异 3 字节（file offset 0x951–0x953，VMA 0x91C）：
+  - 原版 `05c44000` = **`strbeq r4,[r4]`**（r4==0 时写地址 0 → NULL deref）；
+  - safe 版 `e320f000` = **NOP**。
+- ⇒ safe 补丁是**修掉会崩的指令**，不是破坏 UIPC 应答；原版在“backup size err”分支直接写 NULL 崩
+  （ab_v85/ab_v86 都在 4.7s 崩于 backup_suspend+0x828）；
+- “Backup 应答缺失导致 -1020”假设仍未被证实；ab_v82 继续作为稳定基线。
+
+### ab_v87：osal 消息钩子（Lead）
+- n7 = c93（基于 c80）：interpose libObj 导入的
+  `osal_rcv_msg_tmo`(R) / `osal_snd_msg`(S) / `osal_snd_sync_msg`(Y) / `osal_valloc_msg_wait`(V)，
+  各打印前 300 条 r0–r3；
+- 镜像 ab_v87 = ab_v82 + c93；
+- 目的：确定 Appframework 到底在等待哪个 UIPC qid / 哪个服务，从而补最小应答者。
