@@ -19203,3 +19203,20 @@ new(0x70)+ctor 0x8a4e28  -> ★ViewManager（ctor 末尾 0x8a4f62 写 pViewManag
 - 其余完全 ab_v95（无 patch、无回归风险）；
 - 目的：主动 signal 该 sem，看 0x8a2ee0 是否继续并创建 ViewManager（pVM 非 0）。
 - 待验证：SIG 返回码、pVM 是否非 0、后续绘制/崩溃。
+
+---
+
+## 二百九十六、Round 323：ab_v137 signal sem 失败；ab_v138 干净判别实验（只跳过 sem 等待）
+
+### ab_v137 / c145 结果
+- ab_v137：i=8 处 dlsym 卡 loader 锁（samples=8、SIG=0）；c145 预解析后调用返回 0 但 worker 卡死；
+- 判断：0x83037a 可能不是常规 osal sem id；dlsym 得到的 0x927C 是 im.elf 内 PLT stub，不可靠。
+- 另：c110（tb-v102）W1 日志中**未出现** sem id 0x83037a 的等待 → 线程可能没到 0x8a2ee0。
+
+### ab_v138.img（Lead，判别实验）
+- libObj 仅跳过 0x8a2ee0 的 sem 等待（0x8a2f0e/0x8a2f10 NOP），**保留 uxengine_init 原样**；
+- 探针 c142（PV pVM）；
+- 判据：
+  - pVM 非 0 → 线程确实卡在 sem（且 ViewManager 创建成功）；
+  - pVM 仍 0 → 线程卡在 uxengine_init 内部（未到 0x8a2ee0）；
+- 修复了 ab_v136 的次生崩溃问题（不跳过 uxengine_init，WidgetSystem 不会为 NULL）。
