@@ -19359,3 +19359,26 @@ ZZGPEREG w=28、VDF blank、无崩溃
 - 逐个调用 init_array 函数（带 thumb 位），打印数量与 `ida` 变化；
 - 然后 `*(libObj+0x145977c)=pVM` → `openView("view/SCALAR",0)` → 观察 ida/ZZGPEREG/VDF。
 - 同时继续 openView 变体（mode 1/2、ROOT_SELECTOR、HARDKEYMENU_DISP、后等 20-40s）。
+
+---
+
+## 三百零三、Round 330：openView 变体结果；add 是成员函数（c153 崩溃原因）；c154 init_array 扫描方案
+
+### c152b 结果（init-unlocker）
+- `openView("view/SCALAR",0)` → ret=0；
+- `view/ROOT_SELECTOR`、`view/HARDKEYMENU_DISP`、`SCALAR mode1` → **ret=1739840**（非 0，疑“view 未找到”）；
+- 均不崩、ida=0、ZZGPEREG 28、VDF blank；
+- run1 曾 address=0x10 崩（时序/静态竞争，不稳定）。
+
+### c153 崩溃原因（Lead）
+- `_ZN9IdSoTable3addEiPKcS1_` 是**成员函数**：`add(this, int id, name1, name2)`；
+- 探针把 id(168/16) 当 r0(this) → 崩在 0x8a1e1c（`ldr r1,[r3]`，r3=NULL）；
+- 正确调用：`this = ViewIdSoTable::getInstance()`（libObj+0x8a69bc，会守卫构造），
+  `id = IdGenerator::Get("view/SCALAR")`，再 `add(this,id,name,0)`。
+
+### c154 方案（Lead）：安全定位 viewUnified2 并执行 init_array
+- 解析 `/proc/self/maps` 得所有可读区间 → 按 4KB 扫 ELF magic（0x464c457f）；
+- 校验 ELF32/ARM/ET_DYN；读 PT_DYNAMIC → DT_STRTAB/DT_SONAME/DT_INIT_ARRAY/DT_INIT_ARRAYSZ/DT_INIT；
+- 读 soname 字符串（须在映射内），匹配 "viewUnified2" → 调用其 init_array 各函数（thumb 位），打印 ida 变化；
+- 然后设置 static=pVM、openView("view/SCALAR",0) 观察 ida/ZZGPEREG/VDF。
+- 备选：先逐个调用 init_array，若某个 ctor 崩则按 pc/lr 定位缺依赖。
