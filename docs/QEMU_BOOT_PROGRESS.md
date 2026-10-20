@@ -17584,3 +17584,38 @@ QEMU: /mnt/build/src/qemu-sony/arm-softmmu/qemu-system-arm（5.1, cxd90045+GTK�
 1. ab_v60 3-5 次：统计干净率，确认 samples=60 + w0/w2=0 + 无 AAS + GPE 日志；
 2. 干净样本下 gdb 断 libc `mmap`（过滤大地址/写权限），拿 **GPE 寄存器物理地址/长度**；
 3. 据地址在 QEMU cxd90045 补映射，或 patch libObj 跳过寄存器 mmap 走 dummywrite。
+
+---
+
+## 二百二十九、Round 256：**GPE mmap 失败根因=fake_gles 返回值；修复模块并构建 ab_v61**
+
+### GPE 根因（init-unlocker 静态定位，与源码一致）
+`libObj rm_reg_init`（libObj+0x7748e0）：
+1) `open("/dev/mem", O_RDWR)`；
+2) `ioctl(dmpgles2, 0x80048206, &size)` — 取寄存器区**大小**；
+3) `ioctl(dmpgles2, 0xc0048202, &addr)`（调用前写 index=1）— 取**物理地址**；
+4) `mmap(0, size, prot=3, MAP_SHARED, /dev/mem, offset=addr)`。
+
+原 fake_gles 驱动：0x80048206 固定返回 **0**、`fake_state[1]=0x1` →
+实际为 `mmap(len=0, offset=1)` → EINVAL → 打印 `mmap to register area with /dev/mem failed`。
+
+### 修复（Lead）
+- `fake_gles.c`：`0x80048206` 返回 **0x1000**；`fake_state[1]` 改为 **0x50000000**
+  （CXD90045 DDR0=0x0-0x40000000、DDR1=0x80000000-0x90000000，0x50000000 为空洞，读写安全）；
+  `0x80048263` 保持 0；
+- 新环境缺 `make`，补装 build-essential；模块用 buildroot 工具链重编
+  （需 `LD_LIBRARY_PATH=/mnt/build/toolchain/compat` 提供 libmpfr.so.4 兼容软链）；
+- 新模块 `fake_gles.ko`（37268B）写入 n15 `/kmod/grm_gles.ko`；
+- 镜像 **ab_v61.img** = ab_tb_v60b.img（n7=tb21，n15=P1+P2+P4）+ 新模块。
+
+### 额外尝试（结论：不采用）
+- c74（maps 重载）多线程竞争 → 误跳过 112、samples=0；
+- c75（查不到就放行）把 0x6e63000 野写放回；
+- c76（按需 trylock 刷新）、c77（相邻映射合并 + SKIPR 日志）仍早期崩；
+  SKIPR 诊断显示 buf 均在**主线程栈顶 0x5efff6xx**，根因是 `get_datasize` 返回“非长度大值”
+  → 属既有“d 不是长度”问题，**与 maps 保护逻辑无关**；
+- 随机早期崩（约 4/5）在 c72 时代即存在，非本次保护引入。
+
+### 下一步
+ab_v61 多跑（≤10 次）命中干净样本：确认 `mmap to register area ... failed` 是否消失、
+GPE 之后是否继续（HeapAllocator/GraphicsEngine/新 abort），gfx/res/wg 是否变化。
