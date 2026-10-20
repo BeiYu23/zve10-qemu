@@ -17998,3 +17998,42 @@ n15（/usr）改动（已校验）：
 - 彻底移除 `fake_vip_menu()` 调用（保留函数体），消除内核 RAM 写入；
 - 新模块 md5 2a51ab6c76f25bf7e952482f7896ec2b，镜像 **ab_v70.img**（= ab_tb_v66v + 新模块）；
 - 待验证：轮询是否消失、mmap 0x20000 是否成功、是否推进到 GPE/GraphicsEngine 初始化。
+
+---
+
+## 二百四十三、Round 270：grm_ma mspace 来源逆向；fake_gles 重写为 per-open DMA 一致内存（ab_v73）
+
+### ab_v70 验证（init-unlocker）
+- `0xc0048211` 轮询修复成功：172,997 次 → 6 条；128KB mmap 成功（bytes=262144）；
+- 新崩点：guest 内核模块 **grm_ma** `mspace_malloc+0x530`，fault=`0x5a5a5a5e`
+  （0x5a5a5a5a = SLUB poison，典型释放后使用/双重初始化）；
+- 对照：8211 返回 -EINVAL 也崩同点；FB=64KB 使 mmap 失败则回到更早的 data abort
+  → 128KB mmap 成功才会推进到 grm_ma 崩点。
+
+### grm_ma 的 mspace 来源（Lead 逆向，ARM 模式）
+`ma_create_mspace_wrapper`(0x97c)：
+```
+r3 = flag[r0+0x2c]; if (!r3) 返回（无 mspace）
+r0 = [r0+8]  → arch_phys_to_noncache()   ; 物理基址转 noncache VA
+r1 = [r0+0xc] (size)
+create_mspace_with_base(base, size, 1)
+```
+⇒ grm_ma 的 mspace 建在**外部传入的物理内存区**上（由 DMM 分配/消息传递），不是 kmalloc 对象；
+poison 说明该区域与内核内存管理发生重叠/被释放后复用。
+
+### DMM 配置分析
+- init 实际传参：`DmmConfig=/setting/DmmConfig.bin`（MODARGS 确认）；实盘 nflasha2 FAT 中确有
+  `DmmConfig.bin`（78120B，与固件包 0800_appli/setting 版本同尺寸）；
+- 解析 DmmConfig.bin：内存 extent 表含 `0x11000000 / 0x15800000 / 0x1a000000 / 0x20192000 /
+  0x20200000 / 0x23e00000 / 0x80000000 / 0x20000000` 等物理区；
+- 内核启动日志：`Memory: 120840k/120840k available, 1189880k reserved`，即 memrsv 生效、
+  绝大部分内存被 Sony 预留 → 这些 extent 理论上都在预留区内，重叠假设需进一步证据。
+
+### fake_gles v73（重写，镜像 ab_v73.img）
+- **per-open 上下文**（MAX_CTX=8）：每次 open 用 `dma_alloc_coherent(256KB)` 分配独立缓冲
+  （失败回退 `__get_free_pages`），release 释放；不再全局共享 buffer；
+- **mmap 设备内存语义**：`VM_RESERVED|VM_IO|VM_PFNMAP|VM_DONTEXPAND` + `remap_pfn_range`，
+  避免 guest 内核把这些页当普通 RAM/SLUB 对象管理；
+- 保留：8211/8212 写回 0、FB=256KB、不写 VIP/内核 RAM；模块 38,560B md5 c36065b1…；
+- `ab_v73.img` = ab_tb_v66v + 新 `/kmod/grm_gles.ko`（md5 校验通过）；
+- 待验证：grm_ma poison 是否消失、是否推进到 GPE/GraphicsEngine 初始化。
