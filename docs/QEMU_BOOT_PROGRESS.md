@@ -19335,3 +19335,27 @@ ZZGPEREG w=28、VDF blank、无崩溃
   `(libObj+0x14117c)("view/SCALAR",0)`；
 - 若仍崩在 +0x10，备选 static = pVM+0x10 或 *(pVM+0x10)；
 - 判据：openView 返回/崩点、ZZGPEREG w 是否 >28、VDF 像素、ida。
+
+---
+
+## 三百零二、Round 329：**openView 成功返回（写 static=pVM 后不再崩）**；view 表仍空 → 下一步手动跑 viewUnified2 init_array
+
+### c151 结果（init-unlocker）
+- i=40：`SET static: old=0 → new=pVM`；`openView("view/SCALAR",0)` → **ret=0（成功、不崩）**；
+- 但 ZZGPEREG w=28、VDF blank、ida=0；
+- pVM 结构 dump（0x80B）关键：
+  - `VM[2]=0x06E59444` = **ViewIdSoTable 静态实例**；`VM[31]=0x06E59448`；
+  - 说明 ViewManager 确实关联 view 表，但表内容为空（IdSoTable::add 0 次）。
+
+### Lead 分析
+- openView 通过 static 入口找到 manager，ret=0 说明只是“记录/投递请求”；
+- view 表（ViewIdSoTable）为空 → 按名字查不到 view 工厂 → 不会真正建视图/绘制；
+- 表应由 **viewUnified2 的静态构造函数**（C++ .init_array，调用 IdSoTable::add）填充；
+- 但 c133 证明 add 从未被调用 ⇒ 该库是 App 自家加载器 mmap 的（MISSSO/ZZREAD/QMMAP 链），**init_array 未执行**。
+
+### c152 实验（派发）
+- 探针解析 `/proc/self/maps` 找 `viewUnified2.so` 的 r-x 基址；
+- 读 ELF header → program headers → PT_DYNAMIC → DT_INIT_ARRAY/DT_INIT_ARRAYSZ（DT_INIT 兜底）；
+- 逐个调用 init_array 函数（带 thumb 位），打印数量与 `ida` 变化；
+- 然后 `*(libObj+0x145977c)=pVM` → `openView("view/SCALAR",0)` → 观察 ida/ZZGPEREG/VDF。
+- 同时继续 openView 变体（mode 1/2、ROOT_SELECTOR、HARDKEYMENU_DISP、后等 20-40s）。
