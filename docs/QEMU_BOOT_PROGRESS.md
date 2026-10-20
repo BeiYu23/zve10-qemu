@@ -18844,3 +18844,29 @@ view/SCALARDUMMY0、view/STL_REC_SMILE_AUTO
 2) 若表为空 → 说明 viewUnified2 的静态 ctor 未跑/跑失败（可能因 lib 是“数据+代码”混合加载，或 dlopen 时机在 view 框架初始化之后）；
 3) 若条目指向未映射区 → 找 viewUnified2 加载时应建立的额外映射（0x103cb000 段）并复现；
 4) 备选：走 dispatcher(0x8a5b5e) 的 event_id==1 正规初始化（需要 Event layout）。
+
+---
+
+## 二百八十、Round 307：ViewManager 真正初始化函数 = 0x8a4b60；应用主循环链 0x8a2314→0x8a3104
+
+### 关键修正（Lead）
+- **0x8a4a5c 的函数在 0x8a4b30 就返回**，只是“遍历 [this+0x14] 打印/处理”，**不写 pViewManager**；
+- 写 pViewManager 的代码在 **0x8a4f5a–0x8a4f62**，属于函数 **0x8a4b60**（prologue 0x8a4b60，结束 0x8a4f6a）；
+- 0x8a4b60 的调用者之一（0x8a34f0 附近）：
+```
+8a34e4: ldr r0,[r4,#0]     ; 应用对象 [r4+0] = ViewManager*
+8a34e6: bl  0x8a4d20
+8a34ea: ldr r0,[r4,#0]
+8a34ec: movs r1,#2 ; movs r2,#0
+8a34f0: bl  0x8a4b60       ; manager->init(mode=2,0)  ← 真正初始化
+```
+- 调用链：`Application_System_Init` → `0x8a2314`（构造应用对象到栈上）→ `0x8a3104`（应用主循环，
+  内部 Backup_nread + 时间计算 + 事件分派）→ 命中事件分支后 `0x8a4d20` + `0x8a4b60`。
+- `[this+0x14]` 是简单结构 `{int count; int* array;}`（不是 SoTable）。
+
+### c128 dump 偏差
+- 探针读 table = base+0x1490444，而符号应为 **base+0x1492444**（差 0x2000），dump 结果需重做。
+
+### c130（派发）
+- `vm[0x14] = &{0,NULL}`；调 `0x8a4b60(vm,2,0)` → 读 pViewManager(base+0x149221c) → openView("view/SCALAR",0)。
+- 后续可能需补 [this+0x60]/[this+0x6c] 等字段。
