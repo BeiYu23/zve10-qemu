@@ -18550,3 +18550,27 @@ a334: bl a74c            ; 把它当对象写 [+0x3c] → NULL 崩
   - **ab_v93**：`GetQueueRemain @0x32372` `03 68 80 b5` → **`00 20 70 47`**（movs r0,#0; bx lr），恒返回 0；
   - **ab_v94**：ab_v93 + `EnQueue @0x32392` `42 68 98 b5` → **`00 20 70 47`**（null 直接返回）；
 - 待验证：libMWF 崩是否消失、是否出现新空对象、ZZGPEREG w 是否 >28、VDF 是否出像素。
+
+---
+
+## 二百六十八、Round 295：**MonQueue 为 NULL 的根因 = MonDrv::Init 的 Backup_read_4Byte 参数**
+
+### 反汇编 MonDrv::Init（libMWF.so 0x311a4）
+```asm
+311d0: bl Backup_read_4Byte   ; key 0x00fa0028 -> r6 = mmap offset
+311d6: bl Backup_read_4Byte   ; key 0x00fa005d -> r9 = mmap size
+311e6: open("/dev/mem", 0x1002)
+3122c: mmap(NULL, r9, prot=3, flags=1, fd, r6)
+31244: base = ret + 0x53000 + 0x400 -> MonQueue 建立于此
+```
+- probe 只特判了 0xfa00a3/0xfa00a4；对 0x00fa0028/0x00fa005d 返回 0
+  → mmap(len=0,offset=0) 非法 → MonDrv::Init 提前返回 → **MonQueue 从未创建**
+  → 之前所有“绕过 MonQueue 使用”的补丁都只是消崩溃、不推进（与 ab_v93/v94/v98 现象一致）。
+
+### ab_v95.img（Lead，已构建）
+- 基于 ab_v92（真实 Backup.bin + safe backup.ko）；
+- n7 = c105：Backup_read_4Byte 增加
+  - `0x00fa0028` → 0x3E000000（offset，预留区尾部）
+  - `0x00fa005d` → 0x00080000（size 512KB）
+- 预期 /dev/mem mmap 成功 → MonQueue 真正创建 → MonQueue 空指针崩溃应自然消失；
+- 待验证：是否出现超过 0x53000+ 的越界（则调大 size）、ZZGPEREG w 是否 >28、VDF 是否出像素。
