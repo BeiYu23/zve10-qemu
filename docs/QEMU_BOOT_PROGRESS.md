@@ -17882,3 +17882,33 @@ n15（/usr）改动（已校验）：
 - `libgrmlog-c79.so`（68328B，布局不变），镜像 **ab_v64.img** = ab_tb_v62b + c79
   （md5 0a1d38fb1a2d465d02dc380032ed5789）；
 - 待 ab_v63（c78 轨迹）确认 datasize/返回值后，用 ab_v64 做 A/B 验证。
+
+---
+
+## 二百三十九、Round 266：更正崩点换算 + c80（0x1190001）+ P5（InfraInput 链表头防御）
+
+### 重要更正
+- ab_v63/ab_v64 运行时 QMMAP libObj base = **0x59ce000**（探针体积变化导致平移）；
+  crash `pc=0x06290722 - base = 0x8C2722` = **`infra_input_sus+0x38e` 的链表插入**，
+  不是此前按 0x59ca000 算出的 0x8c6722（PhyKeyConfig 方向作废）；
+- c78 轨迹证明 **0x7a0005/6/7 从未被 Backup_read 调用**，c79 的 0x7a000x 修复无效（3/3 仍崩）。
+
+### 正确崩点语义（libObj+0x8c2690 起函数）
+```text
+8c2718: cbnz r3, 8c2722       ; r3 = [r6+0x9c]（InfraInput 链表头）
+8c271a: str.w r4,[r6,#0x9c]   ; 空则挂新节点
+8c271e: b 8c272a
+8c2722: ldr r2,[r3]           ; 崩：r3 为小整数（0x5b/0xaf/0x1e3）
+```
+⇒ `[InfraInput+0x9c]` 被写成小整数/错误码，而非指针。
+
+### 另一条轨迹异常
+`BR5 1190001 n=0 r=0 caller=libObj+0x8CAD77`：InfraLanc init 里 `cmp r0,#1` 期望成功，
+失败则置错误标志；可能是 InfraInput 未正确初始化的上游原因。
+
+### 新产物
+- **c80**（ab_v65）：对 `0x01190001/0x01190000` 强制 1 字节语义
+  （`real==1 → 拷 1B；否则写 1 并返回 1`），修 InfraLanc 初始化失败；
+- **P5**（ab_v66）：n15 libObj `0x8c2718`：`1b b9`(cbnz) → `00 bf`(nop)，
+  插入节点时直接替换头并跳过对垃圾头的遍历（防御性验证；不改其它逻辑，P1/P4 保留）；
+- 待队友跑 ab_v65×2 / ab_v66×2（initrd_q + qemu 内核）验证。
