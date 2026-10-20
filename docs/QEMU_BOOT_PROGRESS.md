@@ -17964,3 +17964,37 @@ n15（/usr）改动（已校验）：
 - 该修复对所有使用 D16–D31 的固件库生效，不是绕过。
 - 待验证：ab_v66 + zImage.neon → libcrypto UNDEF 是否消失、是否进入 appinit/60 采样、
   gfx/wg 变化与新崩点。
+
+---
+
+## 二百四十二、Round 269：**NEON 修复验证通过（3/3 无 UNDEF，历史最稳 85s）**；GPE 0xc0048211 语义逆向完成
+
+### NEON 验证（init-unlocker）
+- ab_v66 + zImage.neon(#131) + A5-D32 QEMU：`libcrypto` UNDEF（pc 0x044c23xx）**3/3 全部消失**；
+- 结论：**CONFIG_NEON 内核 + QEMU MVFR0.SIMDREG=2 缺一不可**；
+- 另发现：`fake_vip_menu()` 用 `ioremap(0x01000000)` 往 **phys 0x01000000（内核 RAM）**写 checkerboard
+  （0x124f/0x245f 颜色字与 `__rmqueue` Oops 的 fault 值完全一致）→ 已删除其调用；
+- 新基线 **ab_tb_v66v.img**（无 VIP 模块 + P5 + c80）：3/3 跑满 85s、无崩溃、无内核 Oops，
+  但卡在 GPE 轮询 `ioctl(0xc0048211)`（17 万次）。
+
+### dmpgles2 命令表（Lead 逆向，libObj 全扫描）
+```
+0x80048206 @0x774960   0x8004820a @0x774cac   0x80048263 @0x774a92
+0xc0048202 @0x77497a   0xc0048203 @0x77516c   0xc0048208 @0x774bec
+0xc0048209 @0x774c4c   0xc004820d @0x7755c8   0xc004820e @0x77561c
+0xc004820f @0x7747dc   0xc0048211 @0x775680   0xc0048212 @0x7756ea
+```
+
+### 0xc0048211 真实语义
+`rm_rqueue_init`(0x775670)：`val = r6` → `ioctl(fd,0xc0048211,&val)` → `if(ioctl) error` →
+`while (val != 0) 重复`。即**等待 GPE 操作完成、驱动必须把 *arg 写回 0**；只 return 0 不写回 → 死循环。
+`0xc0048212`(0x7756ea) 为同类命令（单次调用）。
+`rm_rqueue_init`(0x775740) 还做 `mmap(NULL, 0x20000, RW, SHARED, fd, 0)`（128KB 命令队列缓冲），
+失败仅降级不致命。
+
+### 修复：fake_gles → ab_v70.img
+- `0xc0048211/0xc0048212`：把 0 写回用户 arg（完成信号）；
+- FB_ORDER 4→6（64KB→256KB），使 `mmap(0x20000)` 可成功；
+- 彻底移除 `fake_vip_menu()` 调用（保留函数体），消除内核 RAM 写入；
+- 新模块 md5 2a51ab6c76f25bf7e952482f7896ec2b，镜像 **ab_v70.img**（= ab_tb_v66v + 新模块）；
+- 待验证：轮询是否消失、mmap 0x20000 是否成功、是否推进到 GPE/GraphicsEngine 初始化。
