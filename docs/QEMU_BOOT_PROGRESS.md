@@ -18321,3 +18321,28 @@ n7 探针 c86 = c83b + **mmap hook**（记录 >32KB 映射：`MMP va len off`）
 - 依据 BASE 结果决定：改基址重打跳板，或改走“patch libObj 构造函数启动 worker”的路线；
 - 若 app 不走导出 GRM API，则改为 patch 内部提交链（0x683e04/0x684dc0/0x684e34）
   或 `GRM_bitmapWriteUnlockBits` 等位图锁接口。
+
+---
+
+## 二百五十七、Round 284：**关键推断：绘制通过直接写 GPE 寄存器区提交**；QEMU 加 GPE 寄存器监视器
+
+### 命令语义（Lead 反汇编）
+- `0x8004820a`（call site 0x774cac）：全局门控 + ioctl 传 u32 指针、返回该值 → **查询类**；
+- `0xc0048203`（call site 0x77516c）：val 先置 0x4000000，ioctl 后检查 `val & 0x1000000` →
+  **in/out 状态位操作**（控制寄存器读改写）；
+- 两者都不是“提交绘制命令”。
+
+### 关键推断
+- libObj `rm_reg_init` 会 `mmap(/dev/mem, phys=0x50000000, size=0x10000)`（此前 0x817 崩点就在该区 offset 0x3804）；
+- 结合 ring 里的 GPU 命令/纹理与“每帧 820d/8211/8212 等待”：
+  ⇒ **app 把命令写进 ring，然后通过直接写 GPE 寄存器区 kick/同步**；
+  QEMU 之前在该地址没有任何设备（`ignore_memory_transaction_failures` 直接忽略），
+  因此“命令永远没有执行者” —— 这解释了 VDF 全 0。
+
+### 新 QEMU：GPE 寄存器监视器（Lead）
+- machine 在 **phys 0x50000000** 挂 64KB IO region：读返回已写值；写保存并打印
+  `ZZGPEREG w off=0x.... size=N val=0x.... pc=0x........ lr=0x........`（限 600 条）；
+- 二进制 md5 `4724ef8c068c883d535245bc58db2a6c`，备份 `/mnt/build/qemu-system-arm.a5d32-gpereg`；
+- 待验证：ab_v82 跑出新 QEMU → 抓 kick/base/size/complete 等寄存器偏移，
+  然后在该设备里实现最小 GPE 行为（kick → 扫 ring → 标记完成 → 触发中断），
+  再配合软件光栅把像素写进 VDF。
