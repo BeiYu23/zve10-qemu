@@ -18712,3 +18712,31 @@ a334: bl a74c            ; 把它当对象写 [+0x3c] → NULL 崩
 2) 调 `ViewGlobalMenuToInstance(0,0)`（每次运行一个入口）；
 3) 观察是否新增 IMOPEN、ZZGPEREG w 是否 >28、VDF 像素、是否崩。
 - 备选：若工厂函数不崩但无绘制，改走“找 App 正常触发 dlopen(view) 的上游事件”，或使用 `pViewManager`(libObj 0x149221c) 注册/切换视图。
+
+---
+
+## 二百七十五、Round 302：修正——viewUnified2 **已加载**（23.6s），卡在“视图未打开”；c121 hook ScalarView::Open
+
+### 日志证据（tb-v95-1）
+```
+23.605 MISSSO //lib/viewUnified2.so (err=-2)      (一次失败尝试)
+23.636 ZZREAD ... dev=viewUnified2.so
+23.663 QMMAP len=0xe4fb10 ret=0xf84b000 name=viewUnified2.so   (加载成功)
+23.665 QMMAP ret=0x103cb000 off=0xb78000
+24.459 QMMAP anon len=0x1218d8 ret=0x11783000     (视图数据/堆)
+之后 IMNANOSLEEP 循环直至 85s，无绘制
+```
+- ⇒ 视图库**已加载**（此前“从未加载”结论作废），但没有 View 实例（InputService 仍 NULL、无 draw）。
+
+### c118/c119（手动 dlopen）失败原因
+- worker 线程里 dlopen/dlsym 触发 **loader 死锁**（samples 停在 40、只打 `VW start`）；
+- 后续改为在探针构造函数或 dlopen(libObj) interposer 内加载（备用方案）。
+
+### c121（Lead 派发）
+- interpose libObj 导出的视图 API（viewUnified2 通过 PLT 调）：
+  `ScalarView::Open(char const*,char const*,char const*,unsigned)`、`Open(ViewBase*,...)`、
+  `SpecialOpen`、`Reopen`、`Halt`、`ExistsScalarPackage(char const*)`；
+- 打印字符串参数 + 返回值（限 100/类）；判据：
+  - 是否调用 Open、view/包名是什么、返回对象还是 NULL；
+  - `ExistsScalarPackage` 返回 0 则说明缺资源包（镜像 /scenario /sabin 不全）→ 根因；
+  - 若 Open 未被调用 → 强制调用一次主视图 Open 做实验。
