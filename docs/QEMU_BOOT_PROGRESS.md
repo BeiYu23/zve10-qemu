@@ -18663,3 +18663,30 @@ a334: bl a74c            ; 把它当对象写 [+0x3c] → NULL 崩
 1) QMP dump phys 0x22bb2000（0x96000）看是否有 UI 像素；
 2) 用 EXTRA 让 streamfb 直接看 0x22bb2000，尝试出第一张原生 UI 截图；
 3) 并行修正线程创建 hook，反汇编 grm 线程入口确认等待对象。
+
+---
+
+## 二百七十三、Round 300：输入注入路径逆清（createEvent/pushFilterEvent）；SySRq 卡点=futex
+
+### 0x22bb2000 假设排除
+- QMP pmemsave（ab_v95）：0x22bb2000（0x96000）t25/t45/t60 **全 0**；0x20312000 仍只有 297B 非零 →
+  UI 确实没有写像素，不是我们看错缓冲。
+
+### 线程创建 hook 修正（Lead 反汇编 Hotplug_Init）
+- `osal_create_thread(struct thread_desc *d)`：`+0x00 name, +0x04 flags(=4), +0x08 fn(Thumb), +0x0C arg, +0x10 u16(=200)`；
+- c113 struct 版崩在探针地址 → 需纯 register 版或严格地址校验。
+
+### 输入注入链路（Lead 反汇编 libObj）
+- `InputService::createEvent(unsigned long key, unsigned char press)` @0x11c89a：
+  `new(16)` + `Event::Event(key, press, 1)` → 返回 Event*；
+- `InputService::pushFilterEvent(Event*)` @0x11e5d4：推进 InputService 过滤/分发链（内部 osal sem + 回调）；
+- `InputService::callback_panel(int, _InfraInputEvent*)` @0x11fae0：读 event[0]/[8]/[12] 后
+  调 `snd_InfraInputEvent_to_InputServant(event)`（0x11c62c）→ `osal_snd_msg(qid=0x14a0429)`；
+- `_InfraInputEvent` 结构 **24B**；qid **0x14a0429** 仅 libObj 引用 → InputServant 就在本进程内；
+- InputService 导出还有 `callback_tp/direct/convert/tp_raw/um_zoom/mode_dial`、`createEvent`、`pushFilterEvent`、
+  `SetKeyRepeat`、`m_pMyInstance`(0x1459548) 等。
+
+### c116 实验（Lead 派发）
+- 探针在 i=40 调 `createEvent(0x1ab,1)` + `pushFilterEvent(ev)`，100ms 后 `createEvent(0x1ab,0)` + push；
+- 判据：ZZGPEREG w 是否 >28（开始提交绘制）、VDF 像素、是否崩；
+- 备选键码 0x1ab(MENU)/0x1ac(ENTER)/0x306；备选路径 snd_InfraInputEvent_to_InputServant 直接投 24B 事件。
