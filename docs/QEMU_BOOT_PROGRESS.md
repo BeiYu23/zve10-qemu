@@ -18170,3 +18170,24 @@ fake_gles 改为有状态：
 - 模块 md5 39d3e0c9e403da922295b73cb51bcd54；镜像 **ab_v80.img = ab_tb_v78b + 新模块**；
 - 待验证：820d 次数是否从 31k 降到几十/几百、是否出现 60 采样/gfx/res/wg 变化。
 - 若仍取不到命令，下一步按 `rm_rqueue_init` mmap 之后的写入逆出 ring 头初值，由驱动初始化空队列。
+
+---
+
+## 二百五十、Round 277：**里程碑：gfx/wg 首次非 0**（ab_v80）；移植 bionz-streamfb 呈现 VDF
+
+### ab_v80 结果（init-unlocker，5 次 4 成功）
+- 成功运行：60 采样、无崩溃、跑满 85s、ZZPOISON=0；
+- **gfx/wg 在 sample i=3（~17-18s，GPE init 后）变非 0 并保持**：
+  `gfx=914880/5603xx  res=115518048  wg=917000/5624xx` → **GraphicsEngine/WidgetSystem 单例已创建**；
+- 820d 从 31k 降到 ~6.9k（msleep(2) 生效）；8211/8212 ~13.8k；
+- 偶发崩溃 1/5：Appframework `address=0x0a4f3804 trap 0xe err 0x817` @17.88s（待查竞态）。
+- 屏幕仍黑：screendump 320×240 全 0（当时机器只有 bionz_vip console，且 app 写入的是 VDF 0x20312000）。
+
+### 显示呈现（Lead）
+- 当前 qemu-sony 树只有 bionz_vip（320×240）；sfb 树有现成 **bionz_streamfb**（把 guest phys
+  0x20312000 镜像到 QEMU DisplaySurface，属性 addr/width/height/stride/format/blank-pattern）；
+- 已移植到当前树：`hw/display/bionz_streamfb.c` + Makefile.objs + cxd90045_init 中**先于 bionz_vip**
+  创建（保证其 console 是 GTK/screendump 默认第一个）；
+- 新 QEMU 18:54（69,529,856B，md5 `d51eef5e92f5ff162919427af562a8b3`），备份
+  `/mnt/build/qemu-system-arm.a5d32-sfb`；默认 addr=0x20312000/640×480/format=XRGB8888/blank-pattern=on；
+- 待验证：screendump 变 640×480；出现 blank-pattern（VDF 为空）还是有实际帧（格式需调）。
