@@ -19314,3 +19314,24 @@ ZZGPEREG w=28、VDF blank、无崩溃
   若非 0：调 `createEvent(inst,0x1ab,1)`（libObj+0x11c89a）→ `pushFilterEvent(inst,ev)`（+0x11e5d4），100ms 后释放；
   每 4 采样打印 `IN i pVM inst`。
 - 判据：inst 是否非 0、ev/push 返回、**ZZGPEREG w 是否 >28、VDF 是否出现像素**。
+
+---
+
+## 三百零一、Round 328：InputService 单例是遗留全局；openView 静态入口可手动指向 pVM（c151）
+
+### c149b/c150b 结果（init-unlocker）
+- pVM 从 i≈36 起非 0 并保持；**InputService::m_pMyInstance（libObj+0x1459548）全程 0**；
+- IdSoTable::add 全程 0；150s 长跑无变化；ZZGPEREG 28、VDF blank。
+
+### Lead 分析
+- InputService 的 GOT 引用（GOT 偏移 0x3684）**全部是 reader，无 writer** → m_pMyInstance 是遗留/旁路全局，
+  管理图里的 InputService 对象存在 app 栈上下文（[appctx+0x0c]），不是该全局；
+- openView 崩溃用的静态是 **libObj+0x145977c**（GOT 偏移 0x4b30），由 0x140e66 `str r0,[r3]` 设置（App 尚未调用）；
+- ViewManager ctor 0x8a4e28 把 EventManager 类对象存于 **[this+0x10]**（ctor 参数 r1 = appctx+0x10），
+  因此把静态入口指向 **pVM** 后，openView 的 `[r0+0x10]` 就有值了。
+
+### c151 实验（派发）
+- i=40（pVM 非 0 后）：dump pVM 前 0x80 字节（32 words）→ 写 `*(libObj+0x145977c)=pVM` → 调
+  `(libObj+0x14117c)("view/SCALAR",0)`；
+- 若仍崩在 +0x10，备选 static = pVM+0x10 或 *(pVM+0x10)；
+- 判据：openView 返回/崩点、ZZGPEREG w 是否 >28、VDF 像素、ida。
