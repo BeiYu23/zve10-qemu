@@ -18452,3 +18452,21 @@ w4=0x0044f000 w5=0x00000000 w6=0x0010f000 w7=0x12345678 (magic)
   - 打印 `K/k` 前 64 条供核对；其它 qid 转发真实现；
 - 原有 Backup_read/nread/read_4Byte clamp 保留；镜像 ab_v89 = ab_v82 + c99。
 - 若 K/k 不出现（libbackup 自身 PLT 解析）→ 下一版把 backup_sync_msg 入口做**文件级跳板**（ab_v90）。
+
+---
+
+## 二百六十三、Round 290：interpose 生效但参数映射错位；准备安全栈 dump
+
+### ab_v89 结果（init-unlocker）
+- `K 3 3e 3e000b 0` / `k 5efffbfc 8 0 0`：`-1020` 从 122 降到 **2** → **interpose backup_sync_msg 生效**（UIPC 被绕开）；
+- 但 ~4.0s 崩：`im.elf.real`、写 `address=0x003e000b`（把 id 当 buf 写）→ **栈参数映射错误**；
+- 崩前 ZZGPEREG w=0、samples=0。
+
+### 机制说明（Lead）
+- 无其它库 import `backup_sync_msg`（nm -D 全扫），libbackup 自身用 PLT 调用自己定义的符号；
+- glibc 符号查找顺序：可执行文件 → **LD_PRELOAD** → 各库 → 因此探针里的 `backup_sync_msg` 能覆盖 libbackup 的 PLT 解析（实证 -1020 大降）。
+- 但 payload（id/buf/size）是第 5–7 个栈参数，c99 的固定 7 参 C 函数读到的位置与实际 call site 不完全一致 →
+  写到了 0x3e000b。
+### 下一步
+- init-unlocker 的 c100：只打印 r0–r3 + caller sp[0..15] + lr（naked 入口，不写内存）；
+- 确认映射后修 responder（只对合法栈指针写、size≤256），目标 -1020=0 且不崩。
