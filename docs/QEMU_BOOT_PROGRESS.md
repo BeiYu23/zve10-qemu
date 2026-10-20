@@ -17549,3 +17549,38 @@ QEMU: /mnt/build/src/qemu-sony/arm-softmmu/qemu-system-arm（5.1, cxd90045+GTK�
 2. gdb 在 Backup_read 入口抓 0x1190001/0xd5009x 的调用方（id/buf/caller 偏移）；
 3. 定位 libObj+0x8c2722 的 r6 对象与 `[r6+0x9c]` 写入来源；
 4. 继续向 appinit / GPE abort 推进。
+
+---
+
+## 二百二十八、Round 255：迁移后恢复跑测；c73 根因修复；c74 失败；v60（assert 绕过）
+
+### c73 保护失效根因（init-unlocker）
+- c73 的 `/proc/self/maps` 表上限 **170 条**、容量 2048B，而本进程实际 **272 条映射**：
+  栈（0x8de3000-0x8fe2000，第238条）、主线程栈（0x5efde000，第270条）等位于表尾被截断
+  → `copy_ok` 对合法栈/堆也判“未映射”而**跳过拷贝** → 数据缺失 → 崩在 InfraInput 链表插入
+  （libObj+0x8c2722，r3=[r6+0x9c]=0x90）；0x6e63000（libInfraFsys r-x，第132条）仍在表内，
+  故野写消失；
+- 二进制补丁（tb21）：
+  - `libgrmlog+0x416`：`a9 2d 00 f3 cc 80`（cmp r5,#169; bgt）→ `00 bf 00 bf 00 bf`（3×NOP，去上限）；
+  - `libgrmlog+0x554`：`4f f4 00 60`（mov.w r0,#2048）→ `4f f4 80 50`（mov.w r0,#4096，扩表）；
+  - 镜像 `ab_tb_v58r.img`（= ab_v58 + tb21），5 次结果：**1/5 干净成功**（samples=60、w0=w2=0、
+    GPE 日志在 22.68s 出现：`PSC dummywrite disabled` + `mmap to register area with /dev/mem failed`），
+    之后 `BNR id=0x1700000 real=0` → `bret == sizeof(this->setting)` assert。
+
+### c74 源码级尝试（Lead）——失败
+- 改动：maps 表 4096B/条目上限 340、查找失败**重载一次**、`Backup_nread` 对 0x1700000 提前
+  返回 4、添加 MMAPFAIL 单次日志；
+- 用系统 gcc 15.2 重编（链接布局复原：68532B、RW@0x1ff54、libObj base 仍 0x59ca000）；
+- 60s 冒烟：**BRDSKIP=112（大量误跳过）→ THREAD_INFRA2 崩、samples=0**；
+- 根因：**maps 重载在多线程下无锁竞争**（g_maps_n=0/load_maps 并发执行，表被踩坏）；
+  ⇒ 放弃 c74，继续用 tb21 二进制补丁路线。
+
+### v60：绕过 SystemImpl assert（二进制补丁 P3）
+- n15 libObj `@0x6f4c86`：`04 28`（cmp r0,#4）→ **`04 20`（movs r0,#4）**，
+  `bret==sizeof(setting)` 检查恒等成立 → `SystemImpl.cpp:156` assert 消失；
+- 镜像 **ab_v60.img** = ab_tb_v58r.img（n7=tb21、n15 P1+P2）+ P3；已拆分校验通过。
+
+### 下一步
+1. ab_v60 3-5 次：统计干净率，确认 samples=60 + w0/w2=0 + 无 AAS + GPE 日志；
+2. 干净样本下 gdb 断 libc `mmap`（过滤大地址/写权限），拿 **GPE 寄存器物理地址/长度**；
+3. 据地址在 QEMU cxd90045 补映射，或 patch libObj 跳过寄存器 mmap 走 dummywrite。
