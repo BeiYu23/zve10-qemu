@@ -18815,3 +18815,9 @@ view/SCALARDUMMY0、view/STL_REC_SMILE_AUTO
   4. 若成功 → `openView("view/SCALAR",0)`（+0x14117c）；
   5. 观察：崩点是否消失、ZZGPEREG w、VDF 像素、screendump。
 - 若 init 继续崩在其它字段 → 同样按反汇编补该字段（下一批候选：+0x30/+0x60/+0x6c）。
+
+### ViewIdSoTable::getInstance() 是懒加载单例（Lead 反汇编 0x8a69bc）
+- 静态 guard 字节 + `__cxa_guard_acquire`；
+- 首次调用时构造静态对象（0x8a6998 构造，内含数组分配）并 `__cxa_atexit` 注册；
+- 返回 pc-relative 静态地址。
+⇒ c127 直接调 `ViewIdSoTable::getInstance()` 即可获得有效表，无需手动 new。
