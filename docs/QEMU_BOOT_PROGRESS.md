@@ -18087,3 +18087,23 @@ poison 说明该区域与内核内存管理发生重叠/被释放后复用。
 - QMP 在 ~8s 与 ~16s 各 dump `phys 0x20312000 size 0x4000`，对比 0x5a 出现时机；
 - guest 读 `/proc/udm/dmm_extents`、`dmm_units`、`dmm_info`；`dmesg | grep -iE 'stream|vdf|dmm'`；
 - 由第一个 0x5a 偏移反推写入者范围。
+
+---
+
+## 二百四十六、Round 273：appinit 是触发链（c81/c82）；探针 memset 追踪 + QEMU 侧 0x5a watch
+
+### c81/c82 A/B（init-unlocker）
+- c81（去 rm_init、留 appinit）：2/2 仍崩 grm_ma（~19.6s）→ rm_init 非触发者；
+- c82（留 rm_init、去 appinit）：**3/3 无崩溃、60 采样、跑满 ~80s**，但 gfx/res/wg=0
+  → **`Application_System_Init(0)` 是图形初始化链（GPE/grm_ma mspace poison）的触发者**；
+- 机制推测：appinit 建 mspace 又在同链内 destroy/毒化（0x5a），Appframework GPE init 用到坏 mspace。
+
+### Lead 并行工具
+1) **c83 探针**（memset/bzero 拦截）：记录 `memset(dst,0x5a,n)` 或 dst∈VDF 区的调用（单次 write：
+   `MS5 dst val len caller_lr`），限 64 条。
+   首版 ab_v75 有 bug（dlsym 未解析时 memset 返回空操作破坏 libc 启动）→ 已修（手写循环兜底 + 递归 guard），
+   新镜像 **ab_v76.img**（= ab_tb_v66v + c83b）。
+2) **QEMU 侧 0x5a 写 watch**：machine 在 phys 0x20312000 叠一个高优先级 IO region，
+   写入 0x5a5a5a5a/0x5a 时打 `ZZPOISON write addr=.. size=.. val=.. pc=.. lr=..`；
+   已重编 QEMU（18:10，md5 c8a6788f719d025991e89f4e10724a2f），备份 `qemu-system-arm.a5d32-watch`。
+- 待验证：ab_v76 → MS5/BZ5（用户态）或 ZZPOISON（内核态）出现即定位写入者。
