@@ -19382,3 +19382,33 @@ ZZGPEREG w=28、VDF blank、无崩溃
 - 读 soname 字符串（须在映射内），匹配 "viewUnified2" → 调用其 init_array 各函数（thumb 位），打印 ida 变化；
 - 然后设置 static=pVM、openView("view/SCALAR",0) 观察 ida/ZZGPEREG/VDF。
 - 备选：先逐个调用 init_array，若某个 ctor 崩则按 pc/lr 定位缺依赖。
+
+---
+
+## 三百零四、Round 331：viewUnified2 init_array 静态地址已解出（1768 项）
+
+### c154 结果（init-unlocker）
+- `tbl=ViewIdSoTable::getInstance()`（115700804）、`id=IdGenerator::Get("view/SCALAR")`（168）、
+  `add(tbl,id,"view/SCALAR",0)` → ret=0（成员函数调用正确、不崩）；
+- `static=pVM` → openView ret=0；但 ida=0（计数未走探针 interposer，不代表表没变）、ZZGPEREG 28、VDF blank。
+
+### c155/c156 ELF 扫描器
+- 探针内崩（address=0x0404A560，probe+0xd34）→ 实现 bug，未拿到 init_array。
+
+### Lead：从本地 viewUnified2.so 解出静态地址
+```
+SONAME viewUnified2.so
+DT_INIT        0x185cc9 (thumb 0x185cc8)
+DT_INIT_ARRAY  0xb80af0
+DT_INIT_ARRAYSZ 7072 → 1768 entries
+LOAD#1 off=0x0      vaddr=0x0      size=0xb78af0  R E
+LOAD#2 off=0xb78af0 vaddr=0xb80af0 memsz=0x2cf020 R W
+```
+- 日志映射：rx `len≈0xe4fb10 off=0`；rw `len=0x228000 off=0xb78000`；
+- ⇒ `_init = RX_base + 0x185cc8`；`init_array[i] = RW_base + 0x90f0 + 4*i`（count=1768）。
+
+### c158 实验（派发）
+- interpose mmap 记录 RX_base（off==0 && len>=0x800000）与 RW_base（off==0xb78000）；
+- i=40：打印 VF、调 `_init`、逐个调 1768 个 init_array 条目（每 100 个打印 ida）；
+- 然后 static=pVM → openView → 观察 ida 是否大跳、ZZGPEREG/VDF 是否变化。
+- 备选：如果个别 ctor 崩，分批/按崩溃地址定位依赖。
