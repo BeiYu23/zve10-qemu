@@ -18139,3 +18139,34 @@ poison 说明该区域与内核内存管理发生重叠/被释放后复用。
 - 镜像 ab_v78 = ab_v73（8211/8212 修复 + per-open DMA 模块）+ c84；
 - 期望：mspace 不再被覆盖 → 越过 grm_ma 崩点，看是否推进到 GPE/GraphicsEngine；
 - 若有效但画面异常，则下一步从 DMM extents 入手，把 VDF 缓冲与 grm_ma 池从根上分开。
+
+---
+
+## 二百四十九、Round 276：VDF 清屏根因闭环；GPE 命令队列协议逆向；ab_v80 有状态驱动
+
+### VDF 根因闭环（init-unlocker）
+- c84 的 MSKIP 未命中（判断用了物理地址，实际 memset dst 是用户 VA 0x0f37e000）；
+- 直接二进制改 libObj：`0x6f5366 bl 0x6fc11c`（`06 f0 d9 fe`）→ `00 bf 00 bf`（2×NOP），
+  镜像 **ab_tb_v78b.img**：**ZZPOISON=0、无崩溃、2/2 跑满 85s** → 实锤 VDF 清屏清掉了 grm_ma mspace。
+
+### GPE 命令队列协议（Lead 逆向 libObj）
+主循环 `0x7757a0`：
+```
+7757b0 bl 0x775670   ; ioctl 0xc0048211 arg=2（等 op 完成，val!=0 继续）
+7757b6 bl 0x776600   ; dequeue：返回 0=取到命令，2=队列空
+7757e2 bl 0x7756e0   ; ioctl 0xc0048212 arg=2（kick GPE）
+7757e8 bl 0x7755b0   ; ioctl 0xc004820d（等事件，内部 while(val==0)）
+7757ec bl 0x775670   ; 8211 again
+7757f2 bl 0x776600   ; dequeue again
+```
+dequeue `0x776600`：ring 基址 = rm_rqueue_init 的 128KB mmap；
+**命令槽 = ring + 12 + index*0x8C（140B/槽，命令体 128B）**；index 来自 libObj 全局；index==-1 或空→返回 2。
+⇒ v79 对 820d 立刻写 1 会让 GPE 线程 31k 次空转（假事件），占满 CPU。
+
+### 新驱动 → ab_v80.img
+fake_gles 改为有状态：
+- 8211 写回 0；8212/820f kick 计数并返回 0；
+- **820d：msleep(2) 后再写回事件 1**（不再忙等，让出 CPU）；
+- 模块 md5 39d3e0c9e403da922295b73cb51bcd54；镜像 **ab_v80.img = ab_tb_v78b + 新模块**；
+- 待验证：820d 次数是否从 31k 降到几十/几百、是否出现 60 采样/gfx/res/wg 变化。
+- 若仍取不到命令，下一步按 `rm_rqueue_init` mmap 之后的写入逆出 ring 头初值，由驱动初始化空队列。
