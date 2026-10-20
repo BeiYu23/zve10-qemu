@@ -18791,3 +18791,27 @@ view/SCALARDUMMY0、view/STL_REC_SMILE_AUTO
   `(libObj+0x14117c)("view/SCALAR",0)`；
 - 判据：是否仍崩 address=0x10、ZZGPEREG w 是否 >28、VDF 像素、screendump；
 - 若 init 崩 → 按对象字段（+0/+4/+32/+0x60/+0x6c）准备结构或改走 dispatcher 路线。
+
+---
+
+## 二百七十八、Round 305：ViewManager init 崩溃点解析——需要 [this+0x14]=ViewIdSoTable 单例
+
+### c126（init-in-zero-buffer）崩点分析
+- 崩在 `pc=libObj+0x8a6dec`，来自 init(0x8a4a5c) 内 **0x8a4aca–0x8a4ad0**：
+```
+8a4aca: ldr r0,[r4,#20]      ; this+0x14 = 某表对象指针
+8a4acc: bl  0x8a6de8          ; 对该表操作（内部 ldr r0,[r0]）
+8a4ad0: subs r5,r0,#1
+```
+- ⇒ init 期望 **`[this+0x14]` 指向一个有效的 ViewIdSoTable 实例**（零缓冲时为 NULL → 崩）。
+- 其余字段（+0/+4/+0x20）是数组/计数，零值可安全（循环 0 次）。
+
+### 可用构造
+- **`ViewIdSoTable::getInstance()` @ libObj+0x8a69bc**（导出）→ 取单例指针；
+- c127 实验（派发）：
+  1. `vm = 零缓冲`；`vm[0x14] = ViewIdSoTable::getInstance()`；
+  2. `init = libObj+0x8a4a5c`，调 `init(vm)`；
+  3. 读 `pViewManager`（+0x149221c）确认是否被写入；
+  4. 若成功 → `openView("view/SCALAR",0)`（+0x14117c）；
+  5. 观察：崩点是否消失、ZZGPEREG w、VDF 像素、screendump。
+- 若 init 继续崩在其它字段 → 同样按反汇编补该字段（下一批候选：+0x30/+0x60/+0x6c）。
