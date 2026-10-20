@@ -19134,3 +19134,25 @@ new(0x70)+ctor 0x8a4e28  -> ★ViewManager（ctor 末尾 0x8a4f62 写 pViewManag
 - 探针 c142：每 4 个采样打印 `PV i=<i> pVM=<pViewManager>`（base+0x149221c）；
 - 目的：一次运行内找出能否解锁 uxengine_init（pVM 变非 0 = ViewManager 创建成功）。
 - 待验证：PV 是否变非 0、gfx/wg、ZZGPEREG、VDF、崩溃。
+
+---
+
+## 二百九十三、Round 320：ab_v134 回归（820d 必须=1）；ab_v135 延迟 Application_System_Init 实验
+
+### ab_v134 结果（init-unlocker）
+- 820d 事件值改为轮询候选后：**gfx=0、wg=0、ZZGPEREG w=0、PV pVM 全 0**（第一阶段即失败）；
+- ⇒ **820d 早期必须固定返回 1**；820d 不是解锁 uxengine_init 的钥匙。
+
+### ab_v135.img（Lead，已构建）
+- 探针 c143（基于 c105 + fa keys）：
+  - **不再在 libObj 加载后立刻调用** `Application_System_Init(0)`；
+  - 改在采样 **i=25**（GPE 初始化 ~17s 之后）调用，打印 `Y9 late_appinit/late_ret`；
+  - 每 4 个采样打印 `PV i=<i> pVM=<pViewManager>`；
+- 其余保持 ab_v95（模块未改：820d=1、8211/8212 原语义）；
+- 目的：验证“UI 线程启动过早导致 uxengine_init 永久等待”的假设。
+- 待验证：late_appinit 是否返回、pVM 是否变非 0、gfx/wg、ZZGPEREG、VDF、崩溃。
+
+### 820d/8211/8212 语义小结
+- 820d：等事件；**必须返回 1**（早期阶段）；
+- 8211：等 op 完成（app 传入 op id 1/2，driver 写回 0=完成）；
+- 8212：kick（返回 0）。
