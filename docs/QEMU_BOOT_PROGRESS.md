@@ -18740,3 +18740,32 @@ a334: bl a74c            ; 把它当对象写 [+0x3c] → NULL 崩
   - 是否调用 Open、view/包名是什么、返回对象还是 NULL；
   - `ExistsScalarPackage` 返回 0 则说明缺资源包（镜像 /scenario /sabin 不全）→ 根因；
   - 若 Open 未被调用 → 强制调用一次主视图 Open 做实验。
+
+---
+
+## 二百七十六、Round 303：**找到打开视图的 API：viewManagerIf::openView(const char*, int)**；view 名清单
+
+### 反汇编（Lead）
+- `viewManagerIf::openView(char const*, int)` @ **libObj+0x14117c**（导出）：
+  内部取全局 view manager 后经 PLT 调实现；真实用法示例（viewUnified2 0x7616dc）：
+  `openView("view/BLUE_TOOTH_PAIRING", 19)`；
+- `viewManagerIf::openView(int,int)` @0x140fb8 同族；另有 `requestModelExecute(id/name, u64, ParamList*)`、
+  `ViewManager::getModelInfo`、`View::View(ViewManager*)`、`ViewBase::Constructor/Destructor`。
+
+### viewUnified2 全部 view 名（16 个）
+```
+view/SCALAR（主 UI 视图）、view/ROOT_SELECTOR、view/HARDKEYMENU_DISP、
+view/HARDKEYMENU_FLASH/_SELFTIMER/_BURST、view/COMMON_DEDICATED_SCREEN_BASE、
+view/EXECUTECONFIRMDLG、view/INDEX_PLAYBACK、view/SINGLEPB、view/MOV_REC_PATCH、
+view/ROOT_POWER_SW、view/BLUE_TOOTH_PAIRING、view/CONNECT_WITHOUT_PAIRING、
+view/SCALARDUMMY0、view/STL_REC_SMILE_AUTO
+```
+
+### c121/c123 结果
+- ScalarView::Open 等 API **从未被调用**（0 次）——App 没有主动打开视图；
+- c123 用 maps+偏移绕过 loader，成功 `new` 出菜单视图对象（0x12300468/0xc9ba8），但未被 manager 接管；
+- i=40 用 dlsym/dlopen 会触发 loader 死锁（c118/c122）。
+
+### c124 实验（派发）
+- 探针 i=40 直接调 `libObj+0x14117c("view/SCALAR",0)`（依次再试 mode 1/2、ROOT_SELECTOR、HARDKEYMENU_DISP 等）；
+- 判据：新 IMOPEN、ZZGPEREG w>28、VDF 像素、screendump 变化、是否崩。
