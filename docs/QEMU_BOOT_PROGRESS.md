@@ -19156,3 +19156,27 @@ new(0x70)+ctor 0x8a4e28  -> ★ViewManager（ctor 末尾 0x8a4f62 写 pViewManag
 - 820d：等事件；**必须返回 1**（早期阶段）；
 - 8211：等 op 完成（app 传入 op id 1/2，driver 写回 0=完成）；
 - 8212：kick（返回 0）。
+
+---
+
+## 二百九十四、Round 321：0x8a2ee0 开头有 sem 无限等待；ab_v136 诊断 patch 实验
+
+### 反汇编发现（Lead）
+- `0x8a2ee0`（管理器图创建：EventManager/InputService/ModelManager/ViewManager）开头：
+```
+8a2ef4 bl 0x8a2e70       (strncpy name 到 this+0x2c 等)
+8a2f0a mov r1,#-1
+8a2f0e ldr r0,=0x83037a  ; sem id / 参数
+8a2f10 blx osal_wai_sem_tmo  ; ★ 无限等待（timeout=-1）
+```
+- 即：即使线程走出 uxengine_init，进入 0x8a2ee0 也会卡在这个 sem 等待上；
+- ab_v135（延迟 Application_System_Init）已排除“启动时序”假设（late_ret 正常、pVM 全 0）。
+
+### ab_v136.img（Lead，诊断实验）
+- libObj patch：
+  - `uxengine_init`(0x6271d4) `b5b0` → `70 47`（bx lr，直接返回）；
+  - `0x8a2f0e` `48 44` → `00 20`（movs r0,#0）；
+  - `0x8a2f10` `f4 6b e0 8a`(blx osal_wai_sem_tmo) → `00 bf 00 bf`（2×NOP）；
+- 探针 c142（每 4 采样打印 PV pVM）；
+- 目的：让线程走到 0x8a2ee0 内部，看 ViewManager ctor 能否写 pViewManager；
+- 若崩，pc/lr 指示还缺哪些依赖；若 pVM 非 0，说明 ViewManager 可独立创建，下一步只跳过“等待点”而非整函数。
