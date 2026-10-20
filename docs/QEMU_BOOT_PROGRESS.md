@@ -18256,3 +18256,26 @@ fake_gles 改为有状态：
 - B) `/proc/<im.elf.real>/maps` 中 ring 映射的 VA/size 与 VDF 映射 → 探针加 memcpy/memmove 拦截
   （dest 落在 ring VA 内即打印 caller LR），钉死“命令写入 libObj 函数”；
 - 并行：沿 `GRM_gpermFillrect/Rectblit` 内部调用链继续跟，或离线 patch 其入口跳探针 hook 记录参数。
+
+---
+
+## 二百五十四、Round 281：ring 增量分析；ab_v83（自动跟踪 dmpgles2 映射 + memcpy 拦截）
+
+### ring 增量（init-unlocker，tb-v82m）
+- t20 nz=68,880 → t40=95,774 → t60=95,775；
+- **t20→t40 变化 27,017 字节（0x22000–0x3d1ed）**，t40→t60 仅 65 字节 → 首帧相关数据集中在 20–40s 提交；
+- t60 非零呈 0x1000 对齐块（29 个 ≥32B run）→ 像 surface/命令描述符块；
+- 关键矛盾：ring mmap 仅 0x20000（128KB），但活跃数据在 0x22000 之后 → fake mmap 未按 vma 长度/offset 正确映射的可能。
+
+### maps（crash snapshot）
+```
+0ca6a000 rw- off=0x00940000 dmpgles2 (128KB)   ; ring ctx2
+0d4c9000 rw- off=0x20312000 stream   (32MB)    ; VDF
+0bcf2000 rw- off=0x50000000 mem      (4KB)     ; fake GPE reg area
+```
+
+### ab_v83.img（Lead）
+n7 探针 c86 = c83b + **mmap hook**（记录 >32KB 映射：`MMP va len off`）+ **memcpy/memmove hook**
+（dest 落在已跟踪映射内打印 `MC5/MM5 dst len src caller_lr`，限 200 条）；memset 同样扩展到已跟踪映射；
+探针 69,148B，布局不变；镜像 ab_v83 = ab_v82 + c86（md5 校验通过）。
+- 目的：免猜 maps，直接抓“往 ring 写命令/数据”的 caller LR。
