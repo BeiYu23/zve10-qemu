@@ -18511,3 +18511,23 @@ a334: bl a74c            ; 把它当对象写 [+0x3c] → NULL 崩
 - ab_v90 + im.elf.real VMA 0xa334（file 0x2334）`00 f0 0a fa`(bl a74c) → `00 bf 00 bf`(2×NOP)；
 - 目的：越过“服务注册返回空句柄”点，验证能否推进到 GPE 首帧；
 - 待验证：0x3c 崩是否消失、ZZGPEREG w 是否 >28、VDF 是否出现像素。
+
+---
+
+## 二百六十六、Round 293：libMWF 崩溃语义 + 真实 Backup 数据路线（ab_v92）
+
+### libMWF 崩点（Lead 反汇编）
+- `pc=libMWF+0x32372` = **`MonQueue::GetQueueRemain`** 入口：`ldr r3,[r0]`，r0=NULL → 读 0 崩；
+- `lr=libMWF+0x323bb` 在 `MonQueue::EnQueue` 内 → 某处传入空 MonQueue 指针；
+- 与 im.elf 0xa330 同族：**服务/对象句柄为空**，是“伪造 backup 返回值”的连锁反应。
+
+### 根因线索
+- `backup.ko` 字符串显示它读 **`/setting/Backup.bin`**；我们的 /setting 只有 `Backup.bak`
+  → 这解释了 `backup size err /id 0x00b000d001`；
+- 因此改为：**给原生 backup.ko 真实数据**，让 Backup 服务真正工作，撤掉伪造。
+
+### ab_v92.img / initrd_q2.img（Lead，已校验）
+- ab_v92 = ab_v82 + /setting FAT（eMMC off 0xC00000）写入真实 `/setting/Backup.bin`
+  （= /mnt/build/Backup.bin.real，1,235,836B，与 Backup.bak 同尺寸）；
+- initrd_q2 = initrd_q + /sbin/init 的 `Backup_load=0` → `Backup_load=1`；
+- 待验证：backup.ko 是否不再 size err/早崩、UIPC -1020 是否大减、ZZGPEREG w 是否 >28、VDF 是否出像素。
