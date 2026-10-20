@@ -18346,3 +18346,31 @@ n7 探针 c86 = c83b + **mmap hook**（记录 >32KB 映射：`MMP va len off`）
 - 待验证：ab_v82 跑出新 QEMU → 抓 kick/base/size/complete 等寄存器偏移，
   然后在该设备里实现最小 GPE 行为（kick → 扫 ring → 标记完成 → 触发中断），
   再配合软件光栅把像素写进 VDF。
+
+---
+
+## 二百五十八、Round 285：**GPE 提交协议浮现**（0x1804=描述符指针, 0x1800=4, 11 条 0x20 命令, magic 0x12345678）
+
+### ZZGPEREG 写日志（ab_v82 + watch QEMU，2 次一致，共 28 条写）
+- 11 组提交：`0x1804 ← 0x2056e270 + i*0x20`，随后 `0x1800 ← 4`；
+  写者 pc=libObj+0x774EB0/0x774ED0（寄存器写 helper），lr=+0x775091/+0x7754D7 等；
+- 6 条初始化：`0x0c00=0x080c4880, 0x0c04=0x08aec800, 0x0c08=0x01e00280,
+  0x0c0c=0x01e00280, 0x0c10=0x4401, 0x0c18=1`；
+- 之后 85s 内无任何写 → UI 首帧提交尚未发生（可能要先等 GPE 完成这些初始化任务）。
+
+### 命令描述符（QMP dump phys 0x2056e270..0x2056e3b0，11 个相同 0x20 结构）
+```
+w0=0x0116f000 w1=0x02056db0 w2=0x0117f000 w3=0x00000001
+w4=0x0044f000 w5=0x00000000 w6=0x0010f000 w7=0x12345678 (magic)
+```
+
+### 结论
+- 绘制/GPU 提交 = **直接写 GPE 寄存器**（0x1804 描述符指针、0x1800=4）；
+  QEMU 之前对该区域“忽略写”，命令永远不执行、状态永远不变 → app 一直轮询 820d/8211；
+- 当前 QEMU 设备只是“存/回读”，真机硬件会更新完成位/计数。
+
+### 新 QEMU：加 GPE 读日志（Lead）
+- `ZZGPEREG r off=.. size=.. val=.. pc=.. lr=..`（限 400 条）+ 原写日志；
+- md5 `207d77b9bd4ecc812d932985d75391f3`，备份 `/mnt/build/qemu-system-arm.a5d32-gpereg-r`；
+- 待 init-unlocker 抓 poll offset → 实现最小状态机（kick → 解析描述符(magic) → 置完成位/计数 → irq），
+  再让 UI 首帧命令到达、把绘制落到 VDF。
