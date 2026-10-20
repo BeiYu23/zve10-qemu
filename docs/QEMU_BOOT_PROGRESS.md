@@ -17783,3 +17783,22 @@ zImage 已更新，旧版备份 `/mnt/build/zImage.nq.bak`）。这将让固件�
    callback 偏移是否同族）；
 4. LZ77 接到 `/dev/ldec` 缺失路径；AP 容器（639458B）接到我们的 bionz-streamfb/VIP 呈现；
 5. 输入按 a7c2 的验证方法（guest 输入队列 + 短按 + 拨盘增量）逐层核对 ZV-E10 键码。
+
+---
+
+## 二百三十五、Round 262：a7c2-re 上游更新（2026-10-19）
+
+`chocotan/a7c2-re` 已从 `5ec277d` 快进到 `433737a`（8 个新提交）：
+- 04/2026-10-19-ssh-feasibility：2.01 上验证独立 sshd 的 root SSH（与 QEMU 链无关）；
+- **report/2026-10-19-cmos-input-path/REPORT.md**（与显示/取景链相关）：
+  - 真机**没有 V4L2/`/dev/video*`**；帧经 **`stream2` 的 mmap（物理页表）+ DMM/EE 图像缓冲**进入用户态；
+  - `stream2.ko` ioctl `0xc0047805` 只从用户态复制地址表（≤16 项 `{phys,size}`，4KiB 对齐），
+    `stream_mmap` 仅逐页 `vm_insert_page()`——**内容/尺寸/格式全由用户态决定**；
+  - 已证实消费链给的是 **JPEG / NV12**（`VDT_FORMAT_*`、`V4L2_PIX_FMT_MJPEG`），**无 RAW/Bayer**；
+  - 传感器不在 Linux 侧（无 imx/imager 驱动、DTB 无节点），成像由 CP 域管理（推测）；
+  - 对模拟的结论：要喂帧应落在 **stream2 DMA 缓冲 + DMM/EE 句柄**层，**不要伪造 `/dev/video`**；
+    静态 RAW 路径（libmpr/DefInfo）与 USB 流式 JPEG/NV12 路径需分开模拟。
+
+对我们的含义：与现有 `/dev/stream`(249)/VDF、fake_gles、DMM 方向一致；
+后续若做实时取景/背景帧，按该层注入 JPEG/NV12，而不是补 V4L2。
+已 `git pull --ff-only` 到最新；后续定期 fetch 该仓库跟踪新成果。
