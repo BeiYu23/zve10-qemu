@@ -18933,3 +18933,29 @@ init ko_insmod:(1213): error: open file: /usr/kmod/msen_drv.ko / nfc.ko / sata_d
 - = ab_v95 + wrapper 修改（仅加了后台 dump，不影响主链）；
 - 目的：直接读 App 内部日志中关于 boot/view/sensor/服务缺失的记录，定位“UI 初始化为何未触发”。
 - 其他线索：App/sen.elf 都向 qid 0x20 发 24B 消息（-1024 无效 id）；indctr.ko 加载失败。
+
+---
+
+## 二百八十四、Round 311：bootin 参数语义确认；ab_v124 修正版 kikilog dump
+
+### bootin.elf 用法（内置帮助，Lead 提取）
+```
+bootin.elf { file=<mode_file> } { dmode=<debug_mode> } { amode=<app_argv> }
+           { target=<im_target> } { sim } { lt|nolt } { wfree|WFREE } { killall } { gdb }
+ dmode: 0=kernel only, 1=Global Infra, 2=LIRO, 3=APP (default)
+ amode: adj / usbj / normal(default)
+ file : default /setting/mode/dmode
+```
+- 我们 wrapper 用 `target=qemu dmode=3` 是**正确的 APP 模式**；
+- `/setting/mode/dmode` 文件内容为 "3"（与 APP 模式一致）；
+- 结论：bootin 参数不是 UI 未启动的原因。
+
+### 模块加载失败复核
+- 仅 `osal_ulogio.ko`(error 1)、`indctr.ko`(error 14) 失败；nfcs/sata/msen 本就不存在；
+- `mcmn_drv` 加载但有告警 `MMC:Failed mcmnd_api_getbkupinfo_bus_connect_type`（eMMC 备份信息，疑非致命）。
+
+### ab_v124.img（Lead）
+- = ab_v95 + wrapper 在 55s 后台执行：
+  `ls -l /tmp/kikilog.dat` + `dd if=/tmp/kikilog.dat bs=4096 count=32 > /dev/console` + `ls -l /tmp`；
+- 去掉 `tr`（guest 无该命令，上次失败原因）；
+- 目的：拿到 App 自身日志，直接看“UI 初始化为何未触发/缺什么”。
