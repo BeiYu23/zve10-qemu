@@ -9,6 +9,8 @@ KERNEL=${KERNEL:-/mnt/build/src/a7c-kernel/linux/arch/arm/boot/zImage}
 INITRD=${INITRD:-/root/fw/handoff_p0/initrd.img}
 BACKUP=${BACKUP:-/root/fw/BACKUP.BIN.fixed}
 OUT=${OUT:-/tmp/cxd90045-run}
+# EXTRA: extra QEMU args, e.g. -global driver=bionz-streamfb,property=addr,value=0x22bb2000
+EXTRA=${EXTRA:-}
 mkdir -p "$OUT"
 CMD="$(cat /root/fw/real_cmdline.txt) norandmaps"
 rm -f "$OUT/qmp" "$OUT/screen.ppm" "$OUT/screen.png" "$OUT/serial.log"
@@ -19,7 +21,7 @@ nohup xvfb-run -a "$QEMU" \
   -device loader,file="$BACKUP",addr=0x02E80000,force-raw=on \
   -serial "file:$OUT/serial.log" \
   -qmp "unix:$OUT/qmp,server=on,wait=off" \
-  -append "$CMD" >/dev/null 2>&1 &
+  -append "$CMD" $EXTRA >/dev/null 2>&1 &
 QPID=$!
 cleanup() { kill "$QPID" 2>/dev/null || true; }
 trap cleanup EXIT INT TERM
