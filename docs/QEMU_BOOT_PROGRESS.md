@@ -19722,3 +19722,30 @@ libObj base=0x59D2000 → user_lr 偏移 = 0x7755D9
   - PC 在 0x04xxxxxx / 0x0fxxxxxx（用户库/探针区）→ 得到 UI 线程自旋点；
   - PC 在 0x60xxxxxx（内核）→ 看具体内核函数。
 - 拿到 PC 后再决定 patch/驱动返回值。
+
+---
+
+## 三百一十八、Round 345：QMP 抓 UI 线程用户 PC —— 命中 CautionConfig.so 的 view 节点构建函数
+
+### QMP 采样结果（init-unlocker）
+- 30s 后 300 次 `info registers`，9 次用户态：
+```
+0x112c7afc → CautionConfig.so+0xC23AFC
+0x112d5596 → CautionConfig.so+0xC31596
+0x04007376 / 0x04007398 / 0x040112e4 → 0x0400xxxx（loader 区，R14≈PC+1）
+0x042e717c → libc ioctl wrapper（GPE 线程 188）
+```
+- CautionConfig.so 映射 base 0x106a4000；两个偏移都在巨型 `CmnViewSettingNode*` 构建函数内。
+
+### Lead 判读
+- `CautionConfig.so` **不是“警告界面”**：它导出 `CmnViewSettingNode::getSubNode/getCountAll/setSubNodes/...` 等 11,800 个符号，
+  是 **通用 view/设置节点构建库**（名字沿用 Caution，但内容是 CmnViewSettingNode 节点树构建）；
+- ⇒ UI 线程（pid184）实际在**构建 view 节点树**（属于正常 UI 初始化/视图构建路径），不是“卡死”；
+- 0x0400xxxx 区在 probe(0x04021000) 之前，且 QMMAP 未命名 → 大概率是 **ld-linux.so loader**（relocation/dlopen）；
+- 综上：UI 在“慢速推进”（TCG 下单核巨量节点构造非常慢），不是死锁。
+
+### 下一步（派发）
+- 长跑 600s（FK8 基线 + initrd_q4），每 30s 做 10 次 QMP 采样，记录：
+  1) PC 分布随时间是否变化（推进 vs 原地循环）；
+  2) ML 是否出现、pVM、ZZGPEREG w、VDF/screendump；
+  3) 若推进但 >10min，考虑优化（减少节点/跳过忽略）或接受慢速。
