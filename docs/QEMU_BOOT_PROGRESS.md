@@ -19840,3 +19840,22 @@ B=0x106897E4: [0]=A  [4]=A|3   [0x14]=B-8
 ### 根因假设（待验证）
 - c169 探针**手工执行 init_array**（529 次 view 注册）可能与 App 自身注册逻辑冲突 → 重复插入/删除悬挂 → 2 节点环；
 - 对照实验：**同一 FK8 探针但跳过手工 init_array**，看是否还出现 0x86CCA2 环、pVM/ML/绘制是否改善。
+
+---
+
+## 三百二十三、Round 350：新假设——init_array 并发执行与 App UI 初始化竞争；C/D/E 实验计划
+
+### 假设
+- c169 的 init_array 由**探针线程**在 App 已开始加载/构建 view（T≈18s 已加载 viewUnified2/CautionConfig）时执行；
+- 1768 个静态构造函数可能和 App 自己线程同时操作同一批 stella 容器 → **数据竞争**；
+- 两节点环形态（B.next=A，prev 链“半更新”）很像半插入/半删除 → race 解释合理。
+
+### 实验计划（严格单 QEMU 串行）
+- **C（进行中）**：跳过 init_array 的 FK8 探针 → 300s；看 0x86CCA2 环是否消失、pVM/ML、ZZ/VDF。
+- **D（若 C 环消失）**：串行化 init_array：
+  1) 等 viewUnified2 映射（mmap hook 记录 RX）；
+  2) 立刻执行 `_init` + 1768 ctors（此时不调 Application_System_Init/openView）；
+  3) 记录 ida；
+  4) 再调 Application_System_Init(0)；
+  5) 后续每 4 采样记录 pVM/ZZ/VDF。
+- **E（若 C 环仍在）**：环与 init_array 无关，从 TList 插入/删除函数找根因（Lead 反汇编 0x86CBxx）。
