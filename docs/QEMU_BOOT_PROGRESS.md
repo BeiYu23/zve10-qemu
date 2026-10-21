@@ -19859,3 +19859,23 @@ B=0x106897E4: [0]=A  [4]=A|3   [0x14]=B-8
   4) 再调 Application_System_Init(0)；
   5) 后续每 4 采样记录 pVM/ZZ/VDF。
 - **E（若 C 环仍在）**：环与 init_array 无关，从 TList 插入/删除函数找根因（Lead 反汇编 0x86CBxx）。
+
+---
+
+## 三百二十四、Round 351：C 证明环由 init_array 引发；D/E/F 失败原因明确；提出“重定位完成检测”方案
+
+### C/D/E/F 结果（init-unlocker）
+- **C（跳过 IA）**：300s 全程 ring_hits=0（0x86CCA2 未出现）→ **2 节点环确由我们的手工 init_array 引发**；
+  但 pVM=0、ML=0（⇒ **IA 是 pVM/ViewManager 创建的必要条件**，不能跳过）；
+- **D（等 viewUnified2 加载后再 IA）**：死锁 —— viewUnified2 只有在 Application_System_Init 流程里才被加载；
+- **E/F（映射一出现/等 4s 就 IA）**：崩于 address=**0x0018EF20**（写 fault），即 **init_array 条目还未重定位**（值仍是文件偏移），跳到低地址执行崩。
+
+### 关键洞察（Lead）
+- 崩溃地址 0x18EF20 正是“未重定位的函数指针”形态 ⇒ **IA 必须等 App 的 loader 完成重定位**；
+- 可用**就地检测**：读取 init_array[0]（RX+0xB80AF0），若 `(val & ~1)` 落在 `[RX, RX+0xE4FB10)` 区间 ⇒ 已重定位，安全；
+- 在此之前是文件偏移（小值），不能执行。
+
+### c183 实验（派发）
+- 基于 c169，但把 IA 触发条件改为**轮询 init_array[0] 是否已重定位**；
+- 满足条件的那一个采样点立即执行 `_init` + 1768 ctor（尽量早，~19-20s，早于 UI 构建）→ 记录 ida；
+- 继续观察 pVM/ML/ZZGPEREG/VDF，并检测 0x86CCA2 环是否出现。
