@@ -153,3 +153,19 @@ AAB3 lr=libObj+0x64029B → abort（约 9–10s）
   - `_ZN2ux4core13GraphicsImage21sys_getInternalObjectEPv` (0x64114c) / clear / copy
 - 下一步（c198，已派）：C interpose 上述函数记录参数/返回，定位 -9999 来源分支。
 - 另：`ab_v153.img` = ab_v95 + 带 fa keys 的 zvobs 单 preload（可验证不崩 + PAINT）。
+
+## M3 内部分支定位（2026-10-21 19:05）
+- BMP_Create 内 **-9999（0xFFFFD8F1）** 的 4 个 literal 返回点：
+  - 0x69D210 / 0x69D27E / 0x69DB2C / 0x69DE10（均为“fprintf 错误日志后返回 -9999”的错误分支）
+  - 0x69D27E 错误来自 0x69D27A 调用 **0x767840** 的返回值==0 分支；
+  - 0x69DB2C 错误来自 0x69DB0C 的 **vtable 间接调用（+0x64 方法）返回 0**；
+  - 0x69DE10 错误来自 **pthread_mutex_init 返回非 0**（0x69DDFE）。
+- 另：abort 直接 caller lr=0x64229B 对应 0x642296 `bl 0x860A78`（libra 图像参数/析构域），
+  abort 实际在更深调用链中（AAB3 栈）——需要 inline hook 才能精确定位。
+- 结论：BMP_Create 失败可能来自 ①0x767840 返回 0 ②vtable+0x64 返回 0 ③mutex_init 失败，
+  需 inline hook（mprotect+8 字节跳板）trace 才能确定；已把实现方案交给 init-unlocker。
+- inline hook 方案要点（已下发）：
+  - patch: `f8df f000`(ldr.w pc,[pc]) + word(stub|1)；trampoline: 原 8 字节 + `f8df f000` + word(addr+8|1)；
+  - stub asm: `push {r0-r3,r12,lr}; bl c_logger; pop {r0-r3,r12,lr}; ldr r12,[pc]; bx r12`；
+  - mmap RWX 缓冲放 trampoline；mprotect 文本页 RW → patch → 恢复 RX；sys_cacheflush(0x0f0002)。
+  - 先 hook：BMP_Create、0x69B38C、0x69B440、0x61082C(createImage)、0x69D27A 目标 0x767840、0x860A78。
