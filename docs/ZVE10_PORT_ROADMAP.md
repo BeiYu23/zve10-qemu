@@ -59,3 +59,23 @@
     interpose open/open64/ioctl 记录 /dev/ldec、/dev/liro、/dev/dmpgles*、stream 的打开与 ioctl；FK8 fake 0x8f013a。
     注意：c191 未含 init_array（pVM 不会出现），仅用于观察“正常启动阶段是否打开 ldec/liro”。
   - [M4 下一步] 需要把 open/ioctl 记录并入 c169（FK8+IA）基线后再跑 180s：看 IA 后资源解码是否打开 /dev/ldec、ioctl 返回码。
+
+## M1 结果（2026-10-21 18:10，c190/c190b，180s，单 QEMU）
+- 汇总（hex qid / n / ret）：见下表；libObj base=0x59CE000（c190b）。
+```
+0x8F013A n=763  ret0=763            ← FK8 fake 生效
+0x3E014D n=6727 ret0=6727           ← backup 正常
+★0x94016A  ret=-1020                ← 缺失（首 run）
+★0x924127 n=23  ret0=0 retM1020=23  ← 全部超时
+★0x1010227 n=2  ret0=0 retM1020=2   ← 全部超时
+★0x13E8402 n=1  ret0=0 retM1020=1   ← 超时
+0xC881BB n=3 ret0=3 ; 0x12182ED n=1 ret0=1 ; 0x12282F6 n=4 ret0=4
+0xCA8192 n=2 ret0=2 ; 0x25906BE n=3 ret0=3 ; 0x14C0424 n=69 ret0=69 ; 0xCF016D n=14 ret0=14
+```
+- 异步（snd_msg）全部 ret0，无 -1020。
+- 静态线索：
+  - 0x1010227 调用者 lr 偏移 ≈ 0x8C0E41（libObj，靠近 infra_indctr 区）；
+  - 0x13E8402 调用者偏移 ≈ 0x408645，且该 qid 常量也出现在 0x408710 附近（同一功能域）；
+  - 0x924127 常量出现在 0x8C17A4 / 0x89AE3C 等。
+- 结论：M1 完成，缺失服务 = 0x94016A、0x924127、0x1010227、0x13E8402（另有 0x8F013A 已 fake）。
+- 下一步（c191，已派）：对这 4 个 qid 假返回 0，并打印消息头（前 8 word），跑 240–300s 看 pVM/ML/ZZ/VDF/新阻塞。
