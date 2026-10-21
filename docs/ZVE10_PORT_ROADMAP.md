@@ -191,3 +191,13 @@ cbz r0 (bmp==0) → 6f8fae 另一分支
   配合 c205 的 exit 日志即可确定命中分支。
 - c204 多 hook 失败（加载即 exception），后续保持**单目标 hook**。
 - 下一步（c205）：单 hook BMP_Create + exit 日志（记录返回值）+ 限流（防串口洪水）→ 跑 ab_v204 找出 -10001..-10004。
+
+## 上下文锚（2026-10-21 19:40）
+- 当前在等：c205（BMP_Create exit 日志）结果 → 用 ab_v204 的哨兵值确定 -9999 具体分支。
+- ab_v204.img 已验证 n15 /lib/libObj.so 四个 literal = -10001/-10002/-10003/-10004。
+- c205 首次运行未出现 HINST/HOOK（hook 未安装），需队友修 exit-stub 后重跑。
+- 一旦确定分支：
+  - 分支B(-10002)：0x767840 返回值问题 → inline hook 0x767840 或 patch 判断；
+  - 分支C(-10003)：vtable+0x64 方法返回 0 → 需要对应设备/模型对象；
+  - 分支D(-10004)：pthread_mutex_init 失败 → preload 里 interpose pthread_mutex_init 强制返回 0（低成本试探）。
+- 之后目标：BMP_Create 成功 → UI 创建 screen → 软件 GPE/VDF 输出。
