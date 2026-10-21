@@ -19464,3 +19464,32 @@ EventManager::push([pVM+0x10], event, 1)
      `ViewRootUtilityToInstance`(+0x4288b8)，调用 `(0,0)`，返回 ViewBase*；
    - 调 `View::drawDirect()`（libObj+0x8a0074，this=v）；
 3) 观察 ZZGPEREG w 是否增长（GPE 提交）、VDF/screendump 变化、崩溃现场。
+
+---
+
+## 三百零七、Round 334：drawDirect 是 no-op 的原因（IsViewModeDiadem 门控）；c165 结果
+
+### c165 结果（init-unlocker）
+- view 表注册 529 项；
+- `openView` 后 EventManager count 1→3（+2，不下降）；
+- ViewRoot/Selector/Utility 工厂对象全部创建成功（把 **pVM 作为 r1 父上下文**，工厂地址带 thumb 位）；
+- **drawDirect 三次全部成功、无崩溃**；但 ZZGPEREG 仍 28、VDF blank。
+
+### Lead 反汇编：drawDirect 的门控
+```
+View::drawDirect (0x8a0074):
+  r0 = [this+0x24]         ; ViewManager*
+  b.w 0x8a4528             ; manager 方法
+0x8a4528:
+  bl ScalarAppfwIF::IsViewModeDiadem()
+  cbz r0, 0x8a453e (pop, 直接返回)   ← 非 Diadem 模式 = no-op
+  非 0 → b.w 0x8a6bc4([manager+0x14])
+```
+- `IsViewModeDiadem`（0x8a6740）：读全局 mode，`1 - mode`；返回 1 当 mode==0，否则 0；
+- ⇒ **当前 mode 很可能非 0，导致 drawDirect 直接返回，未进入真正绘制分支**。
+
+### c166 实验（派发）
+- patch libObj `IsViewModeDiadem` 入口 0x8a6740：`04 48 80 b5` → **`01 20 70 47`**（`movs r0,#1; bx lr`）；
+- 用 c165 同一流程（init_array + openView + 工厂 + drawDirect）跑；
+- 观察：ZZGPEREG w 是否增长（GPE 提交）、VDF/screendump 是否变化、是否崩。
+- 这是“让 drawDirect 进真正绘制分支”的最小实验。
