@@ -8,7 +8,7 @@ QEMU=${QEMU:-/mnt/build/src/qemu-sony/arm-softmmu/qemu-system-arm}
 KERNEL=${KERNEL:-/mnt/build/src/a7c-kernel/linux/arch/arm/boot/zImage}
 INITRD=${INITRD:-/root/fw/handoff_p0/initrd.img}
 BACKUP=${BACKUP:-/root/fw/BACKUP.BIN.fixed}
-OUT=${OUT:-/tmp/cxd90045-run}
+OUT=${OUT:-/mnt/build/tmp/cxd90045-run}
 # EXTRA: extra QEMU args, e.g. -global driver=bionz-streamfb,property=addr,value=0x22bb2000
 EXTRA=${EXTRA:-}
 mkdir -p "$OUT"
