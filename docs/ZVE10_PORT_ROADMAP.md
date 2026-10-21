@@ -302,3 +302,20 @@ r3=[iter+4]; r0=[r3+16]; return       ; 读状态字段（初始 -1，成功应�
   2) hook 0x76858C entry：当 armed 时，写 `*(u32*)(*(u32*)(iter+4) + 16) = 0`（诊断性强制成功），记录原值；
   3) 观察 BMP_Create 返回值是否变成功、UI 是否推进（pVM/ML/ZZ/VDF）；
   4) 若成功 → 再研究真正的 reply 回调（grm_ma 服务），而不是长期 patch。
+
+## M3 关键布局解码（2026-10-21 21:25）
+- 0x768054 反汇编（iter/msg 构建）：
+```
+0x768054(iter, id=9, qid):
+   iter+12 = qid
+   iter+4 = iter+8 = 0
+   osal_valloc_msg_wait(&iter+8, 44)      ; 分配 44B 消息
+   成功: [iter+8-4] = id(9); iter+4 = iter+8   ; ⇒ iter+4 == iter+8 == msg
+0x768098: 断言 iter+4 != 0; msg+0 = halfword 9
+0x768208: osal_snd_sync_msg(qid=[iter+12], msg=[iter+8])   ; 两参数
+0x76858C: 返回 *(u32*)(msg+16)             ; status 字段在 msg+16
+```
+- c220 只比较了 msg 前 4 word（0/4/8/12），**未检查 +16**；真实语义是服务把 status 写到 msg+16。
+- 因此 BMP 失败根因 = **grm_ma 服务应答未回填 msg+16（保持 -1）**。
+- c224（已派）：在 `osal_snd_sync_msg` interposer 里对 `qid==0x14C0424 && msg[0]==9` 写 `msg[4]=0`（即 msg+16=成功），
+  不改其它 qid、不用 inline hook；观察 BMP_Create 是否成功、UI 是否推进。
