@@ -169,3 +169,25 @@ AAB3 lr=libObj+0x64029B → abort（约 9–10s）
   - stub asm: `push {r0-r3,r12,lr}; bl c_logger; pop {r0-r3,r12,lr}; ldr r12,[pc]; bx r12`；
   - mmap RWX 缓冲放 trampoline；mprotect 文本页 RW → patch → 恢复 RX；sys_cacheflush(0x0f0002)。
   - 先 hook：BMP_Create、0x69B38C、0x69B440、0x61082C(createImage)、0x69D27A 目标 0x767840、0x860A78。
+
+## M3 关键进展（c203/c204/c205 计划，2026-10-21 19:30）
+- **inline hook 机制成功（单目标）**：c203 hook BMP_Create：
+  - patch: `df f8 00 f0` + word(stub|1)；trampoline = 原 8 字节 + 跳回 target+8；mprotect/clear_cache；
+  - Thumb stub 必须在独立 .S（`.thumb`），否则 naked asm 编成 ARM → illegal instruction；
+  - 仅前 8 字节 PC 无关的函数可 hook（BMP_Create ✓；0x69B38C/0x69B440 ✗ 含 ldr [pc]）。
+- c203 观测：BMP_Create 被反复调用 20+ 次，参数固定 `a0=0x5E4C8/0x52E30/0x55468（每次 run 不同，疑似 ctx 指针）, 640,480,1`，
+  caller `lr=libObj+0x6F8F85`。
+- 反汇编 **0x6F8F80** 调用点：
+```
+blx BMP_Create@plt
+ldr r3,[r6,#8]; cbz r3 → 返回0
+cbz r0 (bmp==0) → 6f8fae 另一分支
+... log; bl 0x76768C; cbz r0 → **return 4（重试）**；否则 abort
+```
+  ⇒ 重试循环的原因就是 BMP_Create 返回 -9999（非 0 且无效）。
+- **-9999 的 4 个返回点**（literal 池）：
+  - 0x69D21C（分支A）、0x69D290（来自 0x767840 返回0，分支B）、0x69DD7C（vtable+0x64 返回0，分支C）、0x69DE4C（pthread_mutex_init 非0，分支D）
+- ab_v204.img（Lead 已构建）：把上述 4 个 literal 改为 **-10001/-10002/-10003/-10004**，
+  配合 c205 的 exit 日志即可确定命中分支。
+- c204 多 hook 失败（加载即 exception），后续保持**单目标 hook**。
+- 下一步（c205）：单 hook BMP_Create + exit 日志（记录返回值）+ 限流（防串口洪水）→ 跑 ab_v204 找出 -10001..-10004。
