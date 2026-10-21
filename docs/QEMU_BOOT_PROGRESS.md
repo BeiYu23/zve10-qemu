@@ -19680,3 +19680,25 @@ libObj base=0x59D2000 → user_lr 偏移 = 0x7755D9
 - patch n15 `/lib/libObj.so` 0x7757A0：`2b 4b`(ldr r3,[pc]) → **`70 47`(bx lr)**；
 - 目的：判定 0x7757A0 是线程体还是 UI 线程同步调用；若 ML 出现 → 该循环即主循环前最后阻塞点。
 - 待验证：ML、pVM、PCPROBE、gfx/wg、ZZGPEREG、VDF、崩溃。
+
+---
+
+## 三百一十六、Round 343：ab_v143 结论（0x7757A0 是 uxengine_init 内部必需步骤）；ab_v144 = 强制 0x7759F0 返回 0
+
+### ab_v143 结果（init-unlocker）
+- patch 生效（0x7757A0=`70 47`），但 **gfx/wg=0、ZZGPEREG=0、pVM=0、PCPROBE=0、ML=0**、无崩溃；
+- SysRq：Appframework 从 R(820d 轮询) 变 S futex_wait；
+- ⇒ 0x7757A0 是 **uxengine_init 内部必需的 GPE/rqueue 处理步骤**（不是主循环前的最后阻塞），整函数跳过导致初始化链断掉。
+
+### Lead 反汇编：循环退出条件
+```
+0x7759F0: bl 0x775670(1); bl 0x775960; bl 0x7756e0(1); return 0x775960()结果
+0x775960: 读全局 kick 结构；NULL→0；否则扫描 0x8c(140) 字节表项比较状态 → 0/非0
+0x7757A0 循环内两处：cbz 0x7759F0() → 0x775830 退出
+```
+- ⇒ 循环退出的唯一判据是 **0x7759F0()==0**；我们 fake 的 820d 事件没让它变 0（还有“待处理 kick 状态”未清）。
+
+### ab_v144.img（Lead，已构建）
+- 基于 tmp/ab_tb_v171.img（FK8+c169+新模块）；
+- patch n15 /lib/libObj.so **0x7759F0**: `98 b5 04 46` → **`00 20 70 47`**（movs r0,#0; bx lr）；
+- 目的：让 0x7757A0 处理完一轮即退出，保留其它初始化 → 观察 gfx/wg、pVM、ML、PCPROBE、ZZGPEREG/VDF/崩溃。
