@@ -19702,3 +19702,23 @@ libObj base=0x59D2000 → user_lr 偏移 = 0x7755D9
 - 基于 tmp/ab_tb_v171.img（FK8+c169+新模块）；
 - patch n15 /lib/libObj.so **0x7759F0**: `98 b5 04 46` → **`00 20 70 47`**（movs r0,#0; bx lr）；
 - 目的：让 0x7757A0 处理完一轮即退出，保留其它初始化 → 观察 gfx/wg、pVM、ML、PCPROBE、ZZGPEREG/VDF/崩溃。
+
+---
+
+## 三百一十七、Round 344：**确认存在两个 Appframework 线程**（184 R 用户态 / 188 D GPE ioctl）；0x7757A0 是 rm_reg 工作线程（`__g_rm_thread_exit`）
+
+### 关键修正（Lead，读 tb-v171-1 sysrq）
+- sysrq 任务表里有 **两个 Appframework**：
+  - `Appframework R running pid=184` —— 用户态运行中（backtrace 只到 `schedule_ret_to_user`；r4=0x04022e48）；
+  - `Appframework D pid=188` —— 卡在 `fake_ioctl msleep`（GPE kick 工作线程）。
+- ⇒ pid188 = **rm kick/reg 工作线程**（即 0x7757A0 线程体），pid184 = **UI 线程**（Application_System_Init 创建）。
+- 0x7757A0 里 `[r5]` 全局解析：GOT 槽 0x13db0b8 → **`__g_rm_thread_exit`**（libObj 0x145dca8）：
+  - `[r5]==0` 时跳过 0x7759F0 检查并继续循环 → 该线程只在 `__g_rm_thread_exit` 置位时退出 = **常驻工作线程**；
+  - 因此 v143/v144/v172 试图让它退出 → 初始化链断裂（gfx/wg=0），**方向错误**。
+
+### 下一步（派发）
+- 真正卡点是 **UI 线程 184 在用户态自旋/运行，ML=0（主循环未执行）**；
+- 让 init-unlocker 用 **QMP `human-monitor-command "info registers"`** 采样运行中 vCPU 的 PC（多次）：
+  - PC 在 0x04xxxxxx / 0x0fxxxxxx（用户库/探针区）→ 得到 UI 线程自旋点；
+  - PC 在 0x60xxxxxx（内核）→ 看具体内核函数。
+- 拿到 PC 后再决定 patch/驱动返回值。
