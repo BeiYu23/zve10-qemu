@@ -136,3 +136,20 @@
   - `GRM_gpermFillrect` / `GRM_gpermRectblit` / `GRM_screenGetOnBitmap`
   记录参数/返回值（前 40 次），保持转发；看 BMP_Create 失败卡在哪个 GRM 调用。
 - 第二步：用真实实现替换（fake bitmap 结构 + fill/copy + screen→VDF）。
+
+## M3 推进（c197，2026-10-21 18:55）
+- c197（仅 BMP_Create C interposer，基于 c193）：
+```
+BMPC a=0x55468 b=640 c=480 d=1 ret=0xFFFFD8F1 (-9999)
+AAB3 lr=libObj+0x64029B → abort（约 9–10s）
+```
+- c194 同一调用 ret=0（run 间不同但都失败）⇒ **BMP_Create(640x480) 失败是早期 abort/黑屏直接原因**。
+- c196 的 naked 汇编 hook 方案失败（app 线程全退），改用已导出符号的 C interposer。
+- 关键符号（libObj 导出）：
+  - `BMP_Create` (0x69ca08)
+  - `_ZN2ux6resmgr15ResourceManager11createImageERKN5libra16CreateImageParamEPNS2_9ImageDataE` (0x61082c)
+  - `_ZN2ux6resmgr15ResourceManager7requestEjPFvPvPN5libra9ImageDataEES2_S5_h` (0x6105a8)
+  - `_ZN5libra9ImageDataC1Ev` (0x85a616) / detach / sys_getImageData / getPixelFormat / getResID / getWidth / getHeight
+  - `_ZN2ux4core13GraphicsImage21sys_getInternalObjectEPv` (0x64114c) / clear / copy
+- 下一步（c198，已派）：C interpose 上述函数记录参数/返回，定位 -9999 来源分支。
+- 另：`ab_v153.img` = ab_v95 + 带 fa keys 的 zvobs 单 preload（可验证不崩 + PAINT）。
