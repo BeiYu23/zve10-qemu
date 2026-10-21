@@ -19815,3 +19815,28 @@ pc=0x0623bca2                    r5=0x106847E4  r6=0x10684B98
 ### 注意（Lead 自查）
 - ML 探针（interpose Backup_nread）只能说明“有代码调用了 Backup_nread”，**不等价于主循环**；
   im.elf.real 主线程也可能因其它路径调用，因此判断主循环仍需结合 ZZGPEREG/绘制行为。
+
+---
+
+## 三百二十二、Round 349：环形链表结构取证 + ab_v145 900s；提出“init_array 干扰”对照实验
+
+### 方法修正
+- QMP `pmemsave` 是**物理地址**；读用户态 VA 需用 monitor **`x/1024xw <VA>`**（已成功）。
+
+### 基线环形链表结构（ab_tb_v171, T≈80s, PC=libObj+0x86CCA2）
+```
+S=0x10689B98: [0]=A
+A=0x10689DC0: [0]=B  [4]=S|3   [0x14]=A-8
+B=0x106897E4: [0]=A  [4]=A|3   [0x14]=B-8
+```
+- A↔B 两节点环；prev 链一致（A.prev=S, B.prev=A），但 **B.next 指回 A 而非 S** → 遍历永远到不了 sentinel；
+- A-B 间距两次运行都是 0x5DC（确定性损坏）。
+
+### ab_v145（一步退出 patch）900s
+- pVM=1527424 稳定；ML=0；ZZ=28；vdf_nz=31；dev_ui=39195 恒定；dev_gl 53k→442,835（GPE 轮询持续）；
+- r5 始终在 {0x111C3C80,0x111C3E5C,0x111C3EDC,0x111C3F88} 小集合；T=120 与 T=600 的 VA dump 完全相同；
+- ⇒ patch 仅绕过；根因是容器 next 指针成环（或遍历缺环检测），且确定性发生。
+
+### 根因假设（待验证）
+- c169 探针**手工执行 init_array**（529 次 view 注册）可能与 App 自身注册逻辑冲突 → 重复插入/删除悬挂 → 2 节点环；
+- 对照实验：**同一 FK8 探针但跳过手工 init_array**，看是否还出现 0x86CCA2 环、pVM/ML/绘制是否改善。
