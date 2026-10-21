@@ -19774,3 +19774,27 @@ loop: 86cc90: cmp r5,r6 (sentinel)
 - 基于 tmp/ab_tb_v171.img；patch n15 libObj **0x86CCA6**: `f3 d1` → **`01 e0`**（b +1 → 0x86CCAC，循环只走一步即返回）；
 - 目的：先把线程放出来，观察 pVM/ML/ZZGPEREG/VDF 是否恢复推进。
 - 同时要求 init-unlocker 在基线采样 R05/R06 判断“环形 vs 极长”。
+
+---
+
+## 三百二十、Round 347：★★ ab_v145 成功：环形链表确认（2 节点环）且绕过后续 UI 线程推进
+
+### 基线采样（r5/r6）——环形确认
+```
+pc=0x0623bca2 (libObj+0x86CCA2)  r5=0x10684DC0  r6=0x10684B98
+pc=0x0623bca2                    r5=0x106847E4  r6=0x10684B98
+... r5 仅在 0x10684DC0 / 0x106847E4 两值间交替；r6(sentinel)=0x10684B98 恒定且不在环上
+```
+- ⇒ **2 节点环**（A.next=B, B.next=A），遍历永远碰不到 sentinel/NULL → 死循环（与反汇编一致）。
+
+### ab_v145（0x86CCA6 bne→b +1）结果
+- UI 线程**离开 0x86CCA2**，PC 分散到 libObj 多个函数（0x6214ABE/0x6233C0E/0x6233BD2/0x5FFA25C/0x600F604…），r5 值变化 → **在推进**；
+- **pVM 非 0**（i=40/44 起，1.35M~1.71M 堆地址）；
+- **ML=1（tid=134）→ 主循环 0x8a3104 启动过**；
+- dev=dmpgles2 82k、uipc 39k；ZZGPEREG 仍 28、VDF blank、无崩溃；
+- c172（late openView）仍 ret=0，无 GPE 提交（事件未被消费或消费后未绘制）。
+
+### 判断
+- **真卡点已找到并绕过**（stella 2 节点环形链表）；
+- run 间波动（pVM/ML 出现时间不定、有时 ML=0）→ 可能与我们探针/主线程的初始化时序有关（双 Application_System_Init 竞态？待查）；
+- 下一步：稳定主循环 + 事件消费验证（openView 入队是否被消费）+ 长跑确认是否最终绘制。
