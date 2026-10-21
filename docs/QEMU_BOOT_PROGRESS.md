@@ -19663,3 +19663,20 @@ libObj base=0x59D2000 → user_lr 偏移 = 0x7755D9
 - 把新 fake_gles（md5 190dab2e…）装进 **c162/FK8 镜像**（保留其探针）→ ab_tb_v171 + initrd_q4；
 - 采集 PCPROBE（comm/pid/user_pc/user_lr）、pVM、libObj base、gfx/wg、ZZGPEREG；
 - 判据：若 PCPROBE pid 与创建 manager 的线程相同 → UI 线程被 kick 循环占用；否则 UI 线程在别处，用 SysRq/ML 探针继续定位。
+
+---
+
+## 三百一十五、Round 342：Appframework 线程入口/描述符确认；ab_v143 = patch 0x7757A0 为 bx lr
+
+### 关键确认（Lead）
+- `Application_System_Init`(0x8a2408) 创建线程的 **描述符 @libObj+0x1455f24** 内容：
+  `flags=0x01033f63, 0x4, entry=0x008a2399` → UI 线程入口就是 0x8a2398（确认）；
+- `0x7757A0`（rm kick 循环）与 `0x775860`（rm_kick_thread_init）在 libObj 内**没有直接 BL 调用点** → 它们只能是线程入口/函数指针，或在别处同步调用；
+- PCPROBE（FK8 环境、pVM 非 0）抓到 `comm=Appframework pid=188 user_lr=0x7755D9` → 该线程（很可能就是 UI 线程 188）正在跑 0x7757A0 循环；
+- UI 线程在 pVM 写入后到主循环之间只有 snprintf、0x8a2314（可 NOP）、0x8a3104，因此若 188 尚未到主循环，最可能是 **0x8a2ee0 收尾调用链（EventManager::push / 0x8a2292 / 0x12e734）同步进入了 GPE 循环**。
+
+### ab_v143.img（Lead，已构建）
+- 基于 init-unlocker 的 `tmp/ab_tb_v171.img`（FK8 + c169 探针 + fake_gles 190dab2e）；
+- patch n15 `/lib/libObj.so` 0x7757A0：`2b 4b`(ldr r3,[pc]) → **`70 47`(bx lr)**；
+- 目的：判定 0x7757A0 是线程体还是 UI 线程同步调用；若 ML 出现 → 该循环即主循环前最后阻塞点。
+- 待验证：ML、pVM、PCPROBE、gfx/wg、ZZGPEREG、VDF、崩溃。
