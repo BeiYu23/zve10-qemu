@@ -19749,3 +19749,28 @@ libObj base=0x59D2000 → user_lr 偏移 = 0x7755D9
   1) PC 分布随时间是否变化（推进 vs 原地循环）；
   2) ML 是否出现、pVM、ZZGPEREG w、VDF/screendump；
   3) 若推进但 >10min，考虑优化（减少节点/跳过忽略）或接受慢速。
+
+---
+
+## 三百一十九、Round 346：600s 长跑 → UI 线程卡在 libObj 单链表遍历（0x86CCA2）；ab_v145 破环
+
+### 600s 长跑结果（init-unlocker）
+- ML=1（tid=134）、pVM=0、ZZGPEREG=28、VDF blank、无崩溃；
+- 130 个用户态 PC 样本中 **129 个在 libObj+0x86CCA2 / +0x86C6D2**（T=90→600 全同），仅 1 个在 CautionConfig.so+0xC09CD6（T=30）；
+- ⇒ **不是慢速推进，是卡在单链表遍历循环**；且长跑出现 pVM=0 / ML=1 的“分叉”（与短跑不同）。
+
+### Lead 反汇编（0x86CC5A，stella TList 遍历/删除）
+```
+loop: 86cc90: cmp r5,r6 (sentinel)
+      86cc9c: r0 = [r5] (next via 0x86c6d2)
+      86cca2: r5 = r0
+      86cca4: cmp r5,#0
+      86cca6: bne loop          ← 只有 r5==r6 或 r5==NULL 才退出
+```
+- 唯一调用点 **0x8647B4**（libObj 内部容器操作）；
+- 10 分钟不退出 ⇒ 链表**环形且不回到 sentinel**，或极长/损坏。
+
+### ab_v145.img（Lead，已构建）
+- 基于 tmp/ab_tb_v171.img；patch n15 libObj **0x86CCA6**: `f3 d1` → **`01 e0`**（b +1 → 0x86CCAC，循环只走一步即返回）；
+- 目的：先把线程放出来，观察 pVM/ML/ZZGPEREG/VDF 是否恢复推进。
+- 同时要求 init-unlocker 在基线采样 R05/R06 判断“环形 vs 极长”。
