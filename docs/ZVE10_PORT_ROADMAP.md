@@ -240,3 +240,19 @@ else:
   - entry 打印 ctx、ctx+0x10、ctx+0x58 lock 状态；
   - exit 打印返回值（0 还是 -9999）；
   - 若返回 -9999 且 ctx+0x10==16 → 说明别处覆盖了 ctx+16 或 dump 偏移有误，再抓完整 32 word。
+
+## M3 hook 机制修正与下一步（2026-10-21 20:30）
+- Thumb trampoline 关键 bug 已修：跳 trampoline 必须 `bx (trp|1)`，否则按 ARM 解码 → illegal（c213 崩因，也可能是 c204 多 hook 失败原因）。
+- c214（单 hook **0x7685A8** entry+exit，ab_v203 基线）：120s 内仅 1 次：
+```
+E58 ctx=0x000B4410 c16=0x00000010 lock=0x06D8F188 r1=0 r2=0 r3=0x0DAC4BFC lr=libObj+0x6BCBE1
+E58 ret=0x00000000
+```
+  - 该调用来自另一路径（lr=0x6BCBE1），**不是 BMP 路径**（BMP 路径若走 0x7676C4 tail-call，lr 应在 0x69Bxxx）；
+  - 说明 BMP 路径很可能在 0x7676C4 内**提前返回**（未到 tail-call 0x7685A8）。
+- 但注意：c208 的“唯一化 literal→index→地址”映射可能有偏（index 24→0x69B5A8），
+  因此需用 **BMP_Create 自身 exit 日志** 直接确认实际返回值，再决定路径。
+- 下一步（c215，多 hook，两 trampoline 均 thumb|1）：
+  1) BMP_Create：entry(参数) + exit(返回值)
+  2) 0x7685A8：entry+exit
+  观察 BMP 调用期间是否有 E58、以及 BMP_Create 实际返回码（-9999 / -2 / 其它）。
