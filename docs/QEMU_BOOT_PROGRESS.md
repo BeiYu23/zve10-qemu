@@ -19550,3 +19550,29 @@ View::drawDirect (0x8a0074):
 - A：直接 `0x8a6bc4(pVM)`；
 - B：手工构造 openView 同款 Event 并调 `0x44ab08`（ModelExecute 处理器）。
 - 若出现 GPE 提交 → 立刻转软件 GPE 渲染。
+
+---
+
+## 三百一十、Round 337：requestModelExecute 也是“入队”；主循环是否到达需验证（Backup_nread 探针）
+
+### c167/c168 结果（init-unlocker）
+- A：`0x8a6bc4(pVM)` **挂住不返回**（无崩溃、samples 停 40）→ layer/widget 树不完整，内部死循环/等待；
+- B：手工 Event(0x11012001) 调 **0x44ab08** → 正常返回，但 **无 GPE 提交**、VDF blank。
+
+### Lead 反汇编 requestModelExecute（0x141040）
+```
+r8 = *(AbstractUtilityManager 单例)
+id = IdGenerator::Get(name)
+r0 = 0x151a3e(name, mode)          ; 取/建 table 项
+ev = createRequestModelExecuteEvent(r8, id, mode, params)   ; PLT
+b 0x140fc8(ev): addParameter(6, ParamBase(mode)); EventManager::push(...)
+```
+- ⇒ 它**同样只是入队事件**（和 openView 一样），不直接执行；仍依赖 App 事件循环消费。
+
+### 关键待查：App 主循环（0x8a3104）到底有没有开始执行
+- 主循环第一条语句就是 `Backup_nread(0x..., buf, 4)`（PLT 调用）——可 interpose：
+  - 定义 `int Backup_nread(...)` 包装：首次调用打印 `ML tid=<gettid()>`，再转发真实函数（dlsym 或 PLT 链）；
+- 若看到 ML 打印：
+  - tid 与 pVM/管理器创建线程一致 → 主循环已跑，事件不被消费另有原因；
+  - 无打印 → App 线程卡在 0x8a2314（osal_valloc_msg_wait）等前面步骤。
+- 同时请求：**完整 SysRq 全线程 dump**（用户态线程名/状态/内核栈），确认当前基线（c162 + initrd_q4）下 Appframework 到底几个线程、各在哪。
