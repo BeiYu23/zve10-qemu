@@ -19798,3 +19798,20 @@ pc=0x0623bca2                    r5=0x106847E4  r6=0x10684B98
 - **真卡点已找到并绕过**（stella 2 节点环形链表）；
 - run 间波动（pVM/ML 出现时间不定、有时 ML=0）→ 可能与我们探针/主线程的初始化时序有关（双 Application_System_Init 竞态？待查）；
 - 下一步：稳定主循环 + 事件消费验证（openView 入队是否被消费）+ 长跑确认是否最终绘制。
+
+---
+
+## 三百二十一、Round 348：资源纪律 + 新基线 ab_v145 的 300s 长跑计划
+
+### 资源纪律（用户要求）
+- 同一时间最多 1 个 QEMU（上限 2）；每轮结束必须 kill 并确认无残留；
+- 采样数据写 /mnt/build/tmp；不并发其它实验；结果摘要+路径，不贴大日志。
+
+### 计划（派发 init-unlocker）
+- IMAGE=ab_v145.img（v171 + 0x86CCA6 破环 patch），INITRD=initrd_q4；
+- 300s，每 30s 采 5 次 QMP info registers，记录 ML/PV/ZZGPEREG/VDF/dev 计数；
+- 结束 screendump + kill QEMU；PC 偏移按库归类。
+
+### 注意（Lead 自查）
+- ML 探针（interpose Backup_nread）只能说明“有代码调用了 Backup_nread”，**不等价于主循环**；
+  im.elf.real 主线程也可能因其它路径调用，因此判断主循环仍需结合 ZZGPEREG/绘制行为。
