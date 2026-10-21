@@ -19904,3 +19904,19 @@ T=91+ ring_hits 18→221，pVM 全程 0、ML=0、ZZ=28、VDF blank
 - 同一探针，IA 只执行前 N 个 ctor（N=200/500/900/1768），每次 120–180s；
 - 观察：pVM 是否非 0、ring_hits、ZZ/VDF；
 - 若存在 N* 使 pVM 非 0 且环不出现 → 用该子集作为新基线，再谈事件消费/绘制。
+
+---
+
+## 三百二十六、Round 353：环由 IA 侧效果触发（expC 无 IA 不环、任一种 IA 都环）；怀疑 IdSoTable 重复注册 → 移除时双删 → 2 节点环
+
+### 关键对照
+- expC（完全跳过 IA）：300s 环=0、pVM=0；
+- c169（i=40 完整 IA）：pVM 非 0，T≈90 出现同一 2 节点环；
+- expH（i=11 触发 IA 但某个 ctor 阻塞、未跑完）：同样在 T≈90 出现同一环。
+- ⇒ 环由 **IA 的副作用（静态对象/view 注册）** 触发；App 流程只有在 IA 后才推进到会做“插入/删除”的阶段。
+
+### 新假设
+- 529 次 `IdSoTable::add` 中可能存在**重复 id/重复注册**（同一 view 被多个 ctor 注册），
+  App 后续 remove/清理时对一个节点做两次摘除 → 典型 “B.next=A” 半删除形态；
+- 验证方法：在探针的 `IdSoTable::add` interposer 里统计 **id 去重后数量 vs 总次数**，打印重复 id；
+- 若存在重复：做 dedup 版（已存在 id 则跳过 real add），观察环是否消失、pVM 是否仍非 0。
