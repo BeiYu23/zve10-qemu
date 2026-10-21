@@ -19601,3 +19601,22 @@ b 0x140fc8(ev): addParameter(6, ParamBase(mode)); EventManager::push(...)
 - 保留 Backup_nread/timeGetNow interposer 验证主循环启动（期望 `ML tid=`）；
 - 用 c162 流程 + initrd_q4 跑 2 次；
 - 判据：ML 是否出现、EventManager 是否被消费、openView 是否真建 view、ZZGPEREG/VDF 是否变化。
+
+---
+
+## 三百一十二、Round 339：kprobe 探针 pcprobe.ko（打印 GPE ioctl 的 user PC/LR）→ ab_v141
+
+### c170 结果（init-unlocker）
+- 0x8a23d4 实际字节 `ff f7 9e ff` → 已改 `00 bf 00 bf`（NOP NOP）；2 次运行 **ML 仍 0**；
+- SysRq：Appframework 状态 **R (running)**，`schedule_ret_to_user`（用户态自旋），持续 GPE ioctl 40k+；
+- ⇒ 自旋循环在 0x8a2314 之外（已 NOP 无效），需用户态 PC/LR 定位。
+
+### Lead：kprobe 模块 pcprobe.ko（不改驱动语义）
+```
+kprobe on vfs_ioctl; 若 cmd&0xffff0000 in {0xc0040000,0x80040000} 且前 24 次：
+  从 task_pt_regs(current) 取 user ARM_pc/ARM_lr
+  printk("PCPROBE cmd=%08x user_pc=%08lx user_lr=%08lx comm=%s pid=%d")
+```
+- 构建成功：pcprobe.ko md5 39bb6047…；
+- ab_v141.img = ab_v95 + /kmod/pcprobe.ko + wrapper 里 8s 后台 insmod（打印 PCPROBE rc=）；
+- 配 INITRD=initrd_q4（dmac patch）跑，拿到 Appframework 的 user_pc/user_lr → 减 libObj base 得偏移 → 定位自旋循环 → patch 或让驱动返回正确值。
