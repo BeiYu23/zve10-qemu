@@ -19528,3 +19528,25 @@ View::drawDirect (0x8a0074):
    - ParamBase：new(0x14)+ctor libObj+0x111118(this, value)
    - addParameter：libObj+0x112d64(event, key, param)
 3) 若有 GPE 提交 → 立即转软件 GPE 渲染。
+
+---
+
+## 三百零九、Round 336：App 线程入口完整逻辑（manager 图 → requestModelExecute → 主循环）
+
+### 线程入口 0x8a2398 完整序列（Lead）
+```
+1) uxengine_init (0x6271d4)
+2) 0x8a2ee0(&ctx, name)     ; 建 EventManager/InputService/ModelManager/ViewManager（pVM 在此写入）
+3) snprintf(buf,32, fmt, ...) ; 生成目标名字符串
+4) 0x8a2314(r0=1, buf)      ; AbstractUtilityManager::createRequestModelExecuteEvent
+                            ;   osal_valloc_msg_wait(0x34) → 填 type=9/字符串 → osal_snd_msg
+5) 0x8a3104(&ctx)           ; 主循环（开头 Backup_nread 读 /setting，timeGetNow 等）
+6) 0x8a306c(&ctx)           ; 清理
+```
+- pVM 非 0 证明已过步骤 2；但事件队列不消费（count 不降）说明线程**卡在 3/4（osal_valloc_msg_wait）或主循环内部的等待**。
+- 0x8a3104 主循环复杂度高（0x174 栈、多分支），暂不手工调用。
+
+### 下一步（等 init-unlocker 的 A/B 结果）
+- A：直接 `0x8a6bc4(pVM)`；
+- B：手工构造 openView 同款 Event 并调 `0x44ab08`（ModelExecute 处理器）。
+- 若出现 GPE 提交 → 立刻转软件 GPE 渲染。
