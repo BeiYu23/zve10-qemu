@@ -19640,3 +19640,26 @@ kprobe on vfs_ioctl; 若 cmd&0xffff0000 in {0xc0040000,0x80040000} 且前 24 次
   - 模块 md5 `190dab2e…`；
 - 镜像 = ab_v141 + 新 grm_gles.ko（pcprobe.ko 保留但加载失败无影响）；
 - 配 initrd_q4 跑，待验证：基线 gfx/wg、ZZGPEREG=28、PCPROBE PC/LR。
+
+---
+
+## 三百一十四、Round 341：ab_v142 PCPROBE 成功但定位到的是“正常 GPE kick 线程”；需 FK8 环境复测
+
+### ab_v142 PCPROBE 结果（init-unlocker）
+```
+cmd=c004820d user_pc=042ea17c user_lr=061475d9 comm=Appframework pid=197/191
+libObj base=0x59D2000 → user_lr 偏移 = 0x7755D9
+```
+- 0x7755D9 位于 **0x7755B0（820d waiter）** 内的 ioctl 返回点；
+- 调用者是 **0x7757A0 = rm_kick_thread 主循环**（标签 rm_kick_thread_init），即 **GPE kick 工作线程**，每帧轮询 820d 属正常行为；
+- ab_v142 缺 FK8（fake 0x8f013a），因此它本来就到不了 view init（与 ab_v139 对照一致 → pVM=0）。
+
+### 驱动语义核对（Lead）
+- 当前 fake_gles 的 820d 实现确实是：`copy_to_user(arg,&1,4)` + `msleep(2)` + **return 0**（不是“返回 1”）；
+- 0x7755B0 循环判据：ioctl ret!=0 → 错误路径；`*arg==0` → 继续轮询；我们写 1 满足退出条件；
+- ⇒ 该 waiter 无 bug；40k 次只是 kick 线程轮询频率（msleep(2) 限制）。
+
+### 下一步（已派 init-unlocker）
+- 把新 fake_gles（md5 190dab2e…）装进 **c162/FK8 镜像**（保留其探针）→ ab_tb_v171 + initrd_q4；
+- 采集 PCPROBE（comm/pid/user_pc/user_lr）、pVM、libObj base、gfx/wg、ZZGPEREG；
+- 判据：若 PCPROBE pid 与创建 manager 的线程相同 → UI 线程被 kick 循环占用；否则 UI 线程在别处，用 SysRq/ML 探针继续定位。
