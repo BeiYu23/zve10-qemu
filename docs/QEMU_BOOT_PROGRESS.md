@@ -19937,3 +19937,41 @@ userpc: ('unk','0x4022f84',648), ('libObj.so','0x15b5f0',3), ('CautionConfig.so'
 - 656 个用户态样本中 **648 个在 0x4022F84**（探针 so 内、base≈0x4021000 偏移 0x1F84）；
 - 单 CPU 下若探针忙循环，会抢 UI 线程 CPU → 解释“UI 推进极慢”。
 - 下一步：修探针忙等 + 用 **normal cmdline** 做 dedup 对照并采 PC 分布（c188）。
+
+---
+
+## 三百二十八、Round 355–357（补记）：a7c2 路线启动 + 服务面清空 + 显示通道验证
+
+### 参考工程 a7c2-qemu（chocotan，MIT）
+- 架构：QEMU virt + 原始内核/用户态 + guest 侧 preload 伪造设备/服务 + 软件 GPE + ramfb/自定义输入设备；
+- 文档已整理要点：`docs/A7C2_QEMU_REFERENCE.md`；移植路线图：`docs/ZVE10_PORT_ROADMAP.md`。
+
+### M1 服务面（c190/c193）
+- 同步超时 qid 全集：**0x94016A、0x924127、0x1010227、0x13E8402**（+0x8F013A 已 FK8 fake）；
+- auto-fake（真实调用后 ret==-1020 改返 0）→ 同步超时全部清空；但 ML/ZZ/VDF 仍无改善。
+
+### 显示通道验证（c195）
+- 用户态 mmap /dev/mem @phys 0x20312000（32bpp）填蓝/红条纹 → QMP screendump 可见 16px 竖条纹；
+- ⇒ **VDF/streamfb 显示通道可用，软件 GPE 直写 VDF 路线成立**（不需要 ramfb）；
+- 注意：单用 zvobs 替换 /lib/libgrmlog.so 会因缺 fa keys 在 5.5s MonQueue 崩；双 preload 可行。
+
+## 三百二十九、Round 358–362：黑屏根因链（BMP_Create 失败）
+- c194/c197：BMP_Create(ctx,640,480,1) 返回 -9999；随后 abort（AAB3 lr 多次不同）。
+- c203：inline hook BMP_Create 成功（20+ 次调用，lr=libObj+0x6F8F85）。
+- c208：唯一化全部 57 处 -9999 literal → 返回 0xFFFF0018 → index24 → 0x69B5A8；
+  0x69B558 `bl 0x7676C4; cbz`，非 0 → 返回 -9999。
+- c211/c212：ctx dump → *(ctx+4)=0xEDFEFECA(“CAFEFEED”)；magic 放宽仍失败。
+- Lead 修正：Thumb `add r1,pc` 按 2 字节对齐 → memcmp 目标是 0x1007836 = CA FE FE ED，与 ctx 匹配；
+  因此 magic 检查**通过**，失败来自 0x7676C4 的 tail-call 0x7685A8。
+- c214/c216/c218（多 hook BMP+0x7685A8，entry+exit）决定性数据：
+  - BMP ctx=0x5F9D8；第 6 次 0x7685A8 调用 lr=0x69B55D（BMP 内），**返回 -1**；
+  - 0x7685A8：ctx+16==16 → r9=0x76858C(iter)；0x76858C 内 `osal_snd_sync_msg(id=[iter+12], msg=[iter+8])`，
+    随后返回 `[[iter+4]+16]`（初始 -1）→ 我们 auto-fake 返回 0 但**未回填应答**，结果字段仍 -1。
+- 结论：BMP 失败根因 = **该 UIPC 同步消息的应答数据未构造**（不是 magic/不是硬件）。
+- 下一步 c220：hook osal_snd_sync_msg 抓 BMP 窗口内该消息的 qid/内容 → 构造协议正确应答。
+
+### hook 机制经验（重要）
+- Thumb stub 必须独立 .S（`.thumb`）；跳 trampoline 必须 `bx (trp|1)`；
+- exit stub 必须保护返回值（push/pop r0 与 callee-saved）；
+- 仅前 8 字节 PC 无关的函数可 8 字节 hook；
+- 深层函数（0x7676C4/0x76858C）长驻 hook 会导致早期崩，需短窗口 hook。
