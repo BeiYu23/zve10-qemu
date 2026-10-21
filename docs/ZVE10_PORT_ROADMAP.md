@@ -220,3 +220,23 @@ cbz r0 (bmp==0) → 6f8fae 另一分支
 - c211 实验（Lead 已构建 ab_v211）：只把 0x767D92 `movne r0,r3` → `movs r0,#0`，
   让 magic 检查总是通过（窄范围），观察 BMP_Create 是否继续、后续是否崩在错误 ctx 上。
 - 待办：c211 运行结果；若继续 → 决定修调用方 ctx 还是保留放宽；同时 hook 记录 ctx+4 实际值。
+
+## M3 更精确的失败点（2026-10-21 20:15）
+- 重要修正：magic 期望值不是 0xFECA0045。memcmp 目标地址按 Thumb `add r1,pc`（PC=Align2）计算得 **0x1007836**，
+  该处字节 = **CA FE FE ED（0xEDFEFECA）**，与 ctx(+4) 的 CAFEFEED **一致** ⇒ magic 检查实际**通过**。
+  （0x1007834 的 "45 00 ca fe" 只是 "ImplE\0" 字符串尾部与 magic 前半重叠产生的错觉。）
+- 因此 BMP_Create 的 -9999 来自 `0x7676C4` 的 **tail-call 0x7685A8 的返回值**（非 magic、非 -2）。
+- `0x7685A8` 反汇编关键：
+```
+r4 = ctx; r6 = ctx+0x58; lock(r6)
+if (*(u32*)(ctx+16) != 16)  → r9 = -9999  → return -9999   ← 主要失败分支
+else:
+  ... r9 = 0x76858C(...); if (r9) → 跳到最后 return r9（也可能非 0）
+  ... 成功则 [r5]=0、ctx+20++，返回 r9(=0)
+```
+- ctx dump 曾显示 `*(ctx+16)=0x10`（=16），所以可能不是该分支，而是 0x76858C 返回非 0
+  （或 dump 的字段索引与 +16 对应有偏差，需再次核对）。
+- c213 计划：单 inline hook **0x7685A8**（前 8 字节 stmdb+mov，安全）做 entry+exit 日志：
+  - entry 打印 ctx、ctx+0x10、ctx+0x58 lock 状态；
+  - exit 打印返回值（0 还是 -9999）；
+  - 若返回 -9999 且 ctx+0x10==16 → 说明别处覆盖了 ctx+16 或 dump 偏移有误，再抓完整 32 word。
