@@ -256,3 +256,27 @@ E58 ret=0x00000000
   1) BMP_Create：entry(参数) + exit(返回值)
   2) 0x7685A8：entry+exit
   观察 BMP 调用期间是否有 E58、以及 BMP_Create 实际返回码（-9999 / -2 / 其它）。
+
+## M3 链路完全确认 & 新根因方向（2026-10-21 20:55）
+- c216/c218 双 hook（BMP_Create + 0x7685A8，entry+exit）决定性数据：
+```
+HBMP_IN  a0=0x5f9d8 640 480 1 lr=libObj+0x6F8F85
+HBMP_OUT ret=0xFFFFD8F1 (-9999)
+0x7685A8 前5次：早期 layout 初始化，ret=0
+第6次（=BMP ctx 0x5f9d8）：r1=0x000e1000 r2=640 r3=0x5fab0 lr=0x69B55D
+    E58_OUT ret=0xFFFFFFFF (-1)
+```
+⇒ 链路：BMP_Create → 0x7676C4 → tail 0x7685A8(ctx) → 返回 **-1** → BMP 视为失败(-9999)。
+- 0x7685A8 中 ctx+16==16 满足 → 走 `r9 = 0x76858C(iter)`，非零 → 返回 r9(-1)。
+- 0x76858C 关键：
+```
+r3=[iter+8]; if(!r3) → 返回 -9999
+bl 0x768208(iter)      ; 0x768208: osal_snd_sync_msg(id=[iter+12], msg=[iter+8])  ← UIPC 同步消息！
+r3=[iter+4]; return [r3+16]     ; ← 返回的结果字段，初始 -1，成功应答后置 0
+```
+- ⇒ **根因很可能是：我们 auto-fake 的同步消息只返回 0，但没有把“应答数据”写回消息/结果字段，导致 [iter+4]->[+16] 仍为 -1**。
+- hook 机制经验（已修）：
+  - Thumb 位：`bx (tramp|1)`；
+  - exit stub 必须保护返回值（push {r0,r4,r5,r7} → logger → pop）。
+- 下一步（c220）：hook `osal_snd_sync_msg`（C interposer，安全）记录 qid/w0..w3/lr，与 BMP_Create 调用做时间关联，
+  找出 0x768208 发出的那条同步消息用的是哪个 qid、期望什么应答；随后构造/伪造正确的应答数据。
