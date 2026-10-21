@@ -19576,3 +19576,28 @@ b 0x140fc8(ev): addParameter(6, ParamBase(mode)); EventManager::push(...)
   - tid 与 pVM/管理器创建线程一致 → 主循环已跑，事件不被消费另有原因；
   - 无打印 → App 线程卡在 0x8a2314（osal_valloc_msg_wait）等前面步骤。
 - 同时请求：**完整 SysRq 全线程 dump**（用户态线程名/状态/内核栈），确认当前基线（c162 + initrd_q4）下 Appframework 到底几个线程、各在哪。
+
+---
+
+## 三百一十一、Round 338：主循环确认未执行（ML=0）；c170 = NOP 掉线程入口 0x8a2314 调用
+
+### c169 结果（init-unlocker）
+- interpose `Backup_nread`（主循环第一条逻辑）→ **ML 行 0 次** ⇒ 主循环 0x8a3104 未执行；
+- 完整 SysRq（88 threads）：只有一个 Appframework(188)，D 状态在 `fake_ioctl+0x12c msleep`（820d GPE 等待）；
+- 其他线程都在 futex/osal_rcv/__k_4u_wait_cb；
+- ⇒ Appframework 卡在 0x8a2314 或更早，从未进入主循环。
+
+### 线程入口字节（已核对）
+```
+8a23ce: 2001        movs r0,#1
+8a23d0: f107 0150   add.w r1,r7,#80
+8a23d4: f7ff ff9e   bl 0x8a2314   ← createRequestModelExecuteEvent(1, buf)
+8a23d8: 4638        mov r0,r7
+8a23da: f000 fe93   bl 0x8a3104   ← 主循环
+```
+
+### c170 实验（派发）
+- patch libObj **0x8a23d4**: `f7 ff ff 9e` → `00 bf 00 bf`（NOP NOP），跳过 0x8a2314；
+- 保留 Backup_nread/timeGetNow interposer 验证主循环启动（期望 `ML tid=`）；
+- 用 c162 流程 + initrd_q4 跑 2 次；
+- 判据：ML 是否出现、EventManager 是否被消费、openView 是否真建 view、ZZGPEREG/VDF 是否变化。
