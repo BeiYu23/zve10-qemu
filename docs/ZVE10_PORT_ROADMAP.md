@@ -108,3 +108,12 @@
   2) interpose `BMP_Create`（libObj 导出）记录 (args,ret)；
   3) abort 栈扩展（256 words）+ /proc/self/maps 全量 dump，定位 0x04097146 属库；
   4) 180s，报告 ldec/liro 活动、BMP 返回码、abort 栈与 maps。
+
+## 显示通道自检（c195，ab_v151）— 2026-10-21 18:28
+- 目的：验证"我们直接写 VDF 物理 0x20312000，bionz-streamfb 能否显示"（决定软件 GPE 输出方案）。
+- 实现：`/root/fw/zvport/zvobs.so`（ARMv7 preload，替换镜像内 /lib/libgrmlog.so）：
+  - constructor 建 pthread；15s 后 open("/dev/mem") + mmap2(0x20312000, 640*480*4)；
+  - 填蓝/红 16px 竖条纹（32bpp），打印 `ZVOBSP loaded / PAINT mapped / PAINT ok`。
+- 镜像：`/mnt/build/ab_v151.img`（= ab_v95 + n7 替换 libgrmlog.so + dmac 由 initrd_q4 提供）。
+- 判据：串口出现 PAINT 标记；QMP screendump 在 30s/50s 是否从 test pattern 变成条纹。
+- 若成立 → 软件 GPE 直接写 VDF 即可，无需 ramfb/fw_cfg。
