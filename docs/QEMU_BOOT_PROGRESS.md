@@ -19493,3 +19493,38 @@ View::drawDirect (0x8a0074):
 - 用 c165 同一流程（init_array + openView + 工厂 + drawDirect）跑；
 - 观察：ZZGPEREG w 是否增长（GPE 提交）、VDF/screendump 是否变化、是否崩。
 - 这是“让 drawDirect 进真正绘制分支”的最小实验。
+
+---
+
+## 三百零八、Round 335：drawDirect 门控后仍不画；draw 实际遍历对象分析
+
+### c166 结果（init-unlocker）
+- patch `IsViewModeDiadem`→return 1 已生效（0x8a6740=`01 20 70 47`）；
+- view 创建 + drawDirect 三次成功、无崩溃；**ZZGPEREG 仍 28、VDF blank**。
+
+### Lead 反汇编：drawDirect 之后的真实绘制路径
+```
+0x8a4528: 若 IsViewModeDiadem !=0 → b.w 0x8a6bc4([manager+0x14])
+0x8a6bc4(r0=对象):
+  r4=r0; blx IsViewModeDiadem(); cbz → 返回
+  读 [r4+8]=WidgetSystem*，[r4+0x2c]=LayerID
+  WidgetSystem::getLayer(ID) → layer->vtable[+4](0)
+  loop: WidgetSystem::sys_calcInterpRatio / getWidget ...
+  最后 b.w 0x6196b8(WidgetSystem 绘制/提交)
+```
+- ⇒ 它绘制的是 **WidgetSystem 当前 layer/widget 树**，不是我们工厂 new 出来的 View 对象；
+- 我们工厂创建的 view 没有挂进 WidgetSystem/manager 的 layer 树 → 遍历 0 个 widget → 无 GPE 命令。
+
+### 另：ModelExecute 事件处理器
+- openView 入队事件 id=0x11012001（参数 6=view id，0x1a=mode）；
+- 其处理器在 libObj **0x44ab08**（读 Event id、参数 19/9 等后执行 model）；
+- EventManager 取事件 API 在 0x8a18b6（唯一调用者 0x41ba48，疑为 app 事件派发处）。
+
+### 下一步实验（派发）
+1) 直接调 `0x8a6bc4(pVM)`（跳过 drawDirect gate）→ 看是否触发 WidgetSystem 绘制（ZZGPEREG 增长）；
+2) 手工构造 openView 同款 Event（id=0x11012001，param6=IdGenerator::Get("view/SCALAR")，param0x1a=mode=0），
+   直接调用处理器 **libObj+0x44ab08(event)** → 看是否真正执行 model/创建 view/绘制；
+   - Event ctor：libObj+0x8a01e8（Event(id,0,0)）
+   - ParamBase：new(0x14)+ctor libObj+0x111118(this, value)
+   - addParameter：libObj+0x112d64(event, key, param)
+3) 若有 GPE 提交 → 立即转软件 GPE 渲染。
