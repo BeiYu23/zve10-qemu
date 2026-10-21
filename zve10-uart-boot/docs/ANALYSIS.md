@@ -99,9 +99,9 @@ CMD1 时好时坏：有时通过并继续，有时卡死（已把超时从 2 分
 之后出现"一直短闪"现象，疑似 ROM 错误灯（0x1xxx 家族）或 payload 循环
 
 ## 复现脚本与载荷
-payload/main.c          当前工作载荷（含候选 LBA 扫描）
-payload/main_rw_ok.c    曾一次性跑通 10 阶段的版本（最接近成功）
-scripts/inject_cap.py       A7C 时序注入（载波常开+14.4ms 记录间隔）
+/root/fw/aux_fix_cap/main.c          当前工作载荷（含候选 LBA 扫描）
+/root/fw/aux_fix_cap/main_rw_ok.c    曾一次性跑通 10 阶段的版本（最接近成功）
+/root/fw/aux_fix/inject_cap.py       A7C 时序注入（载波常开+14.4ms 记录间隔）
 
 ## 下次开工建议（按序）
 1) 先用 main_rw_ok.c 复现"10 阶段全过 + 慢闪"，确认基线
@@ -120,11 +120,48 @@ scripts/inject_cap.py       A7C 时序注入（载波常开+14.4ms 记录间隔�
 
 应对：Makefile 加 -Os 后，完整"初始化+CMD0/1/2/3/7/17+读块+校验"载荷压到 944 B，已可发送。
 
-成功基线（务必保留）：payload/main_sig_baseline.c（1212 B，10 长闪+签名）
-工作版本：payload/main.c（944 B 精简读块版）
+成功基线（务必保留）：/root/fw/aux_fix_cap/main_sig_baseline.c（1212 B，10 长闪+签名）
+工作版本：/root/fw/aux_fix_cap/main.c（944 B 精简读块版）
 
 ## 下一步
 1) 精简版 944 B 发送后"过一会触发崩溃" → 需确认崩在哪：可临时把结果码提前（先闪 1 次表示进入 main）
 2) 若崩在 CMD1 重试 → 缩短重试次数/超时
 3) 若崩在读块 → 检查 0x2E 超时与 0x0C 传输模式
 4) 拿到 1 长闪 = 读到 FAT 引导扇区 ⇒ 直接进入"定位目录项+改 4 字节"
+
+## 2026-10-22 04:40 ★★ loader 的 eMMC 初始化确切序列（已从 0xfe04f746 提取）
+
+关键字面量（0xfe04fa64 起）：
+```
+0xF03044FC  厂商寄存器
+0xF030403E  Host Control 2（bit7 = 1.8V 信令使能）
+0x000F4240  等待常量（1,000,000）
+0xF0304204  厂商寄存器（bit1 时钟相关、bit18=0x40000 总线相关）
+0xFC00FFFF  掩码
+```
+
+初始化步骤（严格顺序，取自 0xfe04f948 - 0xfe04f9d4）：
+```
+① 0xF03044FC: read; bic #2;      write            ; 清厂商 bit2
+② 0xF030403E: readh; bic #0x80;  writeh           ; 关 1.8V 信令
+③ 等待约 1,000,000 单位（bl 0xfe04d976 取计时基准）
+④ 0xF030402C(CLKCTL): readh; bic #4; writeh       ; 关 SD 时钟输出
+⑤ 延时 13（bl 0xfe04d980）
+⑥ 0xF0304204: read; bic #2; and #0xFC00FFFF; orr #0x40000; write
+⑦ 0xF0304204: read; orr #2; write                 ; 重新置 bit1
+⑧ 0xF030402C: readh; and #0x3F; writeh            ; 清分频（bit8-15=0）
+⑨ 0xF030402C: readh; orr #4;    writeh            ; 打开 SD 时钟输出
+⑩ 0xF0304028(HostCtl1): ldrb; orr #4; strb        ; 4-bit 总线宽度
+⑪ 0xF0304124: read; bic #0x01000100; write        ; 清 bit8/bit24
+⑫ delay(0xB9)                                      ; 再等一小段
+```
+
+⇒ 这解释了我们之前的失败：
+   · 我们从未处理 0xF0304204 的 bit18(0x40000) 与 bit1
+   · 从未清 CLKCTL 的分频高字节（我们用 (5<<8)|…）
+   · 从未设 4-bit 总线宽度 (0xF0304028 bit2)
+   · 1.8V 信令 (0x3E bit7) 必须先关（我们没碰）
+   · 之前访问 0x4204 崩，是因为没有按这个顺序（先清 bit2 再改掩码）
+
+## 下一步 payload（照抄上面 ①-⑫，再发 CMD0/1/2/3/7/17）
+注意：0x4204 的写需要“读-改-写”，不能直接赋值。
