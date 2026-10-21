@@ -90,3 +90,21 @@
   （首 word 形如 0x00xx00XX，像服务内部 message type）
 - 下一步（c192，已派）：**auto-fake** —— 先真实调用，凡 ret==-1020 一律改返 0 并记录，
   一次扫出全部缺失服务；观察 pVM/ML/ZZGPEREG/VDF 是否解锁绘制。
+
+## M2 后半（c193 auto-fake，2026-10-21 18:25）
+- auto-fake（真实调用后 ret==-1020 改返 0）后：**同步超时全部清空**（0x94016A/0x1010227/0x924127/0x13E8402）；
+- 仍 **ML=0、ZZGPEREG=28、VDF blank**；pVM 非 0；无 ring；
+- **发现 app 内部 abort/assert**（探针捕获 abort，lr=libObj+0x64029B）；
+- abort 栈 LR 换算（以 base=0x59D1000）得到候选偏移：
+  - 0x64129a → `ux::core::GraphicsImage::sys_getInternalObject+0x14e`
+  - 0x85748e → `libra::String::operator=+0x3658`
+  - 0x85c34c → `libra::ImageData::getWidth+0x1a46`
+  - 0x64031e → `ux::core::Log::write+0x178e`
+  - 0x69d4e2 → `BMP_Create+0xada`
+- 判读：abort 发生在**图像/位图资源创建链路**（BMP/ImageData/GraphicsImage），
+  与 a7c2 文档"资源 LZ77 解码失败导致显示异常"高度吻合 ⇒ **M4（资源解码）很可能是当前真正阻塞点**。
+- 下一步（c194，已派）：在 c193 基础上加
+  1) open/open64/ioctl 记录 /dev/ldec、/dev/liro、/dev/dmpgles2、stream；
+  2) interpose `BMP_Create`（libObj 导出）记录 (args,ret)；
+  3) abort 栈扩展（256 words）+ /proc/self/maps 全量 dump，定位 0x04097146 属库；
+  4) 180s，报告 ldec/liro 活动、BMP 返回码、abort 栈与 maps。
