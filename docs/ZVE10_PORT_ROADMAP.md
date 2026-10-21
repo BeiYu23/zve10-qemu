@@ -201,3 +201,22 @@ cbz r0 (bmp==0) → 6f8fae 另一分支
   - 分支C(-10003)：vtable+0x64 方法返回 0 → 需要对应设备/模型对象；
   - 分支D(-10004)：pthread_mutex_init 失败 → preload 里 interpose pthread_mutex_init 强制返回 0（低成本试探）。
 - 之后目标：BMP_Create 成功 → UI 创建 screen → 软件 GPE/VDF 输出。
+
+## M3 根因解码（2026-10-21 20:00）
+- 用"唯一化全部 -9999 literal"法（c208）确定 BMP_Create 失败来自 **0x69B5A8**（index 24）：
+```
+69b558: bl 0x7676C4 ; cbz r0, 正常; 否则 log 并返回 -9999
+```
+- **0x7676C4 的真正失败条件**（反汇编）：
+```
+0x7676C4: if (ctx==0) return -2
+           r = 0x767D7C(ctx)
+           if (r) return r
+0x767D7C: if (memcmp(*(u32*)(ctx+4), MAGIC, 4) != 0) return -9999
+          MAGIC bytes @0x1007834 = 45 00 ca fe  (0xFECA0045)
+```
+- ⇒ **BMP_Create 的 ctx+4 magic 不匹配**（调用方上下文类型/初始化不对）。
+- c209 整函数 patch 0x7676C4 → 早期崩（该函数早期也用）；
+- c211 实验（Lead 已构建 ab_v211）：只把 0x767D92 `movne r0,r3` → `movs r0,#0`，
+  让 magic 检查总是通过（窄范围），观察 BMP_Create 是否继续、后续是否崩在错误 ctx 上。
+- 待办：c211 运行结果；若继续 → 决定修调用方 ctx 还是保留放宽；同时 hook 记录 ctx+4 实际值。
