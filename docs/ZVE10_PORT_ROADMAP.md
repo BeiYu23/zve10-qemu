@@ -117,3 +117,22 @@
 - 镜像：`/mnt/build/ab_v151.img`（= ab_v95 + n7 替换 libgrmlog.so + dmac 由 initrd_q4 提供）。
 - 判据：串口出现 PAINT 标记；QMP screendump 在 30s/50s 是否从 test pattern 变成条纹。
 - 若成立 → 软件 GPE 直接写 VDF 即可，无需 ramfb/fw_cfg。
+
+## 显示通道确认（c195b，2026-10-21 18:45）
+- **VDF 直写成功**：用户态 mmap /dev/mem phys 0x20312000 并填 32bpp 蓝/红竖条纹，
+  QMP screendump T=30s 读到 16px 条纹颜色正确 → **bionz-streamfb 通道可用，软件 GPE 直接写 VDF 路线成立**（无需 ramfb）。
+- 注意：单独用 zvobs.so 替换 /lib/libgrmlog.so 会因**缺 fa keys（fa0028/fa005d）**在 5.5s MonQueue 崩；
+  双 preload（原 c105 探针 + zvobs）可用。
+- c194 关键发现：
+  - 未观察到 /dev/ldec、/dev/liro 被打开（资源解码不走 ldec？或未到阶段）；
+  - `BMP_Create(a=0x5AB20, b=640, c=480, d=1) → ret=0（失败）` ← 黑屏/assert 的直接嫌疑；
+  - 0x04097146 属 **libpthread-2.11.2.so**（0x04094000-0x040A4000），是 futex/spin 热点，不是 ld.so。
+
+## M3 新计划：用户态 GRM/BMP 垫片（a7c2 风格）
+- 目标：在 preload 里接管 libObj 导出的 GRM_* 与 BMP_Create 相关路径，用自管 bitmap + 软件光栅，最终让 screen bitmap 指向 VDF。
+- 第一步（c196，取证）：interpose 并记录
+  - `BMP_Create`
+  - `GRM_bitmapCreate` / `GRM_bitmapCreateComposite` / `GRM_bitmapGetPhysicalAddress` / `GRM_bitmapGetRowPixelCount` / `GRM_bitmapWriteLockBits` / `GRM_bitmapWriteUnlockBits`
+  - `GRM_gpermFillrect` / `GRM_gpermRectblit` / `GRM_screenGetOnBitmap`
+  记录参数/返回值（前 40 次），保持转发；看 BMP_Create 失败卡在哪个 GRM 调用。
+- 第二步：用真实实现替换（fake bitmap 结构 + fill/copy + screen→VDF）。
