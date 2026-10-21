@@ -19920,3 +19920,20 @@ T=91+ ring_hits 18→221，pVM 全程 0、ML=0、ZZ=28、VDF blank
   App 后续 remove/清理时对一个节点做两次摘除 → 典型 “B.next=A” 半删除形态；
 - 验证方法：在探针的 `IdSoTable::add` interposer 里统计 **id 去重后数量 vs 总次数**，打印重复 id；
 - 若存在重复：做 dedup 版（已存在 id 则跳过 real add），观察环是否消失、pVM 是否仍非 0。
+
+---
+
+## 三百二十七、Round 354：dedup 无害但 lowlog 下环不复现；PC 采样暴露“探针忙循环”嫌疑
+
+### A/B 600s（lowlog cmdline）
+- A=dedup：ring=0 全程、pVM=1352120、ML=0、ZZ=28、vdf_nz=31、dev_ui=20045 恒定、dev_gl 11.7k→132k；
+- B=非 dedup：ring=0、pVM=1388728、ML=0、ZZ=28；
+- ⇒ **lowlog 下环不出现**（normal cmdline 才会 T≈90 出现）→ dedup 对照无法判定；dedup 至少无害（且把 add 从 529 降到 328 唯一 id）。
+
+### 新发现：userpc 分布异常
+```
+userpc: ('unk','0x4022f84',648), ('libObj.so','0x15b5f0',3), ('CautionConfig.so','0xcba9c0',1)...
+```
+- 656 个用户态样本中 **648 个在 0x4022F84**（探针 so 内、base≈0x4021000 偏移 0x1F84）；
+- 单 CPU 下若探针忙循环，会抢 UI 线程 CPU → 解释“UI 推进极慢”。
+- 下一步：修探针忙等 + 用 **normal cmdline** 做 dedup 对照并采 PC 分布（c188）。
