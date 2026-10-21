@@ -19620,3 +19620,23 @@ kprobe on vfs_ioctl; 若 cmd&0xffff0000 in {0xc0040000,0x80040000} 且前 24 次
 - 构建成功：pcprobe.ko md5 39bb6047…；
 - ab_v141.img = ab_v95 + /kmod/pcprobe.ko + wrapper 里 8s 后台 insmod（打印 PCPROBE rc=）；
 - 配 INITRD=initrd_q4（dmac patch）跑，拿到 Appframework 的 user_pc/user_lr → 减 libObj base 得偏移 → 定位自旋循环 → patch 或让驱动返回正确值。
+
+---
+
+## 三百一十三、Round 340：内存/磁盘策略修正；fake_gles 内直接打印用户态 PC/LR（ab_v142）
+
+### 资源问题与修正
+- `/tmp` 是 tmpfs（吃 RAM），曾堆积 ~3.4GB（队友 8×300MB 镜像 + 我的反汇编 dump 240MB）；
+- 已清理：tmpfs 3.4G → 658M；今后**所有缓存/临时文件统一放 `/mnt/build/tmp/`**。
+
+### 内核配置发现
+- `CONFIG_KPROBES is not set` → pcprobe.ko 的 register_kprobe 必返回 -ENOENT（insmod rc=254），kprobe 路线废弃。
+
+### ab_v142.img（Lead，已构建）
+- fake_gles 改动：
+  - `820a` 返回值改 **0**（ab_v95 基线，避免 busy loop）；
+  - `820d` 恢复**固定返回 1**，并在前 24 次打印：
+    `PCPROBE cmd=0xc004820d user_pc=... user_lr=... comm=... pid=...`（task_pt_regs(current)）；
+  - 模块 md5 `190dab2e…`；
+- 镜像 = ab_v141 + 新 grm_gles.ko（pcprobe.ko 保留但加载失败无影响）；
+- 配 initrd_q4 跑，待验证：基线 gfx/wg、ZZGPEREG=28、PCPROBE PC/LR。
