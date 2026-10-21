@@ -280,3 +280,25 @@ r3=[iter+4]; return [r3+16]     ; ← 返回的结果字段，初始 -1，成功
   - exit stub 必须保护返回值（push {r0,r4,r5,r7} → logger → pop）。
 - 下一步（c220）：hook `osal_snd_sync_msg`（C interposer，安全）记录 qid/w0..w3/lr，与 BMP_Create 调用做时间关联，
   找出 0x768208 发出的那条同步消息用的是哪个 qid、期望什么应答；随后构造/伪造正确的应答数据。
+
+## M3 c220 结果与下一步（2026-10-21 21:05）
+- BMP 窗口内抓到唯一同步消息：
+```
+BMPWIN qid=0x014C0424 msg=0x046E2FCC lr=0x0613B59B ret=0
+pre = 0x00000009 0x609828E0 0x000E1000 0x00000280
+post= 同（前4 word 未变）
+```
+- qid **0x14C0424 = grm_ma 服务**（此前 QSYNC 统计 69 次 ret0，正常服务）；
+- 0x768208 反汇编确认原型：`r0=[iter+12]`、`r1=[iter+8]`，`b.w osal_snd_sync_msg` → **只传 (id, msg) 两个参数**（r2/r3 是调用者残留）；
+- 0x76858C 完整逻辑：
+```
+push{r3,r4,r7,lr}; r4=iter; r3=[iter+8]; if(!r3) → return -9999
+bl 0x768208(iter)                     ; 发同步消息
+r3=[iter+4]; r0=[r3+16]; return       ; 读状态字段（初始 -1，成功应为 0）
+```
+- 结论：消息发送成功(ret=0)，但 `[iter+4]+16` 未变 0 ⇒ **应答/回调没有把状态写回**（可能服务端处理是异步回调，或我们环境里该服务进程/回调缺失）。
+- 下一步 c221（极短窗口 hook）：
+  1) hook BMP_Create entry/exit 做 arming；
+  2) hook 0x76858C entry：当 armed 时，写 `*(u32*)(*(u32*)(iter+4) + 16) = 0`（诊断性强制成功），记录原值；
+  3) 观察 BMP_Create 返回值是否变成功、UI 是否推进（pVM/ML/ZZ/VDF）；
+  4) 若成功 → 再研究真正的 reply 回调（grm_ma 服务），而不是长期 patch。
