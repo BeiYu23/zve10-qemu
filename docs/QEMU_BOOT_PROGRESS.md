@@ -20073,3 +20073,43 @@ desc[0x06db4c28] = {0x013D7AA0(命令环phys), 0x0003A788(len≈239KB), 0x0400F5
 2. 建立 opcode→图形操作映射，参考 MIT `gpe-raster.c`/`gpe-sprite.c`；
 3. 执行器可直接写 VDF `0x20312000`（streamfb 呈现地址，已验证可行）；
 4. 输入：`/dev/dmpgles2` 与 upm 键注入（raw MENU=0x1AB）待做。
+
+---
+
+## 三百三十二、Round 379–391（2026-10-23 07:25）：ZV-E10 QEMU UI —— 本阶段最终结论
+
+### 一、已彻底解决（可复现、有证据）
+1. **App 启动链**：61 个模块加载；gfx/res/wg/ViewManager 全就绪（pVM≈1.42M，150s+ 稳定，无 trap）。
+2. **显示链路**：`bionz-streamfb` 呈现 phys `0x20312000`；guest 直写可显示（截图证据）。
+3. **GPE 协议**（首次解出）：
+   - 寄存器块 phys **0x50000000**（libObj 映射 /dev/mem 后直接编程）；
+   - 提交：`reg[0x1804] ← 命令块物理地址`、`reg[0x1800] ← opcode`；
+   - 命令块 8 word，`magic 0x12345678 @ +0x1C`；
+   - 帧描述符：`0x0C00` 源 / `0x0C04` 目标 / `0x0C08,0x0C0C` 几何 / `0x0C10` 格式 / `0x0C18` 使能。
+4. **GPE 执行器原型**：QEMU `zz_gpe_write` 内实现 opcode=4 → 整屏填充；
+   实测整屏红（`artifacts/c321/gpe_fill_red.png`）；
+   **必须 `blank-pattern=off`**，否则同色缓冲被测试彩条覆盖。
+5. **工具链**：fake_gles 可重编（buildroot 交叉编译器）；QEMU 可改可编（已备份二进制）；
+   `run_cap.sh` 保存 QEMU stderr（ZZGPEREG/ZZGPECMD 都在里面，默认 runner 会丢弃）。
+
+### 二、唯一剩余阻塞（已定位到机制层）
+```
+App 只提交 1 条 opcode=4 的配置命令，之后不再产生任何绘制命令；
+显存缓冲（0x080C4880/0x08AEC800/0x20312000）始终为空或垃圾。
+原因：**"叫它画的那个人" 不存在** —— 真机由 mf/ud_im 通过 im.elf 的 sync API
+（cmd 0x9201xx，handler 0x986C）驱动；而该队列在我们环境里从未注册（21 个已注册队列里没有它）。
+```
+
+### 三、已排除的所有旁路（都有实验记录）
+换 streamfb 地址(4 种) / 拦导出 GRM API / `dmode` 变体 / 三种 IMDB 掩码触发 /
+按名 genID→openView(3 个菜单视图) / 强行 `drawDirect` / 直调 sync API / 直调 IMDB 分发器。
+
+### 四、继续的两条路（后续阶段）
+1. **重建外部调用链**：自建队列模拟 mf，向 im.elf 发 `0x9201xx`（需先让它注册队列）；
+2. **补齐 Model/Widget/Scene 状态**（等于实现 App 一部分业务逻辑）。
+
+### 五、资产清单
+- 文档：`ZVE10_QEMU_UI_HANDOFF.md`（总交接）、`ZVE10_PORT_ROADMAP.md`（逐轮）
+- 产物：`artifacts/c321/gpe_fill_red.png`、`artifacts/libObj_rm_reg.dis`
+- 镜像：`ab_v291.img`（基线）、`ab_v329–335.img`（实验）
+- 工具：`/mnt/build/run_cap.sh`、`~/fw/fake_gles/fake_gles.c`（含 GLESPC/K3/BUF dump）
