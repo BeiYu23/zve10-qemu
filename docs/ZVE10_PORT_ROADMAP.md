@@ -695,3 +695,27 @@ idx146: cmd=0x20000002  mask=0x7FFFFFFF  id=0x1CF
      `ux::gfxeng::GraphicsEngine::updateResource` / `GRM_screenGetOnBitmap`），配合已可用的 BMP（只清 status/error）
      与已验证的 VDF 通道；
   4) 判定标准：`ZZGPEREG>0` 或 `/dev/stream` 被打开 + 截图像素变化。
+
+## c276/c277（2026-10-23 04:25）：图形栈现状——引擎在，但"屏幕位图"从未创建
+- 手工调用结果：
+```
+GraphicsEngine::sys_getInstance()      = 0x00086830（非 0，引擎在）
+GraphicsEngine::updateResource(inst)   = 146128196（返回非 0，不崩）
+GRM_screenGetOnBitmap()                = 0x00000000   ★ 屏幕位图不存在
+GRM_fbrmSetScreenPreference(0,0)       = -9999        ★ 显示配置设置失败
+```
+- 即使启用"只清 status/error"的 grm_ma 修法，轮询 `screenGetOnBitmap()` 仍恒为 0（GMA 消息仅 6 条，
+  说明 App 自己也没再请求建位图）。
+- libObj 导出的图形 API 全表（共 21 个）：
+```
+GRM_bitmapCreate / bitmapCreateComposite / bitmapGetPhysicalAddress / bitmapGetRowPixelCount
+GRM_bitmapGetSubRectangle / bitmapWriteLockBits / bitmapWriteUnlockBits
+GRM_gpermFillrect / gpermRectblit
+GRM_fbrmSetScreenPreference / fbrmFillrectYUV / fbrmRectblitYUV / fbrmInitializeYUV /
+fbrmPrepareUpdateYUV / fbrmUpdateYUV / fbrmTerminateYUV
+GRM_screenGetOnBitmap
+```
+- ⇒ 结论：**"屏幕位图"由 DMM/OSD 侧创建（我们环境没有），所以 App 即使引擎就绪也无处可画**。
+  下一步用 `GRM_bitmapCreate` **自己创建一张 640×480 位图**（配合 grm_ma status 修法），
+  再用 `GRM_gpermFillrect` 画色块，验证"App 自己的图形栈 → VDF"是否可行；
+  若位图物理地址等于 0x20312000（此前消息里 w5/w8 已是该地址），则应能直接在屏幕上看到。
