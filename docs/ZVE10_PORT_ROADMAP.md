@@ -950,3 +950,9 @@ GLESDBG cmd=c0048212 arg=d9caa34 ok=1
   1) 用 `partinf.conf`/分区表精确定位 nflasha15 与 dnflasha15 的 **用户区地址**；
   2) 或直接在 guest 里读 `/proc/mtd` + `dd if=/dev/mtdblock? `（我们已有 root）；
   3) 拿到 /usr 后 `grep -rl` 常量 `0xc0048212` 找到图形库并反汇编。
+
+## c312（2026-10-23 06:06）：guest 内 /proc/mtd 不可用
+- 探针读 `/proc/mtd` → **fail**（该内核/配置未暴露 mtd 分区表；/proc 本身可读，但无此文件）；
+- 因此无法从 guest 侧直接拿到 nflasha15 的准确偏移，只能继续在镜像里扫超级块。
+- 附注：本轮 run 中 dmpgles2 的 0xc0048211/12/0d **持续高频出现**（说明 App 一直在 kick GPE，
+  进一步佐证"App 在画、硬件缺失"）。
