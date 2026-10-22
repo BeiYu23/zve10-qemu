@@ -517,3 +517,19 @@ GMA 请求只有 6 条（150s），不再有重试风暴 → BMP_Create 很可�
   说明"位图内存"本来就指向帧缓冲；之前的失败只卡在 status 字段。
 - ⇒ 现在 BMP/位图这一关**基本可通过**（只清 status/error 即可），
   剩下的问题是 **App 从未发起"绘制/建屏"流程**（view 打开后没有 render tick，或 render 依赖我们未提供的服务）。
+
+## ★ c253（2026-10-23 03:22）：VDF 显示通道在当前基线**再次实测可用**
+- 探针里用 raw syscall 打开 `/dev/mem`、`mmap2(0x20312000>>12)` 640×480×4，逐像素写渐变：
+```
+串口: PVDF painted
+QMP screendump 取样（y=240）：
+  x=0 (255,0,0) → x=80 (255,0,10) → x=320 (255,0,40) → x=636 (255,0,79)
+```
+- ⇒ **guest 用户态可直接把像素送到 VDF 并显示在 QEMU 窗口**（bionz-streamfb 正常）；
+- 关键教训：`mmap2` 的 offset 必须是**页号**（0x20312000>>12 = 0x20312），否则 EINVAL（c252 的 mmapfail）。
+- 产物：`oss/artifacts/c253/vdf_gradient.png`（截图）、`screen.ppm`、`serial_tail.txt`；
+  镜像 `/mnt/build/ab_v253.img`。
+- 意义：**"能出画面"已具备**（软件渲染 → VDF → 窗口）。剩下的是让 **App 的 UI 内容**走这条路：
+  1) 让 App 发起绘制（BMP 已可通过：只清 status/error，位图本就指向 VDF）；
+  2) 若 App 的绘制经 GPE 命令，则在 fake_gles 里把 GPE 命令翻译成 VDF 光栅（gpe-raster 已有）；
+  3) 输入闭环（当前 InputServant 队列不存在，需另寻入口）。
