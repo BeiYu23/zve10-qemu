@@ -333,3 +333,12 @@ r3=[iter+4]; r0=[r3+16]; return       ; 读状态字段（初始 -1，成功应�
 - 备选方案（若状态修复后仍失败/崩）：**用户态接管 BMP_Create**（PLT 可拦截，c197 已验证），
   返回自建 640x480 32bpp bitmap（对象 0x80B，需按 0x69B38C/0x69B440 的结构构造），
   绘制用软件光栅直接写 VDF 0x20312000（显示通道已在 c195 验证）。
+
+## c226（失败，探针 bug）与 c227 计划（2026-10-23 00:55）
+- c226：app 在 `address=0x04026008 / trap_no=0x0e / err=0x81f` 崩 —— **地址落在我们 probe 代码区**，
+  与 c213 同型（Thumb/ARM 位或 stub 返回错误）→ 探针 bug，不是 app 问题；本版还叠加了 inline hook，先全部去掉。
+- c227（最小安全版）：**不装任何 inline hook**，只在 `osal_snd_sync_msg` C interposer 内：
+  - 仅当 `qid==0x014C0424` 且 msg 指针落在 0x04000000–0x0C000000 且 4 字节对齐；
+  - 读 `msg[0]&0xffff == 9` 时，把 `msg[4]`（=msg+16，状态字段）写 0 并打印 before 值（限流 6 条）；
+  - 其余 qid 完全不碰。
+- 判据：出现 `FIX16 before=ffffffff` → BMP_Create 是否变成功 → app 是否推进（pVM/ML/ZZ/VDF）；若崩记录 pc/lr/模块。
