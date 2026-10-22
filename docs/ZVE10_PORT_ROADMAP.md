@@ -533,3 +533,27 @@ QMP screendump 取样（y=240）：
   1) 让 App 发起绘制（BMP 已可通过：只清 status/error，位图本就指向 VDF）；
   2) 若 App 的绘制经 GPE 命令，则在 fake_gles 里把 GPE 命令翻译成 VDF 光栅（gpe-raster 已有）；
   3) 输入闭环（当前 InputServant 队列不存在，需另寻入口）。
+
+## ★ c254–c261（2026-10-23 03:45）：线程清单揭示"UI 线程从未创建"
+- c254：`openView(id)` 后直接调 `View::drawDirect()` → **崩**（view 未完成初始化，不能用）。
+- c255：`/setting/sen/smode = "UU"`；`/proc/udm/upm_bootmode` **不存在**（openfail）。
+- c256/c257：dir 遍历失败（dirent 偏移问题），改用 **tid 扫描** `/proc/self/task/<tid>/{comm,wchan}`（c258–c261）：
+```
+tid 134 im.elf.real        wchan=futex_wait_queue_me     ← 主线程等 futex
+tid 135/136/137/141 uipc_proxy_0..3  wchan=__k_4u_wait_cb
+tid 142 mwf_monitor_inp    147 THREAD_INFRA2   148 grm_result   150 grm_gpe
+149 InfraAudioDecod  153 AV_DDS  154 InfraAvEffector  155 InfraIndctr
+156 UsbBusPower  157 InfraDecoder  158 I-TpMain  159 InfraMovieEdito
+160 UsbControl  161 I-TpRecv  162 HotshoeResource  163 InfraMovieEncod
+164 BusPower  165 Hotplug  166 I-HotshoeRecv  167 I-SircsMain
+168 InfraMovieEncTh  169 InfraStillEncod
+```
+- **关键结论：没有 `THREAD_APP`（也没有 Application/UI 线程）** ——
+  App 的 UI 线程**从未被创建**，所以 pViewManager 一直是 0、永远不绘制。
+- 其它证据：`/proc` 可读（探针读 maps/comm/status 都正常），因此不是挂载问题；
+  `im.elf` 里有 `imelf_sync_api_cb: err: cmd:0x%x` 与 `/usr/bin/sen.elf &` 等字符串，
+  说明 App 有**一套由外部（sync API / 兄弟进程）驱动的启动命令**，我们的 bootin 链从未发送"启动 App"的命令。
+- 下一步（下轮）：
+  1) 在 im.elf 里定位 `imelf_sync_api_cb` 与命令分发（cmd 表），找出"启动应用/创建 THREAD_APP"的命令值；
+  2) 用探针在进程内直接调用该回调（或经 UIPC 发给 im.elf 自己的 sync 队列）触发 THREAD_APP；
+  3) 之后按已有路线：BMP（已可通过）→ 软件 GPE → VDF（已验证）→ 输入。
