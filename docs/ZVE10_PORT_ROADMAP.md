@@ -934,3 +934,19 @@ GLESDBG cmd=c0048212 arg=d9caa34 ok=1
   - QEMU `hw/arm/bionz.c`（可在 dmpgles2/DMM 层面加模型）+ 已备份二进制；
   - VDF 呈现通道（0x20312000）与软件光栅算法（MIT gpe-raster/gpe-sprite）；
   - 命令环地址 0x013D7AA0 / 描述符 9-word 布局 / opcode 字段 +0x20。
+
+## c310/c311（2026-10-23 06:05）：/usr 分区定位尝试（未完成，供接手）
+- 在镜像里搜 `libInfraIPsec.so` 字符串命中 **0x3048A2CE** 附近；在同一区域扫 ext2 超级块（`0xEF53`@+0x438）：
+```
+候选: 0x2F400000 / 0x30400000 / 0x31400000
+取 0x30400000 抽出 300MB：dumpe2fs 正常（block=1024, 307200 blocks, UUID 3d7a5506…）
+但 debugfs 报 "/: Ext2 inode is not a directory"
+```
+⇒ 说明该分区内容在镜像里存在，但**我们抽出的起始偏移还有偏差**（约 ±0x400 级别），
+或该分区是 **dnflasha15（双份副本）**、真实 /usr 在另一副本。
+- 价值：若能把真实 /usr 抽出来，就能静态分析 **发起 dmpgles2 ioctl 的图形库**（libObj 里没有这些 ioctl 常量），
+  从而直接得到 GPE 命令格式，省掉盲猜。
+- 下一步建议：
+  1) 用 `partinf.conf`/分区表精确定位 nflasha15 与 dnflasha15 的 **用户区地址**；
+  2) 或直接在 guest 里读 `/proc/mtd` + `dd if=/dev/mtdblock? `（我们已有 root）；
+  3) 拿到 /usr 后 `grep -rl` 常量 `0xc0048212` 找到图形库并反汇编。
