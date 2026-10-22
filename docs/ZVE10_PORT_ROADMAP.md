@@ -768,3 +768,27 @@ GMA 0x0092000A / 0x00920002 同样带 0x20312000 等
 - 真正的 MA 分配路径需要另找（候选：`/dev/grm_ma` 设备 ioctl、`dmpgles2` 的 0x…8202/0x…8206，
   或 `libra` 内部的 pool）。下轮用 `getdents64`+`open` 探测 `/dev` 下与 grm/ma/dmm 相关的节点，
   并 hook `BMP_Create` 内部实际调用链（0x69B440 之后）确认它是走 ioctl 还是走 UIPC。
+
+## ★★★ c284（2026-10-23 04:45）：App 其实**已经在初始化 UI 并提交 GPE 命令**——是我们把命令丢了
+- 给 `open()` 加日志（限前 60 条）后，真相浮出（此前统计的是 ioctl 数，不是 open）：
+```
+OP /dev/hdmi       fd=8,9
+OP /dev/dmpgles2   fd=10,16
+OP /dev/stream     fd=10,15,20,21,22      ★ 显示管线被打开多次
+OP /dev/mem        fd=6,7,11,12,13,14,17
+OP /dev/ldec       fd=27                  ★ 资源解码设备
+OP global.xdb / ./lang_cmn.uxc / ./color_cmn.uxc / ../../usr/share/app/image_cmn_43.uxc
+```
+- 同时 dmpgles2 上持续出现 `0xc0048211`（wait）、`0xc0048212`（kick）、`0xc004820d`（event）——
+  **说明 App 正在往 GPE 提交绘制命令，并等待完成事件**。
+- 而我们的 `fake_gles`（kernel 模块 /root/fw/fake_gles/fake_gles.c）对这些 ioctl **一律返回 0，
+  且 GPE 命令缓冲区（per-open DMA 256KB）里的内容被直接丢弃** → 所以屏幕上永远只有 QEMU 测试图案。
+- ⇒ 结论彻底修正：
+  1) "App 不画"是错的——**App 在画，命令已经发出**；
+  2) 缺的是 **GPE 命令执行器**（把 ring buffer 里的命令光栅到 VDF/显存）；
+  3) 这与 a7c2 项目的核心工作一致（他们实现了软件 GPE：gpe-raster/gpe-sprite/sony-lz77）。
+- 下轮计划：
+  1) 在 `fake_gles` 里加 **ring buffer dump**（kick 时把前 N 字节/命令头打印到内核日志），
+     逆出命令格式（opcode/坐标/颜色/源位图）；
+  2) 用已移植的 MIT `gpe-raster.c` / `gpe-sprite.c` 实现命令 → VDF(0x20312000) 光栅；
+  3) 判据：截图出现非测试图案的内容（App 的 UI）。
