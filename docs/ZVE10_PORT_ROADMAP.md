@@ -418,3 +418,15 @@ InputService::createEvent(key, press) / pushFilterEvent 为进程内 API（m_pMy
 - 结论：**不能靠 UIPC 注入输入**（目标队列都不存在）；输入链路需要 InputService 实例（m_pMyInstance=0）或另一个仍在运行的接收者。
 - 同时：`/dev/stream` 从未打开（字符串只在 libObj/libInfraMtpServer 出现），`ZZGPEREG` 写入 0 → 显示管线根本未启动。
 - 下一步（进行中）：330s 长跑确认是否只是"慢"；若始终不启动，则要找出 App 等待的显示/场景服务（HDMI/DMM/OSD 通知）。
+
+## c235–c237（2026-10-23 02:20）
+- **c235（330s 长跑，c230 基线）**：stream 打开 0、ZZGPEREG 0、assert 0、pVM=1417000 稳定 —— 证明**不是慢，而是 UI 绘制路径从未启动**。
+- **c236（整数 openView 变体）**：把 static=pVM 后依次调 `viewManagerIf::openView(id,0)`（id=0x75/0x2ca/0x343/0x308/0x431/0x1c6）：
+  - 全部返回 `0x159ED0`（1416208，非 0、不崩）；但 stream/GPE 仍为 0。
+- **c237（Application_System_Init(1)）**：直接崩（trap_no=1）→ 该参数不合法，保持 ai(0)。
+- 结论：我们"手工启动的 UI 线程"能建出管理器图/ViewManager，但**App 自己的 UI 从未真正开始建屏/绘制**；
+  这正是当前最后一道门。
+- 后续方向（下轮）：
+  1) 查 `im.elf` 主线程决定"是否调用 Application_System_Init"的条件（是否依赖 HDMI/传感器/场景服务）；
+  2) 若是被服务门控 → 用 preload 伪造该服务状态（参考 a7c2 的 HDMI/DMM/OSD 开关）；
+  3) 若是 bootin 参数 → 调整 `target=/dmode=` 组合再试。
