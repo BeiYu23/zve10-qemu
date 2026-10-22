@@ -1252,3 +1252,20 @@ GPE 写入 = 0（显示未初始化），无 trap
   （与手工 `ta(0)` 表现一致：IMDB 应用阶段过滤条件不满足）。
 - 这条线的下一步很明确：**让 THREAD_APP 的 arg 非 0、或让 IMDB 应用阶段条目匹配**
   （需要知道 mf 传的 arg 与 IMDB globals[40] 的期望位），属于再次反汇编 mf→im.elf 的调用参数。
+
+## c342（2026-10-23 08:00）：mf 的真身 = **updater 侧进程**（不是显示框架）
+- 读 cramfs 里的官方脚本：
+```
+UdtrMain.sh:  ud_im.elf &  → execute_prod.sh（prod） / execute_ufp.sh（user/minor/service）
+execute_prod.sh: LD_PRELOAD=/usr/lib/libSysDef.so mf &   ; sen.elf &
+execute_ufp.sh:  同 preload 启动 sauu（固件更新）
+```
+- mf 内含 `UdrAPI` 字符串并调用 `osal_snd_sync_msg` ⇒ **mf 属于 updater/更新流程**，
+  它让 THREAD_APP 出现是"UIPC 流量副作用"，并非显示驱动。
+- ⇒ 正常 UI 启动链不在这份 cramfs 里（cramfs 是 updater initrd）；我们的 `bootin → im.elf` 才是 UI 逆向链。
+- 阶段终态（本会话）：
+```
+✅ 显示链路/GPE 协议/执行器：全部打通并验证
+✅ App 启动到 61 模块、管理器图/ViewManager 就绪
+❌ App 的 UI 渲染循环仍未启动（需要外部驱动或补齐 Model/Widget 状态）
+```
