@@ -641,3 +641,13 @@ idx146: cmd=0x20000002  mask=0x7FFFFFFF  id=0x1CF
   3) dlopen("/usr/local/lib/libVssApp.so") + vssapp_init；
   4) dlopen("gui.so") + DPro_App_UI_init；
   5) 之后再走 BMP（已可通过）→ 软件 GPE → VDF（已验证）→ 输入。
+
+## c271（手工顺序调用，失败在探针侧）
+- 尝试在探针里依次 `dlopen→dlsym→调用`：appFw.so/Application_System_Init → subapp.so/subapp_init
+  → libVssApp.so/vssapp_init → gui.so/DPro_App_UI_init。
+- 结果：**探针 worker 根本没跑起来**（无 `Y9 worker` 日志），且 `THREAD_INFRA0` 崩（trap 0x0e）——
+  属于探针侧问题（`step()` 里嵌套 dlopen/dlsym 与已有 dlopen interposer 相互干扰），不是 App。
+- 下轮改用更稳的方式：
+  1) 不自己调 dlopen，而是**直接调用已解析函数指针**（`Application_System_Init` 用 dlsym(NULL,"...") 拿，
+     subapp/vssapp/gui 的符号先用 `dlopen` 在**worker 线程启动前**完成，避免与 interposer 竞争）；
+  2) 或直接用 `im.elf` 的 `b448`（dlopen+dlsym+调用）函数，按条目字段构造调用（绕开 b7dc 的 ldrh 截断问题）。
