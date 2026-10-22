@@ -922,3 +922,15 @@ GLESDBG cmd=c0048212 arg=d9caa34 ok=1
   4) 知道命令环在 0x013D7AA0、描述符格式为 9-word、opcode 字段在 +0x20。
 - 下轮计划：在 `kick` 时**遍历该环并解析描述符**（把 opcode=0x223 等枚举出来，dump 每条目的完整 9 word 与
   可能的源/目标位图指针），建立 opcode→操作 的映射；随后实现光栅到 VDF 0x20312000。
+
+## c306–c309（2026-10-23 05:55）：绘制入口排查收敛
+- c306：命令环 head/tail 对比 —— 条目同构，仅 [8] 从 0x223 递增到 0x23D（像 id/序号），命令体不在环里；
+- c308：kick 描述符里的 `0x0CE2D000` 区实测**全零** ⇒ App 分配了结构等硬件填写（进一步印证"没人执行"）；
+- c309：interpose `GRM_bitmapCreate` → **零调用**；`GRM_gpermFillrect/Rectblit` 亦零调用（c307）。
+- ⇒ 结论：本机 UI 的绘制**完全走 GPE 硬件通道**（不经过 libObj 导出的 GRM 包装函数），
+  所以"用户态拦 GRM 调用"这条路对本机型无效；唯一出路是 **实现 GPE 硬件模型**。
+- 现有可复用资产（下一步直接用）：
+  - `fake_gles` 内核模块（可重编，含 ioctl/kick/指针跟随/ioremap dump）；
+  - QEMU `hw/arm/bionz.c`（可在 dmpgles2/DMM 层面加模型）+ 已备份二进制；
+  - VDF 呈现通道（0x20312000）与软件光栅算法（MIT gpe-raster/gpe-sprite）；
+  - 命令环地址 0x013D7AA0 / 描述符 9-word 布局 / opcode 字段 +0x20。
