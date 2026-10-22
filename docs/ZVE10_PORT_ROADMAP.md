@@ -1213,3 +1213,30 @@ kicks=11（不变）, trap=0
   1) 从镜像 0x427xxxx 抽 cramfs（或用 guest `rootfstype=cramfs` 挂载），取出 `ud_im.elf`；
   2) 在 bootin 包装脚本里先起 `ud_im.elf`，再起 `im.elf`，观察是否触发 THREAD_APP/渲染；
   3) 若 ud_im 需要 mf（镜像里没有），则此路也不通。
+
+## ★★★ c339/c340（2026-10-23 07:45）：从 cramfs 抽出官方链组件，**mf 让 THREAD_APP 首次出现**
+- 从镜像 `0x424200` 处抽出 cramfs（4.7MB）并解包成功：
+```
+/usr/bin/mf            (39KB ARM ELF, 官方"媒体/显示框架"进程)
+/usr/bin/ud_im.elf     (updater/传感器初始化)
+/usr/bin/UdtrMain.sh / execute_prod.sh / common.src / insmod.sh …
+```
+- `execute_prod.sh` 关键行：
+```
+LD_PRELOAD="/usr/lib/libSysDef.so" mf &
+/usr/bin/sen.elf &
+```
+  ⇒ **官方链里 mf 是带 `libSysDef.so` preload 启动的**（我们此前从未启动过它）。
+- c339（先起 mf，再起 im.elf）：
+```
+EXECVE /bin/mf
+EXECVE /usr/bin/im.elf → im.elf.real
+**THREAD_APP pid=133 出现**（此前在正常启动里从未出现过！随后 code=0 退出）
+THREAD_INFRA0/1/2 也创建并退出
+GPE 写入 = 0（显示初始化没走到）
+```
+- c340（mf + sen + 探针代劳 ai(0)）：GPE 写入 0、探针未打印 PV、无 trap —— 组合不稳定。
+- 结论/下一步：
+  1) **mf 是让 App 进入"应用阶段"的关键外部件**（THREAD_APP 因此被创建）；
+  2) 但它随后立即退出（可能因为 IMDB 条目过滤 arg=0，或缺少 ud_im 的后续驱动）；
+  3) 下轮：把 `ud_im.elf` 也放进镜像并按官方顺序启动（mf → sen → ud_im → im.elf），观察 THREAD_APP 是否真正跑起来并提交 GPE 命令。
