@@ -956,3 +956,26 @@ GLESDBG cmd=c0048212 arg=d9caa34 ok=1
 - 因此无法从 guest 侧直接拿到 nflasha15 的准确偏移，只能继续在镜像里扫超级块。
 - 附注：本轮 run 中 dmpgles2 的 0xc0048211/12/0d **持续高频出现**（说明 App 一直在 kick GPE，
   进一步佐证"App 在画、硬件缺失"）。
+
+## ★★ c313（2026-10-23 06:12）：找到 dmpgles2 ioctl 的发出者 —— **libObj 的 `rm_reg_*` 家族**
+- 做法：`fake_gles` 在 ioctl 里打印 `task_pt_regs(current)->ARM_pc/lr`；实测：
+```
+GLESPC cmd=80048206 pc=042f517c lr=06151973 comm=im.elf.real
+GLESPC cmd=c0048202 ... lr=06151991
+GLESPC cmd=80048263 ... lr=06151aa7
+GLESPC cmd=c0048211 ... lr=06152693
+```
+- `lr` 全部落在 **libObj+0x7749xx 区间**（本 run libObj base=0x59DD000，0x06151973-0x59DD000=0x774973）；
+  该处正是 **`rm_reg_init`** 系列函数：
+```
+774938: blx open@plt            ← 打开设备（字符串在字面量池）
+774960: movw r1,#0x8206 ; movt r1,#0x8004 ; blx ioctl@plt     ← 0x80048206
+774980: movt r1,#0xc004 ...                                    ← 0xc00482xx 系列
+774bf2 / 774c52 / 775172 同样构造 0xc004xxxx 命令
+```
+- 结论：**GPE/dmpgles2 的寄存器与命令接口实现在 libObj 内部（0x7744xx–0x7768xx）**，
+  不在 libgpe.so / libgrm.so / libdmpNative.so 里（那三个库中都没有这些 ioctl 常量）——
+  这解释了为什么在 libObj 里搜 0x c0048212 搜不到（命令字是 `movw/movt` 拼出来的）。
+- 产物：`oss/artifacts/libObj_rm_reg.dis`（该区间 3539 行反汇编，含 12 处 ioctl@plt 调用点）。
+- 下轮：在该区间内定位 **写入命令数据 + kick(0xc0048212)** 的函数，
+  顺着它看命令结构（很可能就是"往映射区写寄存器/命令 + kick"），从而得到 GPE 命令格式。
