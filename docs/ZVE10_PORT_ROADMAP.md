@@ -447,3 +447,24 @@ libObj → libgpe → libResourceBluetooth → libRsrcHotshoe → libInfraUsbCmn
 - c245：在 c243 基础上加 dlopen 序列日志（进行中），确认模块加载是否停在 libUsbControl 之后。
 - 下一步：锁定"模块加载/初始化停在哪"，优先怀疑 UsbControl / InfraUsbCmn 的初始化依赖
   （USB 设备枚举、或某 UIPC 服务），并按需伪造该状态。
+
+## ★★ c246（2026-10-23 02:50）：Backup 轮询修复后模块加载 8 → 61，定位到下一个卡点
+- 在 c243（camera-profile 未知 id 返回全零）基础上，把 dlopen 日志上限提到 220，且**不调用** `Application_System_Init`：
+```
+模块加载数：8 → 61（libObj/libgpe/libMWF/libbackup/libSaveLoadSettings/libbkdmn/
+ libOnDemandLoader/libInfraKikiLog/libMWF/libi2cuipc/libI2CRight/libJiritsu/libAtn/
+ libInfraSystemProperty/libInfraCrypt/libInfraSetupFile/libResourceBluetooth/libUsbBusPower/
+ libInfraUsbCmn/libUsbControl/libRsrcHotshoe/libInfraMediaCommon/libBusPower/libInfraFsys/
+ CameraOnDemandSaver/libInfraHdmi/libAdjModule/libInfraOptionInstall(er)/libDpro_EVF/
+ libInfraUpmPro/libfan/libEMG …）
+```
+- 但 **pVM 仍为 0**（App 自己仍没调 UI 初始化），且 libEMG 之后：
+```
+EXIT THREAD_INFRA0 pid=145 code=0
+ZZFUTEX im.elf.real pid=134 ... upc=0x040A2146
+ZZSTK1 含 0x0094016A、ZZSTK2 含 0x00920114   ← 主线程卡在等/发这两个 qid 的消息
+```
+- ⇒ **新卡点 = 主线程阻塞在 qid 0x94016A / 0x920114 的 UIPC 等待**（这两个正是我们 M1 里"缺失服务"之一）。
+- 下一步：在探针里为 0x94016A（+0x920114）实现**最小服务端**：
+  `osal_reg_sync_msg_queue_cb` 注册 + 收到请求后回一条"成功"应答（按 a7c2 的 fake service 方式），
+  让主线程越过这一步，进而调用 Application_System_Init。
