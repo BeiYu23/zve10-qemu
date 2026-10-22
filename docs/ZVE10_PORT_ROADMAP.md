@@ -557,3 +557,21 @@ tid 142 mwf_monitor_inp    147 THREAD_INFRA2   148 grm_result   150 grm_gpe
   1) 在 im.elf 里定位 `imelf_sync_api_cb` 与命令分发（cmd 表），找出"启动应用/创建 THREAD_APP"的命令值；
   2) 用探针在进程内直接调用该回调（或经 UIPC 发给 im.elf 自己的 sync 队列）触发 THREAD_APP；
   3) 之后按已有路线：BMP（已可通过）→ 软件 GPE → VDF（已验证）→ 输入。
+
+## ★★ c262/c263（2026-10-23 03:50）：找到并直接启动 THREAD_APP —— 它立刻退出
+- im.elf 里 THREAD_APP 的启动器：`0xA1B0`（`osal_create_waitable_thread(entry=0x972D, name="THREAD_APP", prio=15)`）。
+- c262：探针在进程内直接调 `0xA1B0` → `START_APP call` / `START_APP returned`，不崩；
+- c263（启动后扫描线程）：**THREAD_APP 确实被创建（pid=189），但随即 `EXIT THREAD_APP pid=189 code=0`**；
+- THREAD_APP 入口（0x972C）逻辑：
+```
+osal_thread_id(); osal_set_cpu(tid,1);
+log("a_thread");
+r5 = b8e8(0, 0x08000008, 0, arg);      ← 按 IMDB 目标 0x08000008 跑条目
+b8e8(r5, 0x08000009, adac(), arg);      ← 再按 0x08000009 跑条目
+log(); return;
+```
+- ⇒ **应用阶段（0x08000008/0x08000009）在 IMDB 中没有匹配条目**，所以线程"启动→立刻退出"，
+  这就是"UI 从未出现"的最终原因（不是崩溃，不是卡死，而是**没有要加载的东西**）。
+- 下一步：确认 IMDB 目标过滤来源（`target=` 参数 / dmode / bootmode）——
+  很可能我们的 `target=qemu` 在 IMDB 里不存在对应 target 位，导致应用阶段条目被过滤掉；
+  尝试 `target=prod` 等真实 target 名，或直接在探针里把过滤掩码改成"全匹配"再跑一次。
