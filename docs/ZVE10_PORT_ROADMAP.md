@@ -719,3 +719,18 @@ GRM_screenGetOnBitmap
   下一步用 `GRM_bitmapCreate` **自己创建一张 640×480 位图**（配合 grm_ma status 修法），
   再用 `GRM_gpermFillrect` 画色块，验证"App 自己的图形栈 → VDF"是否可行；
   若位图物理地址等于 0x20312000（此前消息里 w5/w8 已是该地址），则应能直接在屏幕上看到。
+
+## c279（2026-10-23 04:30）：用户态 BMP_Create 替身首次接通
+- 在 preload 里 interpose `BMP_Create(ctx,w,h,fmt)`（这是 libObj 的 PLT 导出，可拦）：
+```
+FCREATE ctx=0x00060780 w=640 h=480 fmt=1        ← App 启动早期就请求 640×480 位图
+FCREATE ok bmp=0x04042aa0 bits=0x0f764008       ← 我们返回自建位图（malloc 640*480*4）
+```
+- 同 run：`GRM_bitmapGetPhysicalAddress` / `GRM_gpermFillrect` **零调用**，
+  且 `pVM=0`（本次 run 与 c230 不同——替身位图改变了初始化路径/时序）。
+- 结论：
+  1) **BMP_Create 可以完整由用户态接管**（这是绕开 grm_ma 的关键）；
+  2) 但 App 拿到位图后没有继续走 `GRM_*` 绘制，说明它还依赖别的检查（如位图字段布局、或后续 GRM 内部函数）；
+  3) 需要按 App 期望的位图对象布局填充（0x80 字节、vtable、w/h/stride/phys 等），而不是我们自造的 20 字节结构。
+- 下轮：先反汇编 BMP_Create 内部构造（0x69B38C/0x69B440 已经知道分配 0x80 字节 + calloc 52 字节），
+  按该布局构造替身对象（vtable 指向原 BMP 类、字段填 w/h/stride/phys=VDF），再观察是否出现 GRM 绘制调用。
