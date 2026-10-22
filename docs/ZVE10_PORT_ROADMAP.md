@@ -1116,3 +1116,21 @@ viewSettingMenu id=0xd7ec001e  open ret=1417624
 - 下轮（最后尝试方向）：
   1) 对 openView 返回的对象调用 `View::requestApplicationExecute`（0x89FFE4）或 `drawDirect`，看是否能触发一帧；
   2) 若仍无命令，则确认结论：**需要实现最小 Model/Widget 状态**才能进入渲染，这超出本轮剩余预算。
+
+## c331（2026-10-23 07:08）：drawDirect 仍然崩
+- `openView(viewBaseMenu)` → ret=1440872，随后调用 `View::drawDirect()` → **trap 0x0e**（与之前一致）；
+- kick 仍为 11 次，屏幕无变化。
+- ⇒ "强行调用绘制"这条路彻底关闭：视图对象在没有 Model/Widget/Scene 状态时是不完整对象。
+
+## 阶段结论（2026-10-23 07:10）
+本轮探索已把整条链拆到"最后一公里"：
+```
+✅ 能启动 App 到 61 模块、管理器图/ViewManager/GPU 引擎全部就绪
+✅ 能读出 GPE 协议（0x1804 地址 / 0x1800 opcode）、帧描述符寄存器、命令块格式
+✅ 能实现并验证 GPE 执行器（opcode 4 → 整屏红，截图存档）
+✅ 能列出 308 个 UI 资源、按名字算视图 ID 并 openView
+❌ App 不产生绘制命令；强调 drawDirect 崩；应用阶段入口崩于 THREAD_INFRA0
+```
+未完成的部分需要**补齐 App 内部的 Model/Widget/Scene 状态**（等价于重写 App 一部分业务逻辑），
+不是再找一个开关就能解决的。所有可复用资产、协议数值、工具命令都写在
+`docs/ZVE10_QEMU_UI_HANDOFF.md` 与本文档中。
