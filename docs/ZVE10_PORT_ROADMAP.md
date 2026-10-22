@@ -377,3 +377,35 @@ pVM=1384632（稳定到 i=56）、无 assert、无崩溃
 - 结论：当前稳态（c230/c231）= 初始化链通、ViewManager 有；差"触发首批绘制"。
 - 下一步：找出 App 何时进入"建屏/绘制"分支（可能需要 ViewManager openView + 事件循环消费，或主循环 tick），
   一旦进入该分支，就用"替身分配应答"让 BMP 成功，然后接软件 GPE → VDF → 输入。
+
+## c232：QMP 寄存器采样定位"为什么不画"（2026-10-23 01:25）
+- 在 c230 稳态镜像上用 QMP `info registers` 采样 12 次（T≈95s，PC 分布）：
+```
+11/12 次: PC=0x040A2146（libpthread-2.11.2.so 代码段 0x04094000–0x040A4000，futex/spin）
+ 1/12 次: PC=0x601438BC（内核 __schedule 区）
+```
+- 同 run 统计：
+```
+pVM=1,417,048（i=52/56 稳定，ViewManager 在）
+qid 0x14C0424（grm_ma）消息 207 条 → 分配请求在持续发生
+dev=stream 打开次数 = 0  ★ 显示管线从未被打开
+ZZGPEREG 写入 = 0        ★ 从未提交 GPE 命令
+AAS/assert = 0，无崩溃
+```
+- ⇒ 结论：App 已"活着"（管理器图/view 表/ViewManager 都在），但**没有进入渲染/显示阶段**：
+  既没打开 /dev/stream，也没写 GPE。UI 线程停在 libpthread 的 futex 等待（等事件/等输入）。
+- 这解释了为什么强制 BMP status 只会命中 MA 断言：**位图创建并不在真正需要的路径上**（207 条请求里没有触发绘制）。
+- 输入链路事实（静态反汇编）：
+```
+snd_InfraInputEvent_to_InputServant(ev):
+   qid = 0x014A0429
+   msg = osal_valloc_msg_wait(24)       ; 24 字节事件拷贝
+   memcpy(msg, ev, 24); osal_snd_sync_msg(0x14A0429, msg)
+InputService::createEvent(key, press) / pushFilterEvent 为进程内 API（m_pMyInstance 已是 0，不可用）
+```
+- 下一步（下轮执行）：
+  1) 实现 **UIPC 输入注入**：构造 24B `_InfraInputEvent` → `osal_snd_sync_msg(0x014A0429, msg)`，
+     先试 MENU（a7c2 raw=0x1AB）与方向键（0x3/0x30），观察 ZZGPEREG / dev=stream / 截图变化；
+  2) 若注入无反应 → 说明 InputServant 的接收线程不在本进程（或未启动），改为检查 0x14A0429 的接收侧
+     （哪条线程 rcv_msg 该 qid）并补齐服务；
+  3) 一旦出现 GPE 提交，立刻接软件 GPE 渲染到 VDF 0x20312000 + 输入循环，形成"可交互"闭环。
