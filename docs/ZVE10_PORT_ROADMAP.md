@@ -430,3 +430,20 @@ InputService::createEvent(key, press) / pushFilterEvent 为进程内 API（m_pMy
   1) 查 `im.elf` 主线程决定"是否调用 Application_System_Init"的条件（是否依赖 HDMI/传感器/场景服务）；
   2) 若是被服务门控 → 用 preload 伪造该服务状态（参考 a7c2 的 HDMI/DMM/OSD 开关）；
   3) 若是 bootin 参数 → 调整 `target=/dmode=` 组合再试。
+
+## c238–c245（2026-10-23 02:45）：★ 找到 App 自己的启动停点
+- c238（dlopen 日志）：启动模块序列
+```
+libObj → libgpe → libResourceBluetooth → libRsrcHotshoe → libInfraUsbCmn → libUsbControl …(之后不再有)
+```
+  之后是 `BRDSKIP read id=0xcf0400..0xcf040a`（UsbControl 读配置，我们 shim 返回 0）。
+- c240（Backup_read 打 caller）：**热循环 id=0x01070316 被读 2000+ 次（n=0）**，caller = `libObj+0x168333`
+  = `BackupManager::Bkup_Read` 内；`Backup_get_datasize(0x1070316) = -1` → 我们 shim 返回 0 → App 永远拿不到数据 → 卡死。
+- c241/c242 掩码写错，c243 修正后（camera-profile id 段 `0x0107xxxx` 未知 → 返回 64B 全零 + 成功）：
+  - **热循环消失（2059 → 0）**、pVM 仍非 0（1352120）、无 assert、无崩溃；
+  - 但 stream/GPE 仍 0，仍不绘制。
+- **c244（关键对照）：把探针里的 `Application_System_Init(0)` 去掉** → **pVM=0**、0x14C0424 消息 0 条
+  ⇒ **App 自己的启动路径从未调用 UI 初始化**；此前的 pVM 全是我们探针代劳。这是明确结论。
+- c245：在 c243 基础上加 dlopen 序列日志（进行中），确认模块加载是否停在 libUsbControl 之后。
+- 下一步：锁定"模块加载/初始化停在哪"，优先怀疑 UsbControl / InfraUsbCmn 的初始化依赖
+  （USB 设备枚举、或某 UIPC 服务），并按需伪造该状态。
