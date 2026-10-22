@@ -1097,3 +1097,8 @@ GPE 写 28 次（6 次寄存器初始化 + 11×2 次 kick）
 ⇒ 基线可复现、执行器就绪、App 仍不绘制。这就是当前最好、最干净的起点：
 任何后续"让 App 画起来"的实验都可以直接在这个基线上做，并用
 `ZZGPEREG/ZZGPECMD` 判定 App 是否真的开始提交绘制命令。
+
+## c328（2026-10-23 07:00）：`dmode=1` 无效
+- 把 bootin 包装脚本改成 `im.elf target=qemu dmode=1` → **im.elf.real 直接退出（code=61952）**，
+  GPE 写入 0 次 ⇒ `dmode=3` 才是有效值，其它值会被 im.elf 拒绝。
+- 结论：启动参数层面已无可用变化（target=qemu + dmode=3 是唯一被接受的组合）。
