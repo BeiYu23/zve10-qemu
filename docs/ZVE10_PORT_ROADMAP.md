@@ -468,3 +468,18 @@ ZZSTK1 含 0x0094016A、ZZSTK2 含 0x00920114   ← 主线程卡在等/发这两
 - 下一步：在探针里为 0x94016A（+0x920114）实现**最小服务端**：
   `osal_reg_sync_msg_queue_cb` 注册 + 收到请求后回一条"成功"应答（按 a7c2 的 fake service 方式），
   让主线程越过这一步，进而调用 Application_System_Init。
+
+## c247–c248（2026-10-23 03:00）
+- **c247**：把 `/bin/bootin.elf` 包装脚本改为**先启动 sen.elf**（官方链里的兄弟进程）再跑 bootin/im.elf：
+  - sen.elf 确实跑起来了（249 条相关日志，含 UIPC 活动）；
+  - 但 0x94016A 的同步消息**仍然 -1020**（`ret=0xfffffc04`），pVM 仍 0、stream/GPE 仍 0；
+  - ⇒ sen.elf 不提供 0x94016A 服务，问题不在"缺兄弟进程"。
+- **c248**：从探针主动向 0x94016A / 0x920114 发消息（4 种 payload）→ **全部 -1024（队列不存在）**；
+  - ⇒ 0x94016A 是 App **发送**的目标（客户端角色），且**当前无人 serve**；我们用 auto-fake 让它"假成功"，
+    但 App 之后仍阻塞（不是这条调用本身造成的死锁）。
+- 新线索（im.elf 反汇编）：启动器会打开 `/dev/nflasha2 /dev/nflasha3 /dev/nflasha10 /dev/nflasha15 /dev/nflasha9 /dev/nflasha23`
+  等分区读取 **IMDB 配置**（决定加载哪些模块）。若某分区内容异常，加载列表会不完整（我们只看到 61 个模块，未出现 viewUnified2 等 UI 模块）。
+- 下一步：
+  1) 核对 im.elf 读 IMDB 的分区与返回（可加 open/read 日志），确认"应有模块列表"是否被截断；
+  2) 找出主线程真正阻塞点（futex owner / 等待的 qid 应答）；
+  3) 若 IMDB 缺项 → 提供正确分区内容或伪造 IMDB 读取结果，让 UI 模块（viewUnified2 等）被加载。
