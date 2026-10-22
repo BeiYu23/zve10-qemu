@@ -804,3 +804,21 @@ OP global.xdb / ./lang_cmn.uxc / ./color_cmn.uxc / ../../usr/share/app/image_cmn
   逆出命令格式（opcode/坐标/颜色/源地址/链指针），再用 MIT `gpe-raster.c` 实现执行器 → 写 VDF。
 - 说明：fake_gles 内核模块因交叉编译器（arm-sony-linux-gnueabi-dev-gcc）缺失，暂时无法重编；
   因此执行器先在**用户态**实现（探针读 /dev/mem 里的命令区 → 光栅到 VDF）。
+
+## ★ c289（2026-10-23 05:00）：fake_gles 内核模块**成功重编**（找到可用工具链）
+- 关键：内核模块用 buildroot 工具链即可编译：
+```
+make -C /mnt/build/src/a7c-kernel/linux M=/root/fw/fake_gles ARCH=arm \
+     CROSS_COMPILE=arm-buildroot-linux-gnueabihf- modules
+```
+- 给 `fake_ioctl` 加了 ioctl 参数结构 dump（前 60 次，cmd=0xc0048211/12/0d）：
+```
+GLESDBG cmd=c0048211 arg=08b50ccc w=00000001 059e4a64 00c621d0 06274409 04036018 08b50ce8 06147a51 0001c460
+```
+- 产物：`/root/fw/fake_gles/fake_gles.ko`（43060B，含 GLESDBG），已写入 n15 `/kmod/grm_gles.ko`；
+  镜像 `/mnt/build/ab_v289.img`；`FAKEGLES init ... bytes=262144` 确认新模块生效。
+- 下一步（下轮）：
+  1) 把 dump 扩到 16 个 word + 再 dump `arg` 指向的更深处（部分字段像栈地址，说明要跟指针）；
+  2) 多种 ioctl 各取若干样本，逆出 GPE 命令/描述符结构；
+  3) 用 `gpe-raster` 在**内核模块内**或**用户态**实现执行器，把命令光栅到 VDF 0x20312000；
+  4) 判据：截图出现非测试图案的 App UI。
