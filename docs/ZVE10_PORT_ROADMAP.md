@@ -503,3 +503,17 @@ NFO/NFR 均为空 —— App 进程本次运行根本没有 open /dev/nflasha*
      让 BMP_Create 拿到一张可写的 640×480 位图；
   B) 若 A 成功但 App 仍不刷屏，则用软件 GPE（MIT gpe-raster）把那张位图内容周期性拷到 VDF 0x20312000，
      至少先看到"有内容"的画面，再逐步接管 App 的绘制命令。
+
+## c250/c251（2026-10-23 03:15）：grm_ma 应答替身实验
+- **c250（把 w8=0x20312000 / w9=0x96000 写进应答）→ 直接崩**（THREAD_INFRA0，bad pc，trap 0x0e）：
+  `w8/w9` 是 App 自己的指针/长度语义，不能乱改。
+- **c251（只把 status=0、error=0，即 w4/w6/w7 清零，保留其余字段）**：
+```
+GMA 请求只有 6 条（150s），不再有重试风暴 → BMP_Create 很可能已经成功
+无 assert、无崩溃、pVM=1353784 稳定
+但 dev=stream 仍 0、ZZGPEREG 仍 0 → 仍然没有任何绘制
+```
+- 重要发现：c251 抓到的 grm_ma 消息里 **w5/w8 本身就是 0x20312000（VDF 物理地址）**，
+  说明"位图内存"本来就指向帧缓冲；之前的失败只卡在 status 字段。
+- ⇒ 现在 BMP/位图这一关**基本可通过**（只清 status/error 即可），
+  剩下的问题是 **App 从未发起"绘制/建屏"流程**（view 打开后没有 render tick，或 render 依赖我们未提供的服务）。
