@@ -1102,3 +1102,17 @@ GPE 写 28 次（6 次寄存器初始化 + 11×2 次 kick）
 - 把 bootin 包装脚本改成 `im.elf target=qemu dmode=1` → **im.elf.real 直接退出（code=61952）**，
   GPE 写入 0 次 ⇒ `dmode=3` 才是有效值，其它值会被 im.elf 拒绝。
 - 结论：启动参数层面已无可用变化（target=qemu + dmode=3 是唯一被接受的组合）。
+
+## c329/c330（2026-10-23 07:06）：视图资源与按名开视图
+- `/usr/share/app` 有 **308 个 UI 资源**（`view*.uxc`、`string_*.uxc`、`LayoutMaster_Menu.uxc` 等），可见菜单视图确实存在。
+- 用 `ux::core::ID::genID(name)` 计算视图 ID 并调用 `viewManagerIf::openView(id,0)`：
+```
+viewBaseMenu   id=0xb068a1c7   open ret=1417624
+viewGlobalMenu id=0xd03c7f6d   open ret=1417624
+viewSettingMenu id=0xd7ec001e  open ret=1417624
+```
+- 结果：**三次都返回同一个非零值**，但 GPE 写入仍是 28 次 / 11 次 kick（无新增），屏幕仍黑。
+- ⇒ openView 只是"登记"，真正渲染仍需要 App 的 Model/Widget/Scene 状态（与路线 A 的判断一致）。
+- 下轮（最后尝试方向）：
+  1) 对 openView 返回的对象调用 `View::requestApplicationExecute`（0x89FFE4）或 `drawDirect`，看是否能触发一帧；
+  2) 若仍无命令，则确认结论：**需要实现最小 Model/Widget 状态**才能进入渲染，这超出本轮剩余预算。
