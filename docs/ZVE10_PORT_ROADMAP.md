@@ -1045,3 +1045,22 @@ ZZGPEFILL opcode=4 color=f000
   1) dump 描述符 64 word，结合 `0116F000/0117F000/0044F000/0010F000` 的规律猜字段；
   2) 让 App 产生更多命令（例如推动 UI 视图/让 render 跑起来），收集 opcode 种类；
   3) 按 a7c2 的 gpe-raster 实现 fill/blit/sprite，把 App 真正画出来。
+
+## c322/c323（2026-10-23 06:40）：执行器就绪，但 App 只发 1 条命令
+- c322（200s 长跑 + blank-pattern=off）：GPE 写入统计
+```
+0x1804 写入 1 次；0x1800 写入 1 次；opcode 分布 = {0x4: 1}
+```
+  ⇒ **App 在 200 秒里只提交了 1 条 opcode=4 的 GPE 命令**，之后没有任何绘制提交。
+- c323（arg=1 触发应用阶段）：47 个模块加载后崩在 **THREAD_INFRA0**（address 未打印，trap 0x0e），
+  GPE kick = 0 —— 说明应用阶段还没走到绘制就挂了。
+- 结论（当前唯一阻塞）：
+```
+执行器/显示链路 ✅（opcode 4 → 整屏红，已截图）
+App 侧渲染提交 ❌ —— App 的 UI/render 循环没有真正跑起来
+```
+- 下一步方向（按可行性排序）：
+  1) **让 App 自己创建 THREAD_APP 并给它正确参数**（IMDB idx143 的 appFw/Application_System_Init 路径，
+     我们手工 arg=1 会崩在 THREAD_INFRA0，需要定位该崩溃点）；
+  2) 或找出"谁在真机上触发渲染"（很可能是 view 打开后的 requestApplicationExecute / 事件循环）；
+  3) 用执行器把 App 将来的命令翻译成像素（框架已就绪）。
