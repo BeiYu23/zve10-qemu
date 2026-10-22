@@ -587,3 +587,31 @@ log(); return;
   2) 试 `dmode` 其它取值（0/1/2）看应用阶段是否被启用；
   3) 若 IMDB 确实缺项 → 用探针在 `IMDB_get_entries` 层伪造这些条目（把库路径/入口指向 viewUnified2 等），
      让 THREAD_APP 真正把 UI 模块拉起来。
+
+## ★★ c266–c268（2026-10-23 04:05）：IMDB 表结构解出 + 用 arg=1 触发应用阶段（模块 61 → 78）
+- libIMDB.so 的 `imdb_raw`（.data.rel.ro，file 0x64B0）是**静态条目表**，每条 44 字节：
+```
+[0]=命令/标记  [1]=类型位  [2]=目标位掩码  [3]=参数/ID  [4..10]=字符串/指针字段
+```
+- 关键条目：
+```
+idx142: [0]=0x08000008 (阶段8 起点/哨兵)
+idx143: [0]=0x20000004 [1]=0x1 [2]=0xFFFFFF9F [3]=0x07FB0083
+idx144: [0]=0x20000004 [1]=0x1 [2]=0x40       [3]=0x83
+idx145: [0]=0x20000004 [1]=0x1 [2]=0xFFFFFF9F [3]=0x1A9
+idx146: [0]=0x20000002 [1]=0x1 [2]=0x7FFFFFFF [3]=0x1CF
+idx147: [0]=0x08000009 (阶段9 起点/哨兵)
+```
+- THREAD_APP 的两次 `b8e8(...)` 过滤条件是 `entry[1] & arg != 0` 且 `entry[2] & globals[40] != 0`；
+  **我们之前用 `ta(0)`（arg=0）→ 全部条目被过滤 → 线程空转退出**。
+- **c268：改用 `ta((void*)1)`** →
+```
+START_APP arg=1
+dlopen 模块数 61 → 78（新增 libNetService*/libInfraEthernetService/libInfraIPsec/libInfraSKD 等）
+随后崩溃：address=0x00000001, trap 0x0e, pc=0x040719cc(libc), lr=0x0409fd77(libpthread)
+```
+- ⇒ 应用阶段**确实存在并可启动**，现在只是其中某个条目的入口调用参数不对（NULL+1 解引用）。
+- 下一步：
+  1) 逐条隔离 idx143–146（用不同 arg 掩码，或临时改 entry[1]/[2] 只保留一条）找出崩的是哪条；
+  2) 检查 `b448/b4fc` 里 dlopen+dlsym 后调用时的参数来源（entry[36]/[40] 指针是否需重定位）；
+  3) 修好后 THREAD_APP 应能跑完 → 它会把 UI 模块（viewUnified2 等）真正拉起来。
