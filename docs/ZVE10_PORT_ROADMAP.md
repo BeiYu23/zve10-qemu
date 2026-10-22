@@ -792,3 +792,15 @@ OP global.xdb / ./lang_cmn.uxc / ./color_cmn.uxc / ../../usr/share/app/image_cmn
      逆出命令格式（opcode/坐标/颜色/源位图）；
   2) 用已移植的 MIT `gpe-raster.c` / `gpe-sprite.c` 实现命令 → VDF(0x20312000) 光栅；
   3) 判据：截图出现非测试图案的内容（App 的 UI）。
+
+## c285/c286（2026-10-23 04:48）：GPE 缓冲区扫描，命令区在偏移 0x18000 附近
+- 用 `/dev/mem` mmap fake_gles 的 DMA 缓冲（phys `0xa7c0000`，256KB）并扫描非零 word：
+```
+[0]=0x00000001 [1..3]=0xFFFFFFFF [9..10]=0xFFFFFFFF        ← 头部状态/寄存器
+[24577]=0x00000001 [24578]=0x5F000000 [24579]=0x609A9C00 [24580]=0x604A85D0 ...
+```
+- 24577*4 = **0x18004** ⇒ 命令/描述符区从 **0x18000** 开始（与"256KB 缓冲、前半寄存器/后半命令环"的结构吻合）。
+- 下轮：dump 0x18000–0x18400 这一段前后的完整窗口（含 i=44/48/52 三次对比），
+  逆出命令格式（opcode/坐标/颜色/源地址/链指针），再用 MIT `gpe-raster.c` 实现执行器 → 写 VDF。
+- 说明：fake_gles 内核模块因交叉编译器（arm-sony-linux-gnueabi-dev-gcc）缺失，暂时无法重编；
+  因此执行器先在**用户态**实现（探针读 /dev/mem 里的命令区 → 光栅到 VDF）。
