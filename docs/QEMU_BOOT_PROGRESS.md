@@ -19975,3 +19975,55 @@ userpc: ('unk','0x4022f84',648), ('libObj.so','0x15b5f0',3), ('CautionConfig.so'
 - exit stub 必须保护返回值（push/pop r0 与 callee-saved）；
 - 仅前 8 字节 PC 无关的函数可 8 字节 hook；
 - 深层函数（0x7676C4/0x76858C）长驻 hook 会导致早期崩，需短窗口 hook。
+
+---
+
+## 三百三十、Round 363–370（2026-10-23 01:10）：★ 里程碑 c230——App 健康运行 + **ViewManager 创建成功（pVM 非 0）**、无 assert
+
+### 关键突破：去掉 inline hook、只保留 UIPC interposer
+- 之前所有 c194–c229 的失败（-9999 / assert / 早期崩）都被本轮定位到**探针自身**：
+  - c226 崩在 `address=0x04026008`（probe 代码区，trap 0x0e）= Thumb/ARM 位问题；
+  - c229b 崩在 `pc=0x04023952`（同样在 probe 区，cpsr Thumb:off）= BMP_Create inline hook 的 trampoline 以 ARM 态执行；
+  - 结论：**inline hook 在 BMP_Create 上不稳定**（exit-stub/trampoline 组合脆弱），而 **osal_snd_sync_msg C interposer 安全**。
+- c230 = 构造 **无任何 inline hook** 的探针（menuc230.c），只在 `osal_snd_sync_msg` 里按**消息签名**识别 grm_ma 的位图创建请求：
+  `qid==0x014C0424 && (w0&0xffff)==9 && w2==0x000E1000 && w3==0x00000280`。
+
+### 位图请求消息实测（c229b，完整的 11 个 word）
+```
+msg=0x046ECFCC
+w0=0x00000009    请求 id 9（grm_ma bitmap create）
+w1=0x6A7FAF60    应答/结果对象指针（同一任务栈区内）
+w2=0x000E1000    921600 = 640*480*3（24bpp 字节数）
+w3=0x00000280    640（宽）
+w4=0xFFFFFFFF    status（-1 = 未完成）
+w6=0x0000004D    77（错误码候选：MA 错误）
+w8=0x22BB2000    帧缓冲物理地址（我们 streamfb 的 addr 参数）
+w9=0x00096000    614400 = 640*480*2（16bpp 字节数）
+```
+- c228b（force w4=0、带 BMP hook）→ app 继续后打印 **`AAS MA_ErrNone == error @BitmapImpl.cpp:199`**（我们的 assert 拦截器）
+  ⇒ 强制 status 不够：**底层 MA 分配本身就报错**，若只清 status 会命中 assert。
+
+### c230 结果（lowlog，无 hook，无 assert）
+```
+Y9 i=20 gfx=523248 res=115579488 wg=525368      ← GraphicsEngine / ResourceManager / WidgetSystem 全部非 0
+PV i=24 起 pVM=1380064（稳定到 i=56）           ← ★ ViewManager 创建成功
+W6 pvm=1380064 ; W6 ovret=0                     ← openView("view/SCALAR",0) 返回 0
+统计: dev=dmpgles2 ioctl 33953 次、dev=uipc 19398 次、dev=ldec 1 次
+AAS/assert 计数 = 0 ；无崩溃；跑满 150s
+```
+- 但 **screendump 仍是 QEMU 测试彩条**（VDF 无像素）、serial 里 **ZZGPEREG 写入计数 0** → 说明 App 还没开始向 GPE 提交绘制命令。
+- 产物：`oss/artifacts/c230/`（screen.png = 测试彩条、serial_tail.txt、c230_probe.c）、
+  镜像 `/mnt/build/ab_v230.img`（= teammate v225 基线 + 无 hook 探针 c230）。
+
+### 当前判断
+- **App 侧初始化链已全部打通**：gfx/res/wg 非 0、ViewManager 创建、openView 返回 0、无 assert、无崩溃，
+  这是本项目有史以来最靠前的稳定状态；
+- 剩下的差距在"**让 App 真正开始绘制**"：需要 GPE 提交（ZZGPEREG > 0）与 VDF 像素；
+- 已排除的方向：强制 msg+16 status（会命中 BitmapImpl.cpp:199 的 MA 断言）、inline hook（探针自崩）。
+
+### 下一步
+1. 用 c230 稳态 + 只加"消息签名日志"（不改字段）跑长跑，确认 MA 分配在**无干预**下是否最终成功（我们已看到部分 qid 的 status 本来就是 0）；
+2. 若 MA 始终报错（w6=0x4D），则实现**位图分配的用户态替身**：在 interposer 里为 640x480 请求构造应答
+   （返回我们自己 mmap 的缓冲区地址 + status=0 + w6=0），让 BMP_Create 拿到合法 bitmap；
+3. 之后接软件 GPE（gpe-raster/gpe-sprite，MIT）→ 写 VDF 0x20312000 → streamfb 出画面；
+4. 最后接输入注入（MENU=0x1ab 等 raw 码）实现"可交互"。
