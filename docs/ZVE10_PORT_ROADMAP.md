@@ -483,3 +483,23 @@ ZZSTK1 含 0x0094016A、ZZSTK2 含 0x00920114   ← 主线程卡在等/发这两
   1) 核对 im.elf 读 IMDB 的分区与返回（可加 open/read 日志），确认"应有模块列表"是否被截断；
   2) 找出主线程真正阻塞点（futex owner / 等待的 qid 应答）；
   3) 若 IMDB 缺项 → 提供正确分区内容或伪造 IMDB 读取结果，让 UI 模块（viewUnified2 等）被加载。
+
+## c249（2026-10-23 03:05）
+- 在无代劳探针里加 `open/read` 日志（只针对含 "nflasha" 的路径）：
+```
+NFO/NFR 均为空 —— App 进程本次运行根本没有 open /dev/nflasha*
+```
+- 设备访问统计：`dev=uipc 557 / dev=dmpgles2 4 / dev=kikilog 1` —— **从未碰 /dev/dmm、/dev/gpe**；
+- ⇒ "IMDB 被截断"假设未能证实（App 没走 nflasha 读取）；显示栈从未被打开。
+- 现状判断（重要）：
+  1. App 自身启动链止步于 61 个模块之后，主线程 futex 等待；
+  2. 我们代劳 `Application_System_Init(0)` 能建出 gfx/res/wg/ViewManager，但**绘制需要 GRM 位图分配**，
+     而 grm_ma（内核侧服务，qid 0x14C0424）应答只回 0、不填状态 → BMP_Create 失败；
+  3. 强行把 status 写 0 → 命中 `MA_ErrNone == error @BitmapImpl.cpp:199`（底层 MA 分配仍失败）。
+- 结论：**核心瓶颈 = grm_ma/MA 位图分配不可用**（内核侧无实体显存分配器），
+  这既是"App 自己画不出来"的原因，也是"我们代劳也画不出来"的原因。
+- 下一步（两条并行）：
+  A) 在探针里实现 **grm_ma 应答替身**：对 id==9 的请求返回"成功 + 我们 mmap 的缓冲区地址 + 清零错误码"，
+     让 BMP_Create 拿到一张可写的 640×480 位图；
+  B) 若 A 成功但 App 仍不刷屏，则用软件 GPE（MIT gpe-raster）把那张位图内容周期性拷到 VDF 0x20312000，
+     至少先看到"有内容"的画面，再逐步接管 App 的绘制命令。
