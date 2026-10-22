@@ -365,3 +365,15 @@ screendump = QEMU 测试彩条（VDF 无像素）；ZZGPEREG 写入 = 0
   2) 若 MA 恒失败 → interposer 里替身分配（返回我们 mmap 的 640x480 缓冲区 + status=0 + w6=0）；
   3) 软件 GPE（MIT gpe-raster/gpe-sprite）→ VDF 0x20312000 → streamfb 出画面；
   4) 输入注入（raw MENU=0x1ab）实现交互。
+
+## c231（无 hook 稳态复核，2026-10-23 01:15）
+- 同 c230 镜像思路（只改探针为"只 dump id-9 消息、不改任何字段"）：
+```
+pVM=1384632（稳定到 i=56）、无 assert、无崩溃
+但 serial 中 0 条 M9（id-9 → qid 0x14C0424 的消息一条都没发）
+```
+- ⇒ 在**未触发位图创建路径**的运行里，App 可以自然走到 ViewManager 创建且不 assert；
+- 说明 c228b 的 MA 断言只出现在"真的要建 640x480 位图"的运行分支上（run 间路径不同）。
+- 结论：当前稳态（c230/c231）= 初始化链通、ViewManager 有；差"触发首批绘制"。
+- 下一步：找出 App 何时进入"建屏/绘制"分支（可能需要 ViewManager openView + 事件循环消费，或主循环 tick），
+  一旦进入该分支，就用"替身分配应答"让 BMP 成功，然后接软件 GPE → VDF → 输入。
