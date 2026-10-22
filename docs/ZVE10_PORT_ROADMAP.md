@@ -680,3 +680,18 @@ idx146: cmd=0x20000002  mask=0x7FFFFFFF  id=0x1CF
 - 而 init 日志早有：`mounting1 /dev/dnflasha15 -> /usr ... failed errno(6)` → **/usr 挂载本来就失败**。
 - 下轮首要任务：**修正 /usr（nflasha15）分区在镜像中的位置/内容**，让真正的 /usr 挂上（含 appFw.so/gui.so 等），
   这是"UI 库缺失"的根因；其次才是执行 appFw→subapp→VssApp→gui 四步。
+
+## ★ c274/c275（2026-10-23 04:20）：/usr 已挂载且有 319 个库，但 UI 四库确实不存在
+- 运行期用 `getdents64` 枚举 `/usr/lib` → **319 个条目**（真实 /usr，含 libObj/viewUnified2/libNetService…）；
+  `/usr/local/lib` → 0 个（空目录）。
+- 但 **`appFw.so` / `subapp.so` / `gui.so` / `libVssApp.so` 一个都没有**（c272 的 ENOENT 得到确认）。
+- ⇒ 结论修正：**IMDB idx143–146 那四条并不属于本机型（ZV-E10）**（它们的 mask 0xFFFFFF9F / 0x40 是给别的 target 位的），
+  本机 UI 实际就是 `libObj.so` 里的 `Application_System_Init`（= appFw 的等价物），这与我们早先手工 ai(0)
+  能建出 gfx/res/wg/ViewManager 的事实一致。
+- 于是路线固定为：
+  1) `libObj` 的 `Application_System_Init(0)` 启动 UI 系统（已有 pVM≠0）；
+  2) `viewManagerIf::openView(id,0)` 打开视图（返回非 0，不崩）；
+  3) 解决"渲染触发"：找到 App 的 draw/commit 入口（`View::drawDirect` 需完整 view 状态；也可试
+     `ux::gfxeng::GraphicsEngine::updateResource` / `GRM_screenGetOnBitmap`），配合已可用的 BMP（只清 status/error）
+     与已验证的 VDF 通道；
+  4) 判定标准：`ZZGPEREG>0` 或 `/dev/stream` 被打开 + 截图像素变化。
