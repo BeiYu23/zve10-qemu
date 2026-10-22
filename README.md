@@ -7,13 +7,18 @@
 > **本仓库只包含原创的胶水与研究产出（补丁 / 脚本 / 文档 / 派生数据），
 > 不含任何 Sony 固件、二进制、证书或其副本。** 使用者需自行从自己的设备导出固件。
 
+> 🔥 **2026-10-22 突破：成果线 A 在真机闭环。** 硬件 fastboot 通道打通
+> （BootROM 注入 → USB fastboot → eMMC 读+写），用它在真机执行了 1 字节
+> 修复并找回 UI，并定位修复了 ~3 分 40 秒杀死会话的幸存看门狗。
+> 见 [`docs/FASTBOOT_EMMC.md`](docs/FASTBOOT_EMMC.md)。
+
 ---
 
 ## 三条成果线
 
 | 线 | 主题 | 代表产出 | 状态 |
 |---|------|---------|------|
-| **A** | **真机救援 / 防砖** | 1 字节修复法、防砖兜底体系、启动桥硬件方案 | ✅ 修复法已在 QEMU 端到端验证 |
+| **A** | **真机救援 / 防砖** | 硬件 fastboot/eMMC 通道、1 字节修复法、防砖兜底体系、启动桥硬件方案 | ✅ **已在真机完成**（注入/读/写/救砖/看门狗全链路） |
 | **B** | **固件逆向 / 系统测绘** | 官方升级包解密解包、分区表、JIRITSU 通道、系统结构图 | ✅ 主要结构已测绘 |
 | **C** | **QEMU 仿真** | 原厂固件完整启动 + 机身 App 运行 | 🟡 启动与 App 大部分打通，显示链路未完成 |
 
@@ -31,7 +36,7 @@
 | 方式 | 做法 | 需要什么 |
 |------|------|---------|
 | 软件（能拿到 shell 时） | `rm -f /etc/ld.so.preload` 或写入空白 | 相机还能执行命令 |
-| **硬件（救砖）** | BootROM 串口启动 → ARMv7 payload → **改 FAT 目录项 1~2 字节** | USB 线 + 串口 |
+| **硬件（救砖）** ✅ **2026-10-22 已在真机执行** | BootROM 串口启动 → fastboot/stage2 → **清 FAT 目录项 size 字段（净变化 1 字节）** | Pico + 串口 + 电池 |
 
 > ⚠️ **关键判据**：若那次写入让 preload 指向了一个**有未定义符号/重定位失败**的库，
 > 则连 busybox 都无法启动，**任何软件层救援都不可能**（社区的 a7C II 工作也独立得出
@@ -48,6 +53,29 @@
 
 参考接口与接线（USB TYPE-C / RP2040 桥）见
 [`docs/GEN1_BOOT_HARDWARE_TYPEC.md`](docs/GEN1_BOOT_HARDWARE_TYPEC.md)。
+
+### A4. 硬件 fastboot / eMMC 通道（✅ 2026-10-22 真机闭环）
+
+BootROM 串口注入（Pico `zve10_uart_od 15` 协议）→ 裸机 fastboot payload
+（USB `18d1:4ee0`）→ 运行时下发的 stage2 eMMC 驱动：
+
+- **读+写均真机验证**：CMD17/24 扇区寻址、PIO；写路径经"死空间写图案→读回→
+  还原"逐字节验证。stage2 默认只读（参数 `[2]=1` 才写），识别未达 TRAN
+  态拒绝写
+- **真机救砖**：BPB 驱动（无固定偏移）扫描定位 `ld.so.preload` 目录项，
+  六道硬门校验下清 size 字段——净变化 1 字节，相机恢复 UI
+- **看门狗发现**：App 经 `/proc/wdt` 武装的 TIMER-IP 看门狗跨 XRESET_REQ
+  注入脉冲幸存，~3 分 40 秒准时复位 payload；payload 启动即执行内核自己的
+  `WDT_SET_STOP` 修复。ILCE-7M4-RE / Powerful6700 均无此问题——本机是
+  已知唯一案例
+- **意义**：与磁盘系统完全独立的分区级救援通道，同时是 ZV-1F 新菜单
+  移植（`nflasha15` 重建）的刷写路径
+
+完整记录与关键技术事实（扇区寻址 vs 早期字节+DMA 假设、XRESET_REQ 不清
+外设域、8 KB 注入预算、安全模型）见
+[`docs/FASTBOOT_EMMC.md`](docs/FASTBOOT_EMMC.md)。实现与源码在工具库
+zv-e10-toolkit（本地 `/root/fw/zv-e10-toolkit`，GitHub
+`dino2048/zv-e10-toolkit`）。
 
 ---
 
@@ -176,7 +204,7 @@ App 的初始化按序加载基础设施库，停在网络栈（`libWlanResource
 ## 目录结构
 
 ```
-docs/                      研究文档（防砖、固件报告、系统结构、QEMU 进展、交接…）
+docs/                      研究文档（防砖、fastboot/eMMC 通道、固件报告、系统结构、QEMU 进展、交接…）
 docs/ACKNOWLEDGEMENTS.md   ★ 参考项目与致谢
 rescue/                    ★ 真机救援：payload 源码（裸机 ARMv7）+ 串口启动协议文档
   ├─ payloads/             探测 → 读块 → 定稿 → 最小修复（1~2 字节）的演进
