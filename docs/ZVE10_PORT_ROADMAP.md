@@ -409,3 +409,12 @@ InputService::createEvent(key, press) / pushFilterEvent 为进程内 API（m_pMy
   2) 若注入无反应 → 说明 InputServant 的接收线程不在本进程（或未启动），改为检查 0x14A0429 的接收侧
      （哪条线程 rcv_msg 该 qid）并补齐服务；
   3) 一旦出现 GPE 提交，立刻接软件 GPE 渲染到 VDF 0x20312000 + 输入循环，形成"可交互"闭环。
+
+## c233/c234 输入注入尝试（2026-10-23 02:05）
+- c233：向 `0x014A0429`（InputServant）注入 24B 事件（4 种布局，MENU=0x1AB）→ **全部 ret=-1024（无效 id）**
+  ⇒ 该队列在本环境**未注册**（InputServant 服务未起来）。
+- c234：改注入 `0x005503E0`(a7c2 App32 风格) / `0x011006E9` / `0x0094016A` / `0x014C0424`，32B 布局（key/sub/status/ex/from）
+  → **全部 -1024**；只有 app 自己发的 0x14C0424（请求 id 9）正常 ret=0。
+- 结论：**不能靠 UIPC 注入输入**（目标队列都不存在）；输入链路需要 InputService 实例（m_pMyInstance=0）或另一个仍在运行的接收者。
+- 同时：`/dev/stream` 从未打开（字符串只在 libObj/libInfraMtpServer 出现），`ZZGPEREG` 写入 0 → 显示管线根本未启动。
+- 下一步（进行中）：330s 长跑确认是否只是"慢"；若始终不启动，则要找出 App 等待的显示/场景服务（HDMI/DMM/OSD 通知）。
