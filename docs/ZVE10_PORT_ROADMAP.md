@@ -342,3 +342,26 @@ r3=[iter+4]; r0=[r3+16]; return       ; 读状态字段（初始 -1，成功应�
   - 读 `msg[0]&0xffff == 9` 时，把 `msg[4]`（=msg+16，状态字段）写 0 并打印 before 值（限流 6 条）；
   - 其余 qid 完全不碰。
 - 判据：出现 `FIX16 before=ffffffff` → BMP_Create 是否变成功 → app 是否推进（pVM/ML/ZZ/VDF）；若崩记录 pc/lr/模块。
+
+## ★ 里程碑 c230（2026-10-23 01:10）
+- **根因修正**：c194–c229 的失败大量来自**探针自身**（inline hook 的 Thumb/ARM 位）：
+  - c226 崩 address=0x04026008（probe 区，trap 0x0e）；
+  - c229b 崩 pc=0x04023952（probe 区，cpsr Thumb:off）。
+  ⇒ 采用 **无 inline hook** 的纯 interposer 探针（menuc230.c）。
+- grm_ma 位图请求消息已验证（11 word）：
+  `w0=9(请求id) w1=结果对象指针 w2=0xE1000(921600=640*480*3) w3=0x280(640) w4=status(-1) w6=0x4D w8=0x22BB2000(帧缓冲phys) w9=0x96000(614400=640*480*2)`
+- 强制 w4=0 会命中 `AAS MA_ErrNone == error @BitmapImpl.cpp:199` ⇒ 底层 MA 分配真失败。
+- **c230 稳态（低日志、无 hook）**：
+```
+gfx=523248 res=115579488 wg=525368（全部非 0）
+pVM=1380064（i=24 起稳定）→ ViewManager 创建成功 ★
+openView("view/SCALAR",0) ret=0
+dev=dmpgles2 33953、uipc 19398、ldec 1；assert=0；无崩溃；跑满 150s
+screendump = QEMU 测试彩条（VDF 无像素）；ZZGPEREG 写入 = 0
+```
+- 结论：**初始化链全部打通**，差"开始绘制"（GPE 提交 + VDF 像素）。
+- 下一步：
+  1) c230 长跑 + 仅日志，看 MA 是否自然成功；
+  2) 若 MA 恒失败 → interposer 里替身分配（返回我们 mmap 的 640x480 缓冲区 + status=0 + w6=0）；
+  3) 软件 GPE（MIT gpe-raster/gpe-sprite）→ VDF 0x20312000 → streamfb 出画面；
+  4) 输入注入（raw MENU=0x1ab）实现交互。
