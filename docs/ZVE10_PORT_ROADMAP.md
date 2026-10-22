@@ -651,3 +651,24 @@ idx146: cmd=0x20000002  mask=0x7FFFFFFF  id=0x1CF
   1) 不自己调 dlopen，而是**直接调用已解析函数指针**（`Application_System_Init` 用 dlsym(NULL,"...") 拿，
      subapp/vssapp/gui 的符号先用 `dlopen` 在**worker 线程启动前**完成，避免与 interposer 竞争）；
   2) 或直接用 `im.elf` 的 `b448`（dlopen+dlsym+调用）函数，按条目字段构造调用（绕开 b7dc 的 ldrh 截断问题）。
+
+## ★ c272（2026-10-23 04:15）：四条 UI 库在 /usr 里**根本不存在**
+- 运行期实测（探针直接 open）：
+```
+/usr/lib/libObj.so            = OK (fd 17)      ← 存在
+/usr/lib/appFw.so             = -2 (ENOENT)     ✗
+/usr/lib/subapp.so            = -2              ✗
+/usr/lib/gui.so               = -2              ✗
+/usr/local/lib/libVssApp.so   = -2              ✗
+/usr                          = OK
+```
+- 而在 `/usr` 分区镜像里 `DPro_App_UI_init` / `vssapp_init` / `appFw.so` 这些**字符串确实存在**（约 41.8MB 处），
+  但那是 **libIMDB 的条目表**，对应的 `.so` 文件本身缺失。
+- 符号核对：`libObj.so` 导出 `Application_System_Init`（✓），但 **不导出** `subapp_init` / `vssapp_init` / `DPro_App_UI_init`。
+- ⇒ 结论：**IMDB 的 UI 启动清单是对的，但四个库文件在我们的镜像里缺了三/四个**，
+  所以 THREAD_APP 即使被正确触发也无库可加载（之前 arg=1 时 78 个模块能加载，是因为那些在 /usr/lib 里存在）。
+- 下轮计划：
+  1) 在 `/system`（nflasha3）与其他分区里找 `gui.so` / `subapp.so` / `appFw.so` / `libVssApp.so`（探针直接 open 探测候选路径）；
+  2) 找不到就用替代方案：`appFw.so → libObj.so`（导出 Application_System_Init，已验证可用）；
+     `gui.so` 的 `DPro_App_UI_init` 若彻底缺失，则用我们自己实现的软 UI（软件 GPE → VDF）替代最后一步；
+  3) 目标不变：先把 Application_System_Init + 视图系统跑起来（pVM≠0 已有），再把绘制接到 VDF。
