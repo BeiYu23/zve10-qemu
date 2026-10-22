@@ -1029,3 +1029,19 @@ ptr=0x2056e270 val=0x4:
   1) 把 dump 扩到 64 word 并**在 App 触发不同 UI 行为时对比**（如 openView 前后），找出 opcode 变化的命令；
   2) 分析 `0116f000/0117f000/0044f000/0010f000` 这类"低 16 位固定 0xF000"的字段（疑似坐标/标志打包）；
   3) 按格式实现执行器（fill/blit → VDF 0x20312000），先用 opcode=4 试出"清屏/填充"语义。
+
+## ★★★★ c320/c321（2026-10-23 06:30）：**GPE 执行器打通 —— 命令真的变成像素了**
+- 在 QEMU `zz_gpe_write` 里给 kick(opcode=4) 加了一个最简执行器：把描述符 word[4] 当颜色，填满 640×480 framebuffer。
+- 第一次运行失败（屏幕全黑）——原因找到：**streamfb 的 `blank-pattern` 默认为 on**，
+  当缓冲"全同色"时会用测试彩条覆盖。加 `-global driver=bionz-streamfb,property=blank-pattern,value=off` 后：
+```
+ZZGPEFILL opcode=4 color=f000
+截图取样： (247,0,0) ×5  → RGB565 0xF000 渲染成红色，整屏红
+```
+- ⇒ **端到端链路首次全部打通：GPE 寄存器写入 → 执行器 → VDF(0x20312000) → streamfb → QEMU 窗口**。
+  这是"App 画面显示"的**最后一段基础设施**，现在它工作了。
+- 产物：`oss/artifacts/c321/gpe_fill_red.png`（整屏红，证明执行器生效）。
+- 下轮：把执行器从"opcode 4 = 填充"扩展为真实语义：
+  1) dump 描述符 64 word，结合 `0116F000/0117F000/0044F000/0010F000` 的规律猜字段；
+  2) 让 App 产生更多命令（例如推动 UI 视图/让 render 跑起来），收集 opcode 种类；
+  3) 按 a7c2 的 gpe-raster 实现 fill/blit/sprite，把 App 真正画出来。
