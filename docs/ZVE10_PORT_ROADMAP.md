@@ -672,3 +672,11 @@ idx146: cmd=0x20000002  mask=0x7FFFFFFF  id=0x1CF
   2) 找不到就用替代方案：`appFw.so → libObj.so`（导出 Application_System_Init，已验证可用）；
      `gui.so` 的 `DPro_App_UI_init` 若彻底缺失，则用我们自己实现的软 UI（软件 GPE → VDF）替代最后一步；
   3) 目标不变：先把 Application_System_Init + 视图系统跑起来（pVM≠0 已有），再把绘制接到 VDF。
+
+## c273（补充线索）：nflasha15 抽样区是**全零**
+- 按文档 `nflasha15 用户区 0x2D800000 ⇒ .img 0x2DC00000` 抽 64MB → **头部全零**，debugfs 打不开（无 ext2 超级块）；
+- ⇒ 我们镜像里该位置**不是**真正的 /usr 分区内容（要么偏移不同，要么镜像里该分区为空），
+  这解释了为什么运行期 `/usr/lib/appFw.so` 等全部 ENOENT；
+- 而 init 日志早有：`mounting1 /dev/dnflasha15 -> /usr ... failed errno(6)` → **/usr 挂载本来就失败**。
+- 下轮首要任务：**修正 /usr（nflasha15）分区在镜像中的位置/内容**，让真正的 /usr 挂上（含 appFw.so/gui.so 等），
+  这是"UI 库缺失"的根因；其次才是执行 appFw→subapp→VssApp→gui 四步。
