@@ -615,3 +615,29 @@ dlopen 模块数 61 → 78（新增 libNetService*/libInfraEthernetService/libIn
   1) 逐条隔离 idx143–146（用不同 arg 掩码，或临时改 entry[1]/[2] 只保留一条）找出崩的是哪条；
   2) 检查 `b448/b4fc` 里 dlopen+dlsym 后调用时的参数来源（entry[36]/[40] 指针是否需重定位）；
   3) 修好后 THREAD_APP 应能跑完 → 它会把 UI 模块（viewUnified2 等）真正拉起来。
+
+## ★★★ c269/c270（2026-10-23 04:10）：应用阶段四条真身解出（UI 启动清单）
+- 隔离测试（改 `imdb_raw` 的 entry[1] 只放一条）→ 单独跑 idx143 即崩（address=0x1，且 appFw.so 未加载）；
+  崩点在 im.elf 的 IMDB 执行器（b7dc）里，不是模块本身。
+- **条目解码结果（这是整条 UI 启动链的"任务清单"）**：
+```
+idx143: cmd=0x20000004  mask=0xFFFFFF9F  id=0x07FB0083
+        dlopen "appFw.so"      → dlsym "Application_System_Init"   ★ UI 主线程入口
+        附加 config: "AdjChkConfig.so", "AppConfig.so"
+idx144: cmd=0x20000004  mask=0x40        id=0x83
+        dlopen "subapp.so"     → "subapp_init" / "subapp_exit"
+idx145: cmd=0x20000004  mask=0xFFFFFF9F  id=0x1A9
+        dlopen "/usr/local/lib/libVssApp.so" → "vssapp_init" / "vssapp_exit"
+        附加: "/usr/local/lib/AdjChkConfig.so", "/usr/local/lib/libVssAppMain.so"
+idx146: cmd=0x20000002  mask=0x7FFFFFFF  id=0x1CF
+        dlopen "gui.so"        → "DPro_App_UI_init" / "DPro_App_UI_sus" / "DPro_App_UI_resume"
+```
+- 这与我们已知事实完全对接：`Application_System_Init` 正是此前我们手工调用的函数（ai(0) 能得到 pVM≠0），
+  说明**真正的 UI 启动 = 依次执行这四条**（appFw → subapp → VssApp → gui）。
+- 执行器（b7dc）用 `ldrh` 取 entry[12] 低 16 位当 id 再查表，解析路径有坑 → 直接调用会崩；
+  **因此下轮改用"手工顺序调用"绕过 IMDB 执行器**：
+  1) dlopen("appFw.so") + dlsym("Application_System_Init") → 调 0（已验证可出 ViewManager）；
+  2) dlopen("subapp.so") + subapp_init；
+  3) dlopen("/usr/local/lib/libVssApp.so") + vssapp_init；
+  4) dlopen("gui.so") + DPro_App_UI_init；
+  5) 之后再走 BMP（已可通过）→ 软件 GPE → VDF（已验证）→ 输入。
