@@ -1240,3 +1240,15 @@ GPE 写入 = 0（显示初始化没走到）
   1) **mf 是让 App 进入"应用阶段"的关键外部件**（THREAD_APP 因此被创建）；
   2) 但它随后立即退出（可能因为 IMDB 条目过滤 arg=0，或缺少 ud_im 的后续驱动）；
   3) 下轮：把 `ud_im.elf` 也放进镜像并按官方顺序启动（mf → sen → ud_im → im.elf），观察 THREAD_APP 是否真正跑起来并提交 GPE 命令。
+
+## c341（2026-10-23 07:52）：官方顺序（mf→sen→ud_im→im.elf）
+- 镜像里同时放入 `mf` / `ud_im.elf`（来自 cramfs）+ `sen.elf`，按官方顺序启动：
+```
+EXECVE /bin/mf → /bin/sen.elf → /bin/ud_im.elf → /usr/bin/im.elf → im.elf.real
+THREAD_APP pid=136 创建后立即退出（code=0）
+GPE 写入 = 0（显示未初始化），无 trap
+```
+- ⇒ mf 确实能让 App 走到"创建 THREAD_APP"，但 THREAD_APP 的执行体仍然空转退出
+  （与手工 `ta(0)` 表现一致：IMDB 应用阶段过滤条件不满足）。
+- 这条线的下一步很明确：**让 THREAD_APP 的 arg 非 0、或让 IMDB 应用阶段条目匹配**
+  （需要知道 mf 传的 arg 与 IMDB globals[40] 的期望位），属于再次反汇编 mf→im.elf 的调用参数。
