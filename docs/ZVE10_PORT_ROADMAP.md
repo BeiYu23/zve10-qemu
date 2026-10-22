@@ -575,3 +575,15 @@ log(); return;
 - 下一步：确认 IMDB 目标过滤来源（`target=` 参数 / dmode / bootmode）——
   很可能我们的 `target=qemu` 在 IMDB 里不存在对应 target 位，导致应用阶段条目被过滤掉；
   尝试 `target=prod` 等真实 target 名，或直接在探针里把过滤掩码改成"全匹配"再跑一次。
+
+## c264（2026-10-23 03:52）：target=prod 无效
+- 把包装脚本改成 `im.elf 'target=prod ' dmode=3` → **im.elf.real 直接退出（code=61952 / 0xF200）**，探针都没跑起来；
+- ⇒ `target=qemu` 是**正确且被接受**的 target；问题不在 target 名。
+- ⇒ 结论收敛为：**IMDB 里应用阶段（0x08000008 / 0x08000009）的条目缺失**，
+  或这些条目被 `dmode=3` 之类的过滤条件排除。
+- 下轮计划：
+  1) 找到 IMDB 数据来源（libIMDB 读哪个文件/分区），把它的条目表 dump 出来，
+     确认是否存在 target 位 0x08000008/0x08000009 的条目；
+  2) 试 `dmode` 其它取值（0/1/2）看应用阶段是否被启用；
+  3) 若 IMDB 确实缺项 → 用探针在 `IMDB_get_entries` 层伪造这些条目（把库路径/入口指向 viewUnified2 等），
+     让 THREAD_APP 真正把 UI 模块拉起来。
