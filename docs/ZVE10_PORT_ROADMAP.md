@@ -319,3 +319,17 @@ r3=[iter+4]; r0=[r3+16]; return       ; 读状态字段（初始 -1，成功应�
 - 因此 BMP 失败根因 = **grm_ma 服务应答未回填 msg+16（保持 -1）**。
 - c224（已派）：在 `osal_snd_sync_msg` interposer 里对 `qid==0x14C0424 && msg[0]==9` 写 `msg[4]=0`（即 msg+16=成功），
   不改其它 qid、不用 inline hook；观察 BMP_Create 是否成功、UI 是否推进。
+
+## 状态锚（2026-10-23 00:40）
+- 真机救砖由另一会话（`救砖`）负责，用户反馈“相机活了”；本会话继续 QEMU 目标，不混线。
+- 最新 QEMU 状态（c220–c225 之后）：
+  - BMP_Create(ctx,640,480,1) 仍返回 -9999；
+  - 链路已确认：BMP_Create → 0x7676C4 → tail 0x7685A8 → 0x76858C → `osal_snd_sync_msg(qid=0x14C0424, msg)`，
+    随后 0x76858C 读 `*(u32*)(msg+16)` 作为状态（初始 -1）→ BMP 视为失败；
+  - msg 布局（0x768054 反汇编）：iter+12=qid、iter+4=iter+8=msg（44B，由 osal_valloc_msg_wait 分配）、msg+0=halfword 9；
+  - 因此“状态在 msg+16”是确定的。
+- 下一步 c226（已派 init-unlocker）：在 osal_snd_sync_msg interposer 中对
+  `qid==0x14C0424 && *(u32*)msg==9` 写 `((u32*)msg)[4]=0`（=msg+16），观察 BMP_Create 是否成功、下一个阻塞点。
+- 备选方案（若状态修复后仍失败/崩）：**用户态接管 BMP_Create**（PLT 可拦截，c197 已验证），
+  返回自建 640x480 32bpp bitmap（对象 0x80B，需按 0x69B38C/0x69B440 的结构构造），
+  绘制用软件光栅直接写 VDF 0x20312000（显示通道已在 c195 验证）。
