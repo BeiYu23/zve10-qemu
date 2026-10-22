@@ -68,3 +68,34 @@ DDR 描述符（0x10070C00）: {0x080C4880, 0x08AEC800, 0x01E00280(=640x480), 0x
 - 单 QEMU 实例、跑完 `pkill -f qemu-system-arm`；
 - 所有缓存放 `/mnt/build/tmp`（不要 `/tmp`，tmpfs 会撑爆）；
 - 每轮结论写入 `docs/ZVE10_PORT_ROADMAP.md` / `docs/QEMU_BOOT_PROGRESS.md` 并 push。
+
+## 7. 2026-10-23 新增（GPE 协议 + 执行器）
+### 7.1 GPE 提交协议（已实测）
+```
+GPE 寄存器块: phys 0x50000000（libObj 用 /dev/mem 映射后直接读写）
+提交方式:
+   reg[0x1804] <- 命令块物理地址（32 字节对齐，通常是 0x2056Exxx 起、每次 +0x20）
+   reg[0x1800] <- opcode（当前只观察到 4）
+命令块（8 word，magic 在 +0x1C = 0x12345678）:
+   0116f000 02056db0 0117f000 00000001 0044f000 00000000 0010f000 12345678
+帧描述符寄存器（App 初始化时写）:
+   0x0C00 = 源缓冲 phys (0x080C4880)
+   0x0C04 = 目标缓冲 phys (0x08AEC800)
+   0x0C08/0x0C0C = 0x01E00280 (=480<<16 | 640)
+   0x0C10 = 0x00004401 (格式)
+   0x0C18 = 0x00000001 (使能)
+```
+### 7.2 已可用的执行器骨架（QEMU `hw/arm/bionz.c`）
+- `zz_gpe_write()` 中：写 0x1800 时读 `zz_gpe_regs[0x1804]` 得到命令块 phys，
+  用 `zz_watch_ram + ptr` 直接取 8/24 word（已实现 `ZZGPECMD` 打印 + 可插入光栅逻辑）；
+- **已验证**：把命令块 word[4] 当颜色填满 640×480 → 屏幕整屏红（`oss/artifacts/c321/gpe_fill_red.png`）；
+- **必须**带 `-global driver=bionz-streamfb,property=blank-pattern,value=off`，否则全同色缓冲会被测试彩条覆盖；
+- QEMU stderr 里有 `ZZGPEREG/ZZGPECMD`，用 `/mnt/build/run_cap.sh` 跑（保存到 `qemu.out`），
+  默认 runner 会丢弃这些日志。
+
+### 7.3 当前唯一阻塞
+App **只提交 1 条 opcode=4 的配置命令**（200s 长跑统计），之后不再产生任何绘制命令；
+帧描述符指向的两个缓冲（0x080C4880 / 0x08AEC800）里是**未初始化垃圾**。
+⇒ 需要让 App 的 UI/场景渲染循环真正跑起来：
+- 手工触发 IMDB 应用阶段（`0xA1B0(arg)`）时 arg=0 全部过滤、arg=1 → 78 模块后崩、arg=0xff → 61 模块后崩；
+- 崩溃点都在 `THREAD_INFRA0`，下一步应定位该崩溃（很可能是应用阶段真正的入口）。
