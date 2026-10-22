@@ -20027,3 +20027,49 @@ AAS/assert 计数 = 0 ；无崩溃；跑满 150s
    （返回我们自己 mmap 的缓冲区地址 + status=0 + w6=0），让 BMP_Create 拿到合法 bitmap；
 3. 之后接软件 GPE（gpe-raster/gpe-sprite，MIT）→ 写 VDF 0x20312000 → streamfb 出画面；
 4. 最后接输入注入（MENU=0x1ab 等 raw 码）实现"可交互"。
+
+---
+
+## 三百三十一、Round 371–378（2026-10-23 05:50）：ZV-E10 QEMU UI 逆向——本轮主线全记录
+
+### 1) 结论速览
+```
+✅ App 启动链完整（61 个模块加载），ViewManager/GRM/GraphicsEngine/WidgetSystem 全部已建立
+✅ App **会打开** /dev/hdmi、/dev/dmpgles2、/dev/stream、/dev/ldec、/dev/mem，并加载 UX 资源
+   （global.xdb / lang_cmn.uxc / color_cmn.uxc / image_cmn_43.uxc）
+✅ App 持续向 dmpgles2 提交 GPE 命令（ioctl 0xc0048211/12/0d）
+❌ 但屏幕上没有画面 —— 因为 **QEMU 侧没有人执行 GPE 命令**
+```
+
+### 2) 关键实测（可复现）
+- **open 全量日志**（探针 interpose `open`）首次暴露上述设备/资源访问 —— 此前只统计 ioctl 造成"App 不画"的误判；
+- `fake_gles`（dmpgles2 的内核替身）对所有 ioctl 返回 0，**GPE 命令被丢弃**；
+- 命令真正结构（内核 dump + 逐级指针跟随）：
+```
+kick ioctl(0xc0048212) arg → H{1, desc_ptr, desc_ptr, ctx_ptr, code, 0x36, ...}
+desc[0x06db4c28] = {0x013D7AA0(命令环phys), 0x0003A788(len≈239KB), 0x0400F5C4, ...}
+命令环 0x013D7AA0 内容 = 9-word 一组的链式描述符：
+  00000400 00000001 FFFFFFFF 00000000 00000000 00000000 <next> <next> <id:0x223..0x23D>
+```
+
+### 3) 已排除的方向
+| 假设 | 实测结果 |
+|---|---|
+| 屏幕位图存在、只是没显示 | `GRM_screenGetOnBitmap()=0`、`GRM_fbrmSetScreenPreference()=-9999` |
+| streamfb 地址指错了 | 试 0x20560000(黑)、0x20030000(噪声)、0x08AEC800(条纹噪声) —— 都不是画面 |
+| 缺 UI 库（appFw/subapp/gui/libVssApp） | /usr/lib 有 319 个库，但那四个**不属于本机型**；ZV-E10 的 UI 就是 libObj |
+| grm_ma 分配回复没填 | qid 0x14C0424 是**错误上报通道**（ASCII 日志 + err -9），填它只会让 App 写垃圾 |
+| 探针 hook 导致崩溃 | 已确认早期崩溃多为**探针自身**（inline hook 的 Thumb/ARM 位） |
+
+### 4) 本轮新增能力
+- **fake_gles 内核模块可重编**：`make -C a7c-kernel/linux M=~/fw/fake_gles ARCH=arm CROSS_COMPILE=arm-buildroot-linux-gnueabihf- modules`；
+- **QEMU 可改可重编**（补装 GTK3/SDL2/epoxy/pango/cairo；二进制已备份 `qemu-system-arm.bak`）；
+- 内核 `ioremap` 可直接读任意物理内存 → 已读通命令环；
+- 进程内 `/proc/self/task/*/{comm,wchan}` 线程清单能力（发现 `THREAD_APP` 缺失/空转）。
+
+### 5) 下一步（交接重点）
+1. **枚举 GPE 描述符 opcode**（当前只见 id 递增 0x223→0x23D，命令体可能由 kick 时填充后被清空）：
+   建议在 `kick` 前/后各 dump 一次同一条目，捕捉命令体；
+2. 建立 opcode→图形操作映射，参考 MIT `gpe-raster.c`/`gpe-sprite.c`；
+3. 执行器可直接写 VDF `0x20312000`（streamfb 呈现地址，已验证可行）；
+4. 输入：`/dev/dmpgles2` 与 upm 键注入（raw MENU=0x1AB）待做。
