@@ -1601,3 +1601,24 @@ PC = 0x040A2146 ×6（落在 libpthread 的 futex/syscall 路径）
   ⇒ 采样期间 CPU 只在"等锁/等事件"的代码上，**不是**在渲染或忙循环。
 - 结论：App 的 UI 事件处理线程没有可处理的事件源（没有任何输入/定时器驱动它），
   所以 view/model 永远不会被创建，`drawDirect` 拿不到 model（`[view+0x24]=0xFFFFFFFF`）。
+
+## c388（2026-10-23 13:15）：`View::requestModel()` 也崩（对象不是完整 View）
+- libObj 的 View 导出方法一览（有用）：
+```
+View::requestModel(int)                @0x89FFBC
+View::compareModelStatus(int)          @0x89FFAA
+View::hasModelControl()                @0x89FF98
+View::requestApplicationExecute(Event*)@0x89FFE4
+View::pushEvent(Event*)                @0x8A0040
+View::drawDirect()                     @0x8A0074
+View::getModelInfo(int,int,ParamList*,ParamList const*) @0x89FFD6
+```
+- 用 `openView(0xB068A1C7)` 的返回值当 View*，依次调用 `requestModel(0..3)`：
+  **第一次调用即崩溃（trap 0x0e）**，说明 openView 的返回值并不是一个可用的 View 实例
+  （其 `[+0x24]` 恒为 0xFFFFFFFF 也印证）。
+- 结论（本目标内的最终结论）：
+  1) **BBC/libBizFw/SeqController 与 UI 无关**（相机控制层），原目标前提不成立；
+  2) UI 侧缺的是 **App 内部的 view/model 实例**，它们只能由 App 自己的事件线程在处理事件时创建；
+  3) 而 App 的所有线程都在等事件（线程全景 + PC 采样证据），**没有任何事件源**驱动它；
+  4) 因此在本镜像（libBizInitializer 全 stub、/usr/lib 无 appFw/subapp/gui/libVssApp）下，
+     靠探针注入无法把 UI 拉起来。
