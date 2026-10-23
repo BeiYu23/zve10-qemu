@@ -2251,3 +2251,33 @@ wchan = futex_wait_queue_me
   1) 按"人造对象 + 写单例槽"的做法处理 ViewManager（`libObj+0x149221C`）与 ResourceManager，
      然后再看 `viewManagerIf::openView` / `uxengine_init` 是否走得更远；
   2) 同时观察 Appframework 线程是否因这些对象出现而变化（若仍 futex，则它确实在等"外部事件"）。
+
+## ★ c466（2026-10-24 02:10，第 14 轮）：ViewManager 构造函数**不是单参数**
+- 按对方给的写入点（`8a4f5a..8a4f62: str r5,[&pViewManager]`）与构造入口 `libObj+0x8A4E28`，
+  用 `calloc(0x400)` 当 this 调用它 → **崩在 address=0**，pc 折合 `libObj+0x8A4E42`。
+- 反汇编开头揭示了原因：**它是多参数构造**，我们只传了 this：
+```
+8a4e28: stmdb sp!,{r4-r11,lr} ; sub sp,#12
+8a4e30: mov  r5, r0           ; this
+8a4e32: mov  fp, r1
+8a4e34: ldr  r4, [r7, #0x30]  ; ★ 取第 5 个参数（栈上）当某配置对象
+8a4e3c: mov  r0, r4
+8a4e42: ldr  r3, [r4, #0]     ; ← 我们传的 r4 是垃圾/NULL ⇒ 这里崩
+8a4e48: ldr  r3, [r3, #8]
+8a4e4c: blx  r3               ; 调配置对象 vtable[+8] 取工厂指针
+8a4e4e: str.w r0,[r6],#44
+```
+  ⇒ ViewManager 构造需要 **(this, ?, ?, ?, 配置对象*, …)**，其中那个配置对象带 vtable（工厂）。
+- 结论：**"人造对象 + 写单例槽"这条路走到 ViewManager 时不再便宜**——它不是零初始化就能用的对象，
+  而是依赖一层带 vtable 的"配置/工厂"对象，这些对象本身又只能由缺失的宿主创建。
+- 阶段性判断（如实记录）：
+```
+✅ 启动链稳定（35 模块、无 oops）
+✅ GraphicsEngine 人造成功、uxengine_init 真身跑通
+❌ ViewManager 构造需要 (this + 4 个以上参数 + 带 vtable 的配置对象) ⇒ 手工引导成本陡增
+⇒ 继续往下等于重建 App 的对象图（配置对象/工厂/事件生产者），已超出"填坑"能覆盖的范围
+```
+- 后续可选方向（供下一阶段决策）：
+  1) 逆 ViewManager 构造的完整签名与配置对象类型，照做一整套桩（工作量大但路径明确）；
+  2) 转而验证**"新菜单 appFw.so 路线"**（如果将来拿到该库）——它不依赖 pViewManager；
+  3) 或者接受"QEMU 里只做到底座 + 引擎层"的阶段目标。
