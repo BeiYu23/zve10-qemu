@@ -2754,3 +2754,23 @@ App 侧现在处于"线程活着、事件循环空闲、但各子系统（Resour
   1) 系统盘点：一次性打印 App 侧各单例（ViewManager/ResourceManager/InputService/InfraInput/ViewIdSoTable…）的当前值，
      找出"哪些是 0"，据此判断还缺哪一层；
   2) 与对方确认 ASI 之后**正常的下一步是谁触发**（是否有"服务就绪"消息/定时期待处理）。
+
+## 新 goal 第 5/60 轮（2026-10-24 05:25）：单例盘点 + 补齐假对象（RM/InputService）—— pVM 仍为 0
+- 盘点（直接读变量，避免 dlsym 死锁；ab_v512）：
+```
+gfx=0x84ED8(人造)  rm=0x00000000  ws=0x86340(人造)  pvm=0x00000000  inp=0x00000000  cb=0x85AF0(人造)
+```
+  ⇒ 缺的是 **ResourceManager、ViewManager、InputService** 三样。
+- 补齐实验（ab_v513/514）：
+  - interpose `ResourceManager::sys_getInstance` 返回假对象 `rm_fake`（0x400 零块），并把 `0x145CA64` 也写成它
+  - 给 `InputService::m_pMyInstance`(0x1459548) 填一个 0x200 零对象
+```
+INPFAKE 0x0008BB00
+INV gfx=0x88288 rm=0x04042A78 ws=0x896F0 pvm=0 pvm 仍 0 inp=0x8BB00 cb=0x88EA0
+trap=0，Y9 跑到 i=39，无崩溃
+```
+  ⇒ **假对象没有再引发崩溃，但 pVM 仍是 0**：App 线程依旧空闲，没有任何"继续初始化"的动作。
+- 结论：**现在的障碍不是"缺对象"而是"缺触发"** —— 需要知道 Appframework 线程在等哪条队列/什么事件。
+- 下一步：
+  1) hook `osal_rcv_msg_tmo`，**按 tid 记录**（找出 Appframework 线程在等哪个 qid）；
+  2) 找到后按对方给的"valloc→memcpy→snd_msg"三步法投一条最小消息，看能否把线程唤醒推进。
