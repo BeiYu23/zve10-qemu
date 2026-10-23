@@ -2867,3 +2867,28 @@ Brought up 1 CPUs / SMP: Total of 1 processors activated
   1) 读 Appframework 线程的 `/proc/self/task/<tid>/stat` **utime 两次**，确认它是否在跑（utime 是否增长）；
   2) 若 utime 恒为 0（从未被调度）⇒ 与 CPU 亲和性/osal 线程调度有关，需从 `osal_set_cpu`/osal 线程创建侧解决；
   3) 若 utime 有增长 ⇒ 线程在跑但卡在某个我们没覆盖的地方，继续锚点二分。
+
+## ★ 新 goal 第 10/60 轮（2026-10-24 06:15）：**确认阻塞点 = `initializeConfig` 内部**（对方推断完全正确）
+- 给 `initializeConfig` interpose 加 ENTER/EXIT 日志（只记录 tid 186 的关键分配）：
+```
+INITCFG_ENTER tid=186 lr=0x06724EAD          ← 进入
+（没有 INITCFG_EXIT）                          ← 从未返回
+NEW2 sz=24 tid=186 lr=0x05FCDE8F             ← initializeConfig 里的 new(24) 成功了
+NEW2 sz=24 tid=186 lr=0x0F074AC1  ×N         ← 之后进入 viewUnified2 的代码（0x0EC64000+0x3E0AC1）
+                                             反复分配 24 字节（同一返回地址）⇒ 循环
+```
+- 折合地址：
+  - `lr=0x05FCDE8F` ⇒ libObj+0x14BE8F ⇒ 正是 `initializeConfig` 里 `blx operator new` 之后的返回地址 ✓
+  - `lr=0x0F074AC1` ⇒ **viewUnified2.so + 0x3E0AC1**（该地址最近的导出符号是 `ViewRootRemoteToInstance`(0x3326D4)，
+    之后属于未导出内部函数）
+- 结论：
+```
+· 0x8A2EE0 → 0x8A2E70 → initializeConfig 进入，new(24) 成功
+· 随后 ctor（0x14BD58）把控制流带进 viewUnified2，并在那里【反复 new(24) 循环】
+· initializeConfig 永不返回 ⇒ 0x8A2E70 不返回 ⇒ 信号量/pipe/管理器分配/ViewManager 全都不发生
+```
+⇒ **"1 CPU / CPU15 亲和性"那条线索不再是首要嫌疑**（线程明明在跑）。
+   真正的问题是 **initializeConfig 内部那条进入 viewUnified2 的路径陷入循环**（很可能是"创建资源失败→重试"）。
+- 下一步（第 11/60 轮）：
+  1) 定位 viewUnified2 +0x3E0AC1 处的函数（反汇编该区域，看它的循环条件与它调用的外部 API）；
+  2) 若它调用 GRM_*/DMM（我们已知这些在 QEMU 里没人应答），就正好接上"实现 GRM/DMM shim"这条既定路线⑤。
