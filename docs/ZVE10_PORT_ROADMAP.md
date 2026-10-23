@@ -2140,3 +2140,24 @@ af50: cmp r4, #1 / bne …
   1) 找出**谁** dlopen 了 `libJiritsuUIView.so`（在 libObj/libMWF/libJiritsu 里搜字符串不行，改用 probe 记录 dlopen 的 caller LR）；
   2) 若它是"可选增强库"，可考虑提供**最小 stub**（导出对方 dlsym 的符号）让流程继续，
      而不是让 UI 初始化在那一步静默终止。
+
+## c455（2026-10-24 01:20，第 9 轮）：**证伪"消息池耗尽"** —— valloc 实际是成功的
+- 方法：interpose `osal_valloc_msg_wait`，除了返回值，还读取第二个参数（out 指针）指向的内容：
+```
+VW out ret=0x00000000 dt_cs=1 out0=0x045FDA8C out1=0x5EFFFDC4
+VW out ret=0x00000000 dt_cs=0 out0=0x046ECFAC out1=0x5EFFFBE0
+... 全部 out0 都是有效指针（0x045xxxxx/0x046xxxxx）
+```
+  ⇒ **ret=0 且 out 里拿到有效消息指针 ⇒ 分配成功、没有阻塞**。
+  ⇒ 对方基于 `fblock: (19456) free=266752` 推的"只剩 13 块 / 池耗尽"**不成立**（该格式是 `(块数) free=空闲字节`，
+    实际上空闲充足）。这条推断可以从待办里划掉。
+- 另外从对方给的反汇编线索（线程描述符 `libObj+0x1455F24`，`+0x08 = 0x008A2399`）确认了
+  **Appframework 线程的真实入口 = `libObj+0x8A2398`**，其首条实质调用是：
+```
+8a239e: bl 0x6271D4        ; ← uxengine 相关（引擎初始化路径！）
+8a23a2..8a23d4: snprintf(buf,32,...) → bl 0x8A2314 (createRequestModelExecuteEvent(1, buf))
+8a23d8: mov r0, r7         ; 之后进入事件循环
+```
+  ⇒ **引擎初始化就发生在这个线程里**，所以"线程阻塞"与"管理器不建"是同一件事的两面。
+- 下一步：继续沿 `0x6271D4` 这条调用链走（它才是 engine/管理器构造的真正入口），
+  看它在纯净 /usr 下是否提前返回/异常。
