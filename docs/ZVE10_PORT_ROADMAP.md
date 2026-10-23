@@ -3035,3 +3035,23 @@ read / write / ioctl（尤其 /dev/dmpgles2、/dev/grm_ma 等设备节点）
 ```
 - 下一步（第 18/60 轮）：interpose `ioctl` / `read` / `write`，仍只在 tid 186 上记录
   （这类调用若高频出现，就说明循环在"反复给某个设备发请求并被拒绝"）。
+
+## ★★★ 新 goal 第 18/60 轮（2026-10-24 07:15）：抓到了！tid186 在循环 `ioctl(fd=3, 0x80000005) = -1`
+- interpose `ioctl/read/write`（tid 186 过滤）后，模式非常清楚：
+```
+IO186 fd=3 req=0x8000000A r=0
+IO186 fd=3 req=0x80000005 r=-1     ← ★ 一直失败
+IO186 fd=3 req=0x8000000B r=0
+（以上三个一组，反复循环）
+```
+- 对照此前内核 `UIPCARG im.elf.real cmd=0x8000000a/0x80000005/0x8000000b` 的日志：
+  **fd=3 就是 OSAL UIPC 的字符设备**，三种 req 分别是
+  `0x8000000A`=发送准备 / `0x80000005`=**接收** / `0x8000000B`=发送提交。
+  ⇒ **App 线程一直在做 `osal_rcv_msg_tmo`，但接收请求返回 -1（错误，不是超时）**
+  ⇒ 它每轮 new(24) 一个缓冲/错误对象，然后重试 —— 这正是那 ~26 次/秒的来源。
+- 这也解释了为什么我们 interpose `osal_rcv_msg_tmo` 抓不到：**App 是直接走 ioctl 到内核 osal 模块**
+  （`libosal_uipc` 内部用 syscall/ioctl），不经过我们 hook 的那层 C 符号。
+- 下一步（第 19/60 轮）：
+  1) 在 `ioctl(0x80000005)` 时 dump **第三个参数（struct 指针）的前 16 字节**，
+     取出它请求的 **qid 与 timeout**；
+  2) 用该 qid 判断"队列是否存在/是否注册"，再决定是"注册队列"还是"投一条消息"（对方已给 valloc→memcpy→snd 三步法）。
