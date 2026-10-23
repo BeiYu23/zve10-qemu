@@ -1416,3 +1416,12 @@ if (r0 != 0) { 记录日志（getPrintLevel()>0 时）… }
 ⇒ 直接用空/伪造对象调用会在 **vtable+0x28 这一步** 失败或崩溃（与之前观察一致）。
 - 因此"最小可行路径"必须提供：**真实的 ObjActiveBaseAvbbc 实例**（随 view/BBC 建立）+ 合法 GlobalAccessor，
   这确认了 `ZVE10_NEXT_STEPS.md` 第九节的判断：缺的是 model/BBC 层状态，而不是某个开关。
+
+## 会话结束（2026-10-23 08:50，Round 200/200）
+- 本会话（c190→c358）在 ZV-E10 QEMU UI 逆向上的净产出：
+  1) 显示后端全通并验证（GPE 协议解出 + 执行器实现 + 帧合成出图）；
+  2) App 不绘制被**直接测量**证实（src/dst 缓冲 12s 校验和一致）；
+  3) 阻塞点在字段级定位：`libBizFw.so::SeqController(uint, ObjActiveBaseAvbbc*, GlobalAccessor*)`
+     缺实例与上游 BBC/model 状态；
+  4) 建立两项可复用能力：guest 任意文件抽取通道、GPE 执行器骨架（QEMU 内）。
+- 下一步入口：`docs/ZVE10_NEXT_STEPS.md`（第八/九节）。
