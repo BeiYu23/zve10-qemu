@@ -1622,3 +1622,34 @@ View::getModelInfo(int,int,ParamList*,ParamList const*) @0x89FFD6
   3) 而 App 的所有线程都在等事件（线程全景 + PC 采样证据），**没有任何事件源**驱动它；
   4) 因此在本镜像（libBizInitializer 全 stub、/usr/lib 无 appFw/subapp/gui/libVssApp）下，
      靠探针注入无法把 UI 拉起来。
+
+## ★★★ c389–c392（2026-10-23 13:30）：**找到真机分区与官方启动脚本**（用户提示）
+- 工作区里早就有真机分区 dump（我之前没用上，这是本轮最大的收获）：
+```
+/root/fw/nflasha15_fixed.img            ← 真机 /usr 分区（ext2，300MB，与运行镜像里的 libObj.so 同为 21,305,528 字节）
+/root/fw/zve10_delivery/ZVE10_EMMC_FULL.img (1.9GB) + nflasha15/16/17/23/5/3/12/2/18/6/4.img
+/mnt/build/fw/ZVE10_V203_unpacked/firmware.tar_unpacked/0800_appli/  （只是 setting/lens 数据）
+```
+- 真机 /usr/bin 里有关键脚本与二进制：
+```
+/bin/up.sh              ← 真机启动脚本（挂 /setting、读 mode、调 bootin）
+/bin/change_mode.sh     ← 定义了 **dmode 语义**：
+   0 内核启动 / 1 +global infra / 2 +LIRO / **3 +appFw boot（默认）** / 4..6 nounified driver 变体 / 7..10 调试变体
+/bin/bootin.elf (15336) ← 真机启动器（使用 osal_* UIPC、Backup_read、fork/waitpid/execve）
+/bin/im.elf     (23240) ← 真机 App（ELF）
+```
+- 实测（用真机 bootin + 真机 im.elf）：
+```
+c390: 脚本写 /bin/bootin.real → "not found"（运行时 /bin 是 initrd，真机分区挂在 /usr！）
+c391: 改 /usr/bin/bootin.real target=qemu dmode=3 → 真机链跑起来了：
+      bootin.real → sen.elf / launch_shell.elf / net_cmdd.elf / ash / im.elf
+      但真机 im.elf **崩溃**（pc=0x056F3372, address=0），报 "Failed to mmap!"
+c392: 保留我们的 LD_PRELOAD 包壳 + 真机 im.elf 二进制：
+      kicks=11、gpew=28、trap=0、probe 已加载 —— **行为与自定义链完全一致**
+```
+- 结论：**启动器不是缺口**（真机链路跑通后 App 表现相同：只发 1 条 opcode=4，不绘制）。
+- 下一步（有明确线索）：
+  1) 真机 `up.sh` 会 `mount /setting` 并从 `/setting/mode/dmode` 取 dmode —— 我们的 initrd 可能没挂 /setting，
+     App 要读的配置（语言/设置/CautionConfig）可能在那个 vfat 分区里；
+  2) 用真机 `up.sh` 作为启动脚本（而不是我们的 bootin 包壳），把 /setting 挂载补齐；
+  3) 再观察 kicks/GPE 是否出现绘制命令。
