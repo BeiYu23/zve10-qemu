@@ -2181,3 +2181,25 @@ ENG inst 仍恒为 0    gfx=0 res=0 wg=0    pVM=0
 下一步：找"谁 new GraphicsEngine 并写 0x145CAB8"（.init_array 或更早的 ux::core 初始化），
        必要时手工构造引擎并写单例槽后，再触发 uxengine_init 走正常路径。
 ```
+
+## c460（2026-10-24 01:47，第 11 轮）：`sys_getInstance` 的调用全部来自我们自己的探针
+- 按对方"路径 A"的建议，interpose `GraphicsEngine::sys_getInstance` 并记录调用者 LR：
+```
+SGI lr=0x04021BBD ret=0x00000000   × 40（探针自己采样即打满 40 条）
+```
+  `0x04021BBD` 落在 **libgrmlog.so 自身映射区间** ⇒ **这 40 次都是我们探针自己的调用**，
+  应用侧从未调用过它。
+- 与既有结论互相印证：
+```
+引擎 getter 无人调用 + uxengine_init 假定引擎已存在 + 单例变量恒 0
+⇒ 整条引擎初始化路径从未被进入（不是中途失败，是压根没开始）
+```
+- 对方给出的两个结构性事实也确认：
+  `uxengine_init`@0x6271CC 是空桩、`uxengine_app_fw_init`@0x627335 也是空桩；
+  真正的逻辑在同址的未命名函数里，且它第一步就取引擎 → 引擎为 0 必然 trap（与我实测一致）。
+- 现状判断：**在 libObj 内部找不到"创建 GraphicsEngine"的代码**（对方扫 5 处引用：读 4 处 + 销毁写 0 一处）。
+  下一步两条：
+  1) 扫 `.init_array`（272 个）找"分配后 store 到 .bss 全局"的构造；
+  2) 或者**手工创建**：该类无 vtable/无 typeinfo/无导出 ctor ⇒ 可以自己 malloc 一块、
+     填好成员（含 [inst+0x220] 等被 getter 引用的字段），写进单例槽，再调 uxengine_init 走正常路径。
+     这条路风险中等但可控，且能立刻验证"引擎存在后 UI 能否继续"。
