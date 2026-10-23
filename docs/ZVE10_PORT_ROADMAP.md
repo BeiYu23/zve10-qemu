@@ -1450,3 +1450,18 @@ DPro_App_UI_init        @0x780 : 同上
   2) BBC/序列层（libBizFw）需要另行初始化——它不是被 IMDB 阶段拉起的。
 - 下一步：查 libObj 里 `Application_System_Init` 创建的 **Appframework 线程**是否真的进入其主循环
   （线程 wchan/PC 采样），以及它为什么没有产生 view 渲染。
+
+## ★★ c363（2026-10-23 10:30）：线程活动采样 + 关键怀疑（固件镜像可能不是零售 UI 版）
+- 探针用 `/proc/self/task/<tid>/schedstat` 采样 8 秒 CPU 运行时差：
+  **没有任何线程有 >1ms 的 CPU 增长**（全是阻塞/空闲）⇒ App 整体静止，与帧缓冲零变化一致。
+- 结合 c359–c362 的三个"0 调用"（ObjActiveBaseAvbbc ctor / SeqController ctor / CreateAndAddSequence）
+  和 **libBizInitializer.so 的五个入口全是 `mov r0,#0; bx lr` 空实现**，得到重要怀疑：
+```
+本镜像的 /usr 可能是 **service/updater 变体**，业务层（BIZ/BBC/序列）被 stub 掉了：
+  · IMDB 应用阶段期望的 appFw.so / subapp.so / gui.so / libVssApp.so 在 /usr/lib 中不存在；
+  · 唯一提供这些符号的 libBizInitializer.so 全是空实现；
+  · 因此即使把 IMDB 应用阶段跑通，也不会产生任何 UI。
+```
+- 如果这个判断成立，那么"零售 UI 版固件"才是下一步需要的输入；
+  当前镜像下我们能做的只剩：给 uxengine/ViewManager 造数据（等于重写业务层），不现实。
+- 待验证：`BIZ_Init` 是否在任何时刻被调用（interpose 计数）；若从未调用，则确认业务层完全未启用。
