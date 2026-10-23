@@ -2821,3 +2821,25 @@ trap=0
    0x8A2EFE (bl 0x8A2A80) / 0x8A2F0E (osal_wai_sem_tmo 0x83037A) / 0x8A2F26 (pipe)
 ```
 - 下一步：把所有 `osal_wai_sem_tmo` / `pipe` 调用**带 tid** 全量记录，看 tid 186 在这三步里停在哪一个。
+
+## 新 goal 第 8/60 轮（2026-10-24 05:55）：带 tid 全量抓取 sem/pipe —— **tid 186 既不等 0x83037A、也没调 pipe**
+- 给 `osal_wai_sem_tmo` 加"只记录 id==0x83037A 或 tid==186"的过滤（并仍然对 0x83037A 直接返回 0）：
+```
+（没有任何 SEMT 记录：tid 186 从未等待 0x83037A；其它线程的 0x9401C3/0x946xxx 等待被过滤掉）
+PIPE2 tid=165/171 r=0（另一次运行里），没有任何一条来自 tid 186
+sz112(ViewManager)=0，sz172(ModelManager)=0
+trap=0，pVM=0
+```
+- 结合上一轮 `INITCFG tid=186 lr=libObj+0x8A2EAD` 的事实，得到**新的关键判断**：
+```
+0x8A2E70（名字匹配 + initializeConfig）确实在 tid 186 里被调用，
+但它【不是】从 0x8A2EE0 调进来的 —— 因为若从 0x8A2EE0 进来，
+随后必然经过 0x8A2F0E(osal_wai_sem_tmo) 与 0x8A2F26(pipe)，而这两者 tid 186 都没有记录。
+⇒ 0x8A2EE0 在 Appframework 线程里【可能根本没被调用】（或调用点不是 0x8A23AA）。
+```
+- 这解释了为什么"名字修好了、viewUnified2 也加载了，但管理器一个都没建、pVM 恒 0"。
+- 下一步（第 9/60 轮）：
+  1) 确认线程体 `0x8A2398` 是否真的执行到 `0x8A23AA`（`bl 0x8A2EE0`）：
+     可 interpose `uxengine_init` 前一步的导出调用，或在 `0x8A2A80`（"P wait" 日志函数）上想办法；
+  2) 若线程体提前返回，查它在 `bl 0x6271D4`（uxengine_init 真身）里是否卡住/提前返回 ——
+     那正好对应我们"人造引擎"可能没满足它的某个前置。
