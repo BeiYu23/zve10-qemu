@@ -2334,3 +2334,32 @@ trap=1   address=0x498   pc 折合 libObj+0x618C78   lr 折合 libObj+0x627519
       真机上它由完整固件环境提供，QEMU 里等价于重建 App 的一层初始化。
 已完成的可复用资产：稳定基线镜像、引擎人造方案、全套观测手段、以及逐轮记录的所有地址与实验。
 ```
+
+## ★★★ 第 13 轮（2026-10-24 02:30）：**根因改写** —— 不是"固件缺组件"，是"我们没给它显示硬件"
+对方查到同类项目（chocotan/a7c2-re，CXD90057）为什么能出菜单：他们的 QEMU 里加了 **1,303 行显示设备模型**：
+```
+gpe-raster.c 90 / gpe-sprite.c 113 / dmm-service.c 113 / headless-osd.c 326
+ramfb-viewer.c 305 / sony-lz77.c 72 / hdmi-format-service.c 284
+```
+而**我们的 qemu-sony 只有两处显示相关**（本轮实测确认）：
+```
+hw/arm/bionz.c            （机器模型 + 我们加的 zz_gpe 寄存器记录）
+hw/display/bionz_streamfb.c（把物理 0x20312000 呈现为 QEMU 画面）
+其它：bionz_adc/audio/nand/bootcon/vip
+缺：dmm / osd / gpe-raster / gpe-sprite / lz77 / hdmi-format
+```
+⇒ **正确根因**（替换第 12 轮那条）：
+```
+宿主 QEMU 未提供 GPE/DMM/OSD 等显示设备模型
+  ⇒ 固件显示栈从未初始化
+  ⇒ GraphicsEngine / ViewManager / WidgetSystem 的创建路径【不被执行】
+  ⇒ 在软件层补对象是逆流（已由 ab_v469 证明：调装配函数直接崩在 ux::wgtsys）
+```
+  我们追了十几轮的"libObj 里没有 GraphicsEngine 创建点"之谜，答案是：**创建是有条件的，条件正是显示服务就绪**。
+- 本轮另做的一次观测（`/proc/udm` 枚举）：探针 getdents 未取到条目（解析待修），
+  但真机快照 `a_p0/proc_udm.txt` 明确列出 `dmm_info/dmm_extents/dmm_units/hdmi/cec/ldec` 等 —— 可作为"显示服务就绪"的真机对照清单。
+- 下一步方向（对方建议，按性价比排序）：
+  1) **先做最小验证**：确认固件帧缓冲能否被我们导出到 QEMU 画面（我们已有 `bionz_streamfb`，可在此基础上加"framebuffer 跟随"）；
+  2) 逐个补 **DMM → OSD → GPE raster/sprite**，每补一个看固件初始化是否前进一步；
+  3) **判据**：固件是否开始自己调用 `ViewManager::ctor`（`libObj+0x8A4E28`）—— 探针已具备。
+  注意：a7c2 是 CXD90057，我们是 CXD90045，GPE/DMM 寄存器与协议可能不同，不能直接搬。
