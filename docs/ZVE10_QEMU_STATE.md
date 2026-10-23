@@ -79,3 +79,33 @@ INITRD=/root/fw/handoff_p0/initrd_q4.img OUT=/mnt/build/tmp/cXXX \
 pkill -f qemu-system-arm
 ```
 判读：`serial.log` 看 `MODLOAD read ok` 序列 / `program:`+`address:` / `PV i=`；`qemu.out` 看 `ZZGPEREG`/`ZZGPECMD`。
+
+## 八、2026-10-24 更新（第 6–9 轮后现状）
+
+### 8.1 已达到
+- 启动链稳定：纯净 /usr + 零售 initrd + `3.0.27_nl-rt106+` 内核 + 最小 stub
+  （udate/upm 保留原厂；accel/mag/compass/backup/grm_ma 用 stub；grm_gles=fake_gles）
+  → 35 模块、无内核 oops、可跑 330s 稳定。
+- 探针可在纯净 /usr 下注入（替换 `/usr/bin/im.elf` 为 LD_PRELOAD 包壳）。
+
+### 8.2 关键地址（可直接用）
+```
+pViewManager 变量        libObj + 0x149221C
+GraphicsEngine 单例变量  libObj + 0x145CAB8   （运行时实测恒为 0）
+  访问路径：sys_getInstance 读 GOT 槽 libObj+0x13DCB78 → 变量地址 → *(var)
+Appframework 线程入口    libObj + 0x8A2398（首调用 0x6271D4，uxengine 初始化路径）
+线程描述符               libObj + 0x1455F24（.data，+0x08 = 0x008A2399）
+osal_valloc_msg_wait     实测 ret=0 且 out 指针有效 ⇒ 分配成功不阻塞（"池耗尽"已证伪）
+```
+
+### 8.3 当前唯一卡点
+```
+App 框架从不自行初始化；我们调 Application_System_Init 只起线程；
+该线程阻塞在 futex，而 GraphicsEngine 单例始终为 0
+⇒ 引擎从未创建 ⇒ ViewManager/WidgetSystem 永不出现 ⇒ 没有 view*.uxc、没有画面。
+直接调 uxengine_init(libObj+0x6271D4) 会崩（它假定引擎已存在）⇒ 引擎创建在更早的位置。
+```
+
+### 8.4 下一步
+1. 找 GraphicsEngine 单例的真正创建者（.init_array 或更早的 ux::core 初始化），确认它依赖什么；
+2. 必要时"手工构造引擎并写入单例槽"（类似早期对 BBC 对象的做法）。
