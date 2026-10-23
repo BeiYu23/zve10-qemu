@@ -2575,3 +2575,23 @@ HVAL q=0x008F013A
      也可在探针里 hook `osal_create_sem` 记录 id↔创建者 LR）；
   2) 若它是"显示服务就绪"，则回到 a7c2 的路线：由 shim **主动 signal 它**（而非 skip），
      并同时把该服务的应答补上，让后续轮询条件也满足。
+
+## 新 goal 第 9 轮（2026-10-24 04:40）：主动 signal 0x83037A —— 返回 rc=0 但**仍不放行**
+- 对方补充的 OSAL 编码规则（已记录，供后续复用）：
+```
+qid = (port_id << 16) | (0x8000 | local_index)
+bit15=1 ⇒ 全局/跨子系统；bit15=0 ⇒ 本地
+样本：0x8F013A(本地) / 0x8280074D(本地) / 0x9088076B(本地) / 0x37807D(全局) / 0x0055011E(本地)
+osal_snd_msg 只有 2 个参数 (qid, msg)；4 参数的是 osal_snd_sync_direct
+冒充服务端正确姿势：osal_valloc_msg_wait(qid,&msg,size,0) → memcpy → osal_snd_msg(qid,msg)
+```
+- 本轮实验：watchdog 每 6 秒调一次 `osal_sig_sem(0x83037A)`，共 6 次：
+```
+SIGSEM try=0..5  rc=0（全部成功）
+但 APPCALL 仍不返回、gfx/res/wg 不变、viewUnified2 0
+```
+  ⇒ **signal 被接受但没放行**：可能 (a) 等待方在 signal 之前已超时重试/重入；(b) 该 sem 是"计数/事件"语义，
+     需要与其它状态配合；(c) 我 signal 的 id 形态（全局/本地）与等待方不一致。
+- 下一步：
+  1) hook `osal_create_sem`/`osal_reg_*` 拿 **id ↔ 创建者 LR** 映射，确认 0x83037A 的语义与所有者；
+  2) 在 signal 之后**立刻**用 tid 门控观察 `osal_wai_sem_tmo` 是否返回、返回后代码走到哪里（这是判据）。
