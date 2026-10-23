@@ -2363,3 +2363,29 @@ hw/display/bionz_streamfb.c（把物理 0x20312000 呈现为 QEMU 画面）
   2) 逐个补 **DMM → OSD → GPE raster/sprite**，每补一个看固件初始化是否前进一步；
   3) **判据**：固件是否开始自己调用 `ViewManager::ctor`（`libObj+0x8A4E28`）—— 探针已具备。
   注意：a7c2 是 CXD90057，我们是 CXD90045，GPE/DMM 寄存器与协议可能不同，不能直接搬。
+
+## 第 14 轮（2026-10-24 02:35）：按对方"先拦 GRM 返回成功"实验 —— 无效，崩点在更前面
+- 背景更正（对方第八轮）：a7c2 出菜单**不是**写 QEMU 设备模型，而是 **guest 内 LD_PRELOAD shim**：
+  拦 `dlsym`、`osal_*` IPC、**GPE 绘图 API（`mpgpe::GpermFillRect/BitBlit` → 软件光栅）**、DMM 应答、取帧导出 ramfb。
+  对应到 ZV-E10：libObj 导出 17 个 `GRM_*`（`GRM_gpermFillrect`@0x683F4D、`GRM_gpermRectblit`@0x684087、
+  `GRM_screenGetOnBitmap`@0x685A21、`GRM_bitmap*` 家族）。
+- 本轮实验（ab_v471）：按建议第 1 步，interpose `GRM_gpermFillrect` / `GRM_gpermRectblit` **只记参数并返回 0**，
+  然后调应用装配函数 `0x8A2EE0`：
+```
+APPCALL 0x8A2EE0
+（无 GRMFILL/GRMBLIT 调用记录 —— 说明崩溃发生在任何 GRM 调用之前）
+trap=1  address=0x498  pc_off=libObj+0x618C78  lr_off=libObj+0x627518
+```
+- 静态定位崩点：
+```
+0x627512: mov r0, r5          ; r5 = callee 指针
+0x627514: bl  0x618C78        ; WidgetSystem 某方法
+0x618C78: ldr r0,[r0,#4]      ; ← r0 = 0x494（垃圾小值）⇒ 访问 0x498 崩
+```
+  ⇒ **传进来的 callee 指针是 0x494 这种垃圾值**，来源在上游某次查表/取对象，返回了非法值。
+  ⇒ 结论：**"拦 GRM 返回成功"这条最小实验无效** —— 崩溃早于任何绘图调用，
+    印证了对方"显示服务未就绪"的定性，但**具体的未就绪点**在 `ux::wgtsys` 的 callee 解析处，而不是绘图 API。
+- 下一步（若继续）：
+  1) 沿 `0x6274E4`（dispatch）看 r5 从哪来（其调用者如何生成 callee 指针）；
+  2) 或直接实现 `GRM_bitmap*` + `GRM_screenGetOnBitmap` 让"对象能造出来"，再看是否走到绘图调用；
+  3) 判据仍为：固件是否自己调 `libObj+0x8A4E28`。
