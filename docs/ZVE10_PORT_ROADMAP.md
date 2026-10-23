@@ -1856,3 +1856,27 @@ kernel/module.c: load_module()
   3) 顺带保留 `MODLOAD read ok` 日志（对后续每个模块的定位都有效）。
 - 注：之前尝试"塞 busybox 进 initrd 替换 /sbin/init"失败（`/bin/busybox(init)` 崩在 address=4），
   已放弃该路线，改用内核日志方案（更干净、零副作用）。
+
+## ★★★ c417–c419（2026-10-23 22:00）：逐模块替换 stub —— **从"卡在模块装载"推进到"im.elf 已启动"**
+沿用 udate 的 stub 模板，按崩溃顺序逐个替换（每个 stub 都 `module_init` 直接 return 0）：
+
+| run | 新增 stub | 模块装载数 | 结果 |
+|---|---|---:|---|
+| c412 | udate | 22 | 停在 upm |
+| c417 | + upm | 26 | 继续装载 grm_ma / fake_gles / accel / mag，随后 **`udm_mag` 内核线程崩** |
+| c418 | + accel / mag / compass | **32** | **`/usr/bin/im.elf` 启动成功**（EXECVE 出现），随后用户态崩（trap 0x0e, address=0） |
+| c419 | + backup | 32 | im.elf 仍启动，用户态崩（trap 0x0e, address=0）；**内核 oops 消失**（此前 `backup_suspend+0x828` NULL 解引用） |
+
+关键进展（历史性）：**这是第一次让"零售 init → chroot → bootin → im.elf"整条链在纯净 /usr 上跑起来。**
+- c418 之前：卡在内核模块装载（upm 之后无任何 MODLOAD）
+- c419：模块全部装完（32 个），im.elf 进入用户态、映射了 `libSysDef.so` / `libMWF.so` 等
+- 新问题：im.elf 用户态 `address=00000000, trap=0x0e`（NULL 解引用）——很可能因为我们 stub 掉了 `backup.ko`，
+  导致 `libbackup.so` 的备份读写失败（真机上 `/usr/bin/im.elf` 依赖 Backup_read 读射频校准）。
+- 另：探针（probe=0）没有加载 —— 纯净 /usr 下 `/usr/bin/im.elf` 是原版（没有我们的 LD_PRELOAD 包壳），
+  而 `bootin` 是否真的读了 `/setting/mode/preload` 尚未验证；下一步需要把探针装进去才能继续观测。
+
+### 下一步（顺序）
+1) 让探针能被装入：确认 `/setting` 在 im.elf 启动前已挂载 + `bootin` 对 `preload` 的处理（或退回"包壳替换 im.elf"的注入方式）
+2) 定位 im.elf 用户态 NULL 解引用：优先怀疑 `backup` 被 stub 后的连锁反应；
+   备选方案是**不 stub backup**，而是给它提供"最小的 /dev/backup 语义"（返回失败但结构合法）
+3) 用带 `MODLOAD` 日志的内核继续跑，保持每次只改一个变量。
