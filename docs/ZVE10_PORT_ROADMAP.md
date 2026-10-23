@@ -2203,3 +2203,31 @@ SGI lr=0x04021BBD ret=0x00000000   × 40（探针自己采样即打满 40 条）
   2) 或者**手工创建**：该类无 vtable/无 typeinfo/无导出 ctor ⇒ 可以自己 malloc 一块、
      填好成员（含 [inst+0x220] 等被 getter 引用的字段），写进单例槽，再调 uxengine_init 走正常路径。
      这条路风险中等但可控，且能立刻验证"引擎存在后 UI 能否继续"。
+
+## ★★★ c461–c464（2026-10-24 02:00，第 12 轮）：**手工构造引擎成功，`uxengine_init` 首次跑通**
+- 背景：对方穷尽静态搜索确认 **libObj 内不存在 GraphicsEngine 的创建点**（GOT 槽 4 读 1 销毁写 0、
+  绝对地址仅 1 处 relocation、/usr/lib 202 个库只有 libObj 定义、其它分区 0 处）。
+- 于是我改用"手工引导"（对方建议）：
+```
+calloc(0x400) 全零 → 写入单例槽 libObj+0x145CAB8
+  → 再调 uxengine_init 真身 (libObj+0x6271D4)
+```
+  迭代过程（每次崩都定位到具体成员）：
+```
+第 1 次：address=0x4C 崩溃（[NULL+0x4C]）
+   → 静态定位：崩在 libObj+0x63D506，取 .bss 全局 libObj+0x145CBC4 的 [obj+0x4C] 回调，而该全局为 NULL
+第 2 次：填 +0x220 / +0x234（对方给的偏移）→ 仍崩 0x4C
+第 3 次：再填 libObj+0x145CBC4 = calloc(0x400) → **`ENGINIT returned`（不再崩）**
+```
+- 结果（ab_v463 / ab_v464）：
+```
+trap=0
+gfx = 557752 / 536448   ← GraphicsEngine 单例非 0 且由 uxengine_init 填好
+res = 0, wg = 0, pVM = 0, viewUnified2 = 0 次映射, GPE kicks = 0
+Appframework 线程(tid=185) 仍 futex_wait_queue_me
+```
+⇒ **这是本目标第一次让"引擎存在 + 引擎初始化跑完"**；但管理器图仍未建立，
+   说明 Appframework 线程还卡在另一个前置条件上（不是引擎）。
+- 下一步：
+  1) 沿"引擎已就绪"的新状态，看 Appframework 线程到底在等什么（futex uaddr / 栈扫描）；
+  2) 若需要，继续按"崩哪填哪"的方式引导后续初始化（resource manager / widget system / view manager）。
