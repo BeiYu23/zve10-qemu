@@ -1926,3 +1926,23 @@ Y9 i=0 gfx=0 res=0 wg=0 w0=1 w2=120   ← GraphicsEngine / ResourceManager / Wid
   1) 查 `rm_init=1` 的含义（ResourceManager::init 返回非 0）；
   2) 在探针里把 backup 的 UIPC 端点（0x3E014D）**注册成应答方**，看是否能让管理器图建立（这是"最小 backup 服务"最省的做法，先纯用户态）；
   3) 保持每次只改一个变量，继续用 `MODLOAD` 日志 + `Y9` 日志判定。
+
+## c424–c426（2026-10-23 23:05，新 goal 第 2 轮）：纯净 /usr 上"管理器图不建立"的原因排查
+- c424（线程表）：纯净 /usr 下 App 的线程都在（`THREAD_INFRA0`×3、`InfraOnDmdLdr`、`uipc_proxy_0..3`、
+  `ACCESSLOG_MAIN`、`mwf_monitor_inp`、`InfraDecoder/Encoder/...`），**但没有 `Appframework` / `uxengine_res*` 线程**。
+- c425（**不调用** `Application_System_Init`）：`pVM=0` 一直到 i=56 都没变
+  ⇒ **im.elf 自己不会初始化 App 框架**（它只 `dlopen("/usr/lib/libObj.so")`，是否调用取决于 IMDB 判定）。
+  也就是说：**在纯净 /usr 上，必须由我们主动调用 `Application_System_Init`**。
+- c426（把脏镜像里那 9 个自制 stub 库——`libNVM/libSaveLoadSettings/libbkdmn/libAtn/libI2CRight/libi2cuipc/libInfraError/libInfraInterchipDatatrans/libread_refresh`——补回纯净 /usr）：
+  `gfx=0 res=0 wg=0` 仍然不变，而 `IMOPEN FAIL` 从 163 涨到 422 ⇒ **这 9 个不是关键依赖**。
+- 现状小结：
+```
+纯净 /usr：35 模块装载成功、im.elf 常驻、线程齐全、无崩溃  ✅
+但：Application_System_Init 被调用后 ViewManager/GraphicsEngine/WidgetSystem 仍是 0
+    （脏镜像里它们是 1.4M/526k/528k，说明脏镜像里另有一些东西让初始化成功）
+资源侧已排除：/usr/share/app 在纯净镜像里同样是 310 项（资源不缺）
+```
+- 下一步候选：
+  1) 用二分法在脏镜像那 ~110 个自制库里定位"哪一个让管理器图能建立"（每次加一半，跑一次）；
+  2) 或者直接看 `Application_System_Init` 反汇编，找出它在什么条件下才创建管理器/线程，
+     把我们缺的前置条件补齐（比盲试快）。
