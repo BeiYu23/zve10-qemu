@@ -1829,3 +1829,30 @@ ab_v412（udate→stub + fake_gles）     : trap=0  无崩溃，但停在模块�
   1) **给 QEMU eMMC 模型补 HS200**（或让驱动认为支持），目标：klog 出现 `eMMC: HS200 mode`、tuning 告警消失；
      这是"能不能继续往下走"的前置条件；
   2) 同时准备**可插桩 initrd**：塞 busybox + 自定义 init（挂载/逐条 insmod + 日志 + 早期 dd 计时）。
+
+## ★★ c414–c416（2026-10-23 21:40）：**模块级日志打通，定位到 upm.ko**
+方案 A（用户选的"可插桩 initrd"）最终用**更省的做法**实现：不改 initrd，而是**给内核 `load_module()` 打日志**：
+```c
+kernel/module.c: load_module()
+  + printk("MODLOAD read ok len=%lu\n", len);
+  + 末尾 printk("MODLOAD OK name=%s\n", mod->name);
+```
+（一次编译错误 `Elf32_Ehdr has no member name` 后改用 `mod->name` 打印成功。）
+重建内核（`CROSS_COMPILE=arm-buildroot-linux-gnueabihf-` + `LD_LIBRARY_PATH=.../compat`）后跑 ab_v412：
+
+- 22 次模块装载，按尺寸对照 `nflasha15/kmod` 得名字（**顺序即装载顺序**）：
+```
+4896 osal_utm → 38960 osal_uipc → 20156 utimer → 73764 backup → 38992 osal_ulogio
+→ 33768 input → 22392 udate_stub → 12948 indctr → 14212 i2c → 21912 sircs
+→ 3384 stream → 4144 stream2 → 17476 usb_portMonitor → 31204 usbg_sen
+→ 14796 usb_extcmd → 35152 kikilog → 85588 dmm → **137260 upm ← 最后一个**
+```
+- 日志到此为止：**upm.ko 之后没有任何 MODLOAD attempt**，随后只有反复的
+  `AL_EMMC_SEQ ... Software Tuning is forbiden for non-HS200`。
+⇒ **卡点收敛到 `upm.ko` 的 init（或紧随其后的模块装载被阻塞）**，且 eMMC tuning 告警与它同时间段出现。
+- 下一步（明确）：
+  1) 把 `upm.ko` 也换成 stub（照 udate 的做法），看是否继续往下走（下一个应是 grm_ma/grm_gles）；
+  2) 若换上 stub 后 eMMC tuning 告警消失 ⇒ 说明 tuning 是 upm 触发的，可一并定性；
+  3) 顺带保留 `MODLOAD read ok` 日志（对后续每个模块的定位都有效）。
+- 注：之前尝试"塞 busybox 进 initrd 替换 /sbin/init"失败（`/bin/busybox(init)` 崩在 address=4），
+  已放弃该路线，改用内核日志方案（更干净、零副作用）。
