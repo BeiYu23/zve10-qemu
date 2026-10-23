@@ -101,6 +101,12 @@ ls -l /proc/udm 2>/dev/null             > "$OUT/proc_udm_ls.txt"  2>&1
 for d in /proc/udm/*; do
     [ -r "$d" ] && echo "=== $d ===" && cat "$d" 2>/dev/null
 done                                     > "$OUT/proc_udm_all.txt" 2>&1
+# OSAL/UIPC 世界：这是回答"某个 qid 属于谁"的唯一真机依据
+ls -l /proc/osal 2>/dev/null               > "$OUT/proc_osal_ls.txt" 2>&1
+for f in /proc/osal/*; do
+    [ -r "$f" ] && { echo "=== $f ==="; cat "$f" 2>/dev/null; }
+done                                       > "$OUT/proc_osal_all.txt" 2>&1
+cp /proc/osal/uipc "$OUT/proc_osal_uipc.txt" 2>/dev/null
 cat /proc/modules                        > "$OUT/proc_modules.txt" 2>&1
 cat /proc/interrupts                     > "$OUT/proc_interrupts.txt" 2>&1
 cat /proc/iomem                          > "$OUT/proc_iomem.txt"   2>&1
