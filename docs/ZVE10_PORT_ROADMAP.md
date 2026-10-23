@@ -1374,3 +1374,15 @@ U _ZN17OBJAVBBCBASECLASS20DefaultSeqController10CanExecuteEjPN3MWF6ObjMsgE
   下一步应抽取 **`/usr/lib/libDDS.so`** 与 **`/usr/lib/libmprctrl.so`**（体积较大，最可能承载 BBC/序列实现）。
 - 该通道的用途：**以后任何 guest 文件（库/配置/资源）都可以按需取出做静态分析**，
   不必再受"分区挂不上"限制。
+
+
+## ★★★ c356（2026-10-23 08:40）：`SeqController` 实现在 **/usr/lib/libBizFw.so**
+- 方法：探针 `dlsym(RTLD_DEFAULT, 完整 mangled 名)` 拿到运行时地址，再在 `/proc/self/maps` 里找归属映射：
+```
+CreateAndAddSequence  = 0x085B0D41  →  08571000-085BD000 r-xp  /usr/lib/libBizFw.so
+DefaultSeqController::CanExecute = 0x085B0FB9（同一库）
+```
+- ⇒ 之前抽的三个库都排除：`libmpr`(13MB, 无该符号) / `libDDS`(7.5KB stub) / `libMprSeq`(7.5KB stub)。
+- ⇒ **BBC 业务/序列层 = libBizFw.so**，这正是"让 App 落笔"的最后一层。
+- 下阶段入口（已写入 NEXT_STEPS 第八节）：用抽取通道取出 libBizFw.so → 分析 SeqController 初始化与依赖 →
+  触发一次 CreateAndAddSequence → App 开始往 0x080C4880 绘图 → 现有执行器自动上屏。

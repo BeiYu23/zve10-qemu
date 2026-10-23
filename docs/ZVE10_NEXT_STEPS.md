@@ -66,3 +66,19 @@ artifacts/libObj_rm_reg.dis     GPE 接口反汇编（12 处 ioctl 调用点）
 /mnt/build/tmp/cx/              cramfs 解包（mf / ud_im.elf / 官方脚本）
 镜像 ab_v291.img（基线）
 ```
+
+
+## 八、2026-10-23 最终补充：序列/业务层定位到 **libBizFw.so**
+用"运行时 dlsym + /proc/self/maps 归属"法（探针 c356）得到决定性结果：
+```
+dlsym(RTLD_DEFAULT,"_ZN17OBJAVBBCBASECLASS13SeqController20CreateAndAddSequenceEjPN3MWF6ObjMsgE")
+  = 0x085B0D41
+所属映射: 08571000-085BD000 r-xp  /usr/lib/libBizFw.so
+```
+- ⇒ **BBC/序列/绘制请求的实现层 = `/usr/lib/libBizFw.so`**（不是 libObj、不是 libmpr/libDDS/libMprSeq——后三者是 stub 或无关）。
+- 下一步（下阶段主线）：
+  1) 用已打通的"guest 文件抽取通道"取出 `libBizFw.so`（探针写 phys 0x21312000 + QMP pmemsave）；
+  2) 在 libBizFw 里定位 `SeqController` / `DefaultSeqController` 的构造与初始化路径，
+     弄清它依赖哪些服务/配置（很可能需要 Backup/DDS/Infini 的模型状态）；
+  3) 一旦能触发一次 `CreateAndAddSequence`，App 就会往帧源缓冲（0x080C4880）落笔，
+     现有 GPE 执行器会自动把画面合成到 0x08AEC800 并显示——**无需再改 QEMU**。
