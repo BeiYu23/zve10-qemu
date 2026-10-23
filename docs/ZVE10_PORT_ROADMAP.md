@@ -1329,3 +1329,12 @@ kicks=11（不变） gpew=28（不变） pVM=1,380,080  trap=0
 ```
 - ⇒ 事件位不是门控点；已把模块回滚为返回 1（与既有结论一致）。
 - 至此可在本会话内尝试的手段已全部用尽，最终状态见 `docs/ZVE10_NEXT_STEPS.md`。
+
+## c350（2026-10-23 08:25）：定位到目标文档提到的 `CreateAndAddSequence`
+- libObj 导出：`OBJAVBBCBASECLASS::SeqController::CreateAndAddSequence(unsigned, MWF::ObjMsg*)`
+  （mangled `_ZN17OBJAVBBCBASECLASS13SeqController20CreateAndAddSequenceEjPN3MWF6ObjMsgE`）
+  ⇒ 这是"序列/绘制请求"的入口之一，属于 **成员函数**（需要 SeqController 实例）。
+- 同类还有 `GlobalAccessor::SendAppEvent(MWF::ObjMsg*)`、`SequenceBase::SetParameter/ReceiveResponse` 等，
+  都需要各自实例或全局访问器；当前我们未能拿到 SeqController 实例（也没有工厂导出）。
+- 若后续要继续：从 `OBJAVBBCBASECLASS` 的初始化路径里找 `SeqController` 的创建点（应随 view/model 初始化建立），
+  拿到实例后调用 `CreateAndAddSequence` 提交一帧绘制请求，观察 GPE 命令是否出现。
