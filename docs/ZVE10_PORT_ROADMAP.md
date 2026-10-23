@@ -2231,3 +2231,23 @@ Appframework 线程(tid=185) 仍 futex_wait_queue_me
 - 下一步：
   1) 沿"引擎已就绪"的新状态，看 Appframework 线程到底在等什么（futex uaddr / 栈扫描）；
   2) 若需要，继续按"崩哪填哪"的方式引导后续初始化（resource manager / widget system / view manager）。
+
+## c465（2026-10-24 02:05，第 13 轮）：引擎建成后 Appframework 线程栈扫描（无代码帧）
+- 对象/全局的正确用法（对方补充）：
+  `libObj+0x145CBC4` 是**可选回调表指针**，用 PC 相对寻址（文件里是增量，搜绝对地址 0 命中）；
+  零块 ⇒ 所有钩子视为"未安装" ⇒ 全部跳过（这正是设计意图）。填 `calloc(0x400)` 的做法正确。
+  selector 函数 `0x640220` 是**虚拟分发**：后端为空时直接返回，**不会阻塞**。
+- 引擎建成后对 Appframework 线程（tid=185）做用户栈扫描：
+```
+STK tid=185 ss=0x93834944        （能定位到线程）
+STKV 0 条                        （ss-32KB 窗口内没有任何 0x04000000..0x10000000 的代码指针）
+wchan = futex_wait_queue_me
+```
+  ⇒ 它的栈帧极浅（可能正停在 futex 系统调用里，pthread 帧已出栈）。
+  对方提示：**事件循环线程空闲时就该坐在 futex 上**，所以 wchan 本身不能证明是 bug；
+  真正的判别是"它是不是在建完管理器之后才空闲" —— 而我们已知管理器从未建过。
+- 结合 ResourceManager 的观察：`sys_getInstance()` 实测返回 0（对方说它有静态默认实例，待再核）。
+- 下一步（第 14 轮）：
+  1) 按"人造对象 + 写单例槽"的做法处理 ViewManager（`libObj+0x149221C`）与 ResourceManager，
+     然后再看 `viewManagerIf::openView` / `uxengine_init` 是否走得更远；
+  2) 同时观察 Appframework 线程是否因这些对象出现而变化（若仍 futex，则它确实在等"外部事件"）。
