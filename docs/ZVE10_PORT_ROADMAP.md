@@ -1528,3 +1528,16 @@ kicks=0                                            ← 且 GPE 完全未初始�
      避免影响早期初始化；
   2) 用稳定基线确认 kicks=11 → 再在 i=50 打开视图并 `drawDirect`，观察是否出现 gperm 绘制调用；
   3) 若 drawDirect 仍需"屏幕位图"，则同时替换 `GRM_screenGetOnBitmap` 返回我们的 VDF 位图。
+
+## c377（2026-10-23 11:25）：BMP/GRM 拦截太靠前 → App 直接退出
+- 把 BMP 替身做成"条件启用"（仅 pVM≠0 时接管）并增加 `GRM_screenGetOnBitmap` 替身：
+```
+Y9 worker / Y9 base=94228480     （探针正常启动）
+ZZEXIT im.elf.real pid=143 code=0 （**App 进程退出**）
+PV i=52 pVM=0 ；kicks=0
+```
+- ⇒ 即便条件启用，**替换 BMP_Create / GRM_screenGetOnBitmap 仍会让 App 初始化失败退出**（很可能这两者被早期引导路径使用）。
+- 教训：这类替换必须做到**极窄**：
+  1) 只在 `i>=50`（App 初始化完成后）由探针显式打开开关，之前完全透传；
+  2) 或者不改 BMP_Create，而只替换 `GRM_screenGetOnBitmap` + `gperm*`（这三个只在绘制期调用）。
+- 本轮未能取得 drawDirect 的结果；BBC 方向已证伪（相机控制层），UI 侧下一步是"极窄 GRM 替换 + 绘制期开关"。
