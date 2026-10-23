@@ -25,7 +25,7 @@
 | 项 | 内容 |
 |---|---|
 | `nflasha3/INITRD.IMG` | **2,183,168 B，ext2**，版本 `30110_06.2026060501` |
-| initrd `/sbin/init` | 984 B，导入 `chroot` / `execl` / `execv` / `pipe` / `fork` / `signal` |
+| initrd `/sbin/init` | **28,580 B**（早期误记为 984 B），内含 `<<insmod start>>` 模块表与分区挂载回退逻辑 |
 | initrd 内目录 | 只有 `/dev /kmod /lib /proc /rootfs /sbin`（**无 /bin、无 /etc**） |
 | `nflasha7`(/rootfs) | 有 `/bin /etc /kmod /lib /lens /log …`（`/etc` 实测为空） |
 | `/usr/bin/*.elf` | 见下（nflasha15） |
