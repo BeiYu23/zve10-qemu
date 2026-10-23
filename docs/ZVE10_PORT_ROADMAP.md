@@ -2389,3 +2389,22 @@ trap=1  address=0x498  pc_off=libObj+0x618C78  lr_off=libObj+0x627518
   1) 沿 `0x6274E4`（dispatch）看 r5 从哪来（其调用者如何生成 callee 指针）；
   2) 或直接实现 `GRM_bitmap*` + `GRM_screenGetOnBitmap` 让"对象能造出来"，再看是否走到绘图调用；
   3) 判据仍为：固件是否自己调 `libObj+0x8A4E28`。
+
+## 新 goal 第 1 轮（2026-10-24 03:00）：WidgetSystem 人造成功（0x498 崩溃消失），但卡点前移到 ResourceManager 创建
+按对方 `SINGLETON_MAP.md` 的单例地图逐项验证：
+- **WidgetSystem 单例（`libObj+0x145CB1C`）手工构造**：`calloc(0x2000)`，
+  在 `obj+0x484` 建**自指链表头**（+4/+8 指向自身、+32=0），写入单例变量。
+  结果：调 `0x8A2EE0` **不再崩在 0x498**（trap=0）—— 证明"崩点=WidgetSystem 为 NULL"完全正确。
+- **ResourceManager 计数毒化假设被否**：实测 `*(u32*)0x145CA64 = 0` 且 `*(u16*)0x145CA6A = 0`
+  ⇒ **不是引用计数被毒化**，就是从未创建成功。
+- 直接调用 RM 创建器 `0x610184`：**调用后不返回（阻塞）**，`res` 仍为 0。
+  ⇒ 卡点从"单例为 NULL"前移到 **"ResourceManager 的创建过程本身会阻塞"**（很可能在等某个服务/信号量/资源）。
+- 本轮小结：
+```
+✅ WidgetSystem 不再为 NULL，0x498 崩溃消失（ab_v472 / ab_v476）
+✅ 确认 RM 不是计数问题（ptr=0 且 cnt=0）
+❌ 0x610184（RM 创建器）会阻塞 ⇒ 下一步查它阻塞在哪个调用（单步 hook：osal_wai_sem_tmo / open / osal_rcv_msg）
+```
+- 下一步（第 2 轮）：
+  1) 给 `open/openat`、`osal_wai_sem_tmo`、`osal_rcv_msg_tmo` 加日志，定位 `0x610184` 卡在哪一步；
+  2) 若是等信号量/消息，判断是谁该发（可能与显示服务就绪相关，回到 a7c2 的 shim 路线）。
