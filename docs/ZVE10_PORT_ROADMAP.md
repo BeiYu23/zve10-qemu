@@ -2161,3 +2161,23 @@ VW out ret=0x00000000 dt_cs=0 out0=0x046ECFAC out1=0x5EFFFBE0
   ⇒ **引擎初始化就发生在这个线程里**，所以"线程阻塞"与"管理器不建"是同一件事的两面。
 - 下一步：继续沿 `0x6271D4` 这条调用链走（它才是 engine/管理器构造的真正入口），
   看它在纯净 /usr 下是否提前返回/异常。
+
+## c456–c459（2026-10-24 01:40，第 10 轮）：引擎单例始终 0；`/tmp/area_check_data.dat` 已就位也无效
+- c456（单例监视探针）：GraphicsEngine 单例变量 = `libObj+0x145CAB8`（运行时 `0x072DEAB8`），
+  **全启动过程 60 次采样恒为 0**；访问路径 = `sys_getInstance` 读 GOT 槽 `libObj+0x13DCB78` → 变量地址。
+- c457（直接调用 `uxengine_init`(`libObj+0x6271D4`)）：**立刻 trap 0x0e** ⇒ 它假定引擎已存在，不是创建者。
+- c458/c459（按对方线索：`uxengine_init` 会从 **/tmp/area_check_data.dat** 读区域检查数据）：
+  在 im.elf 包壳里先把 `/usr/share/app/area_check_data.dat` 复制到 `/tmp/area_check_data.dat`，
+  探针实测 **文件已在（可读 16 字节）**，但：
+```
+ENG inst 仍恒为 0    gfx=0 res=0 wg=0    pVM=0
+```
+  ⇒ **area_check 数据不是引擎创建的充分条件**（或引擎创建失败在它之前）。
+- 现状（第 10 轮小结）：
+```
+✅ 启动链稳定（35 模块、无 oops、330s）
+✅ 已可观测：engine 单例地址、线程入口、dlopen 序列、valloc 行为、/tmp 资源
+❌ GraphicsEngine 从未被创建 ⇒ ViewManager/WidgetSystem 为空 ⇒ 无 view、无画面
+下一步：找"谁 new GraphicsEngine 并写 0x145CAB8"（.init_array 或更早的 ux::core 初始化），
+       必要时手工构造引擎并写单例槽后，再触发 uxengine_init 走正常路径。
+```
