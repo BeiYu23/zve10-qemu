@@ -2677,3 +2677,34 @@ QMMAP  addr=0xF7E4000 len=0x228000 off=0xB78000 prot=0x3 fd=23
 - 下一步：
   1) 观察 App 是否**自己**创建 WidgetSystem（如果不，就继续手工造，但为 getLayer 补一个最小 Layer 表）；
   2) 或者拦截 `WidgetSystem::getLayer` 返回一个最小 layer（同类"人造对象"手法）。
+
+## 新 goal 第 2/60 轮（2026-10-24 05:10）：interpose `getLayer` 返回最小 Layer —— 崩点从 0x18 前移到 pc=0
+- `WidgetSystem::getLayer(const core::ID&)` 是导出符号（`0x618D08`，mangled
+  `_ZNK2ux6wgtsys12WidgetSystem8getLayerERKNS_4core2IDE`），据此 interpose 返回一个最小 layer：
+```c
+static unsigned dmyfn(void){ return 0; }
+static void* sub_vtbl[12];      // 全部槽 = dmyfn
+static char sub_obj[0x40]; *(void**)sub_obj = sub_vtbl;
+static char dmy_layer[0x100]; *(void**)(dmy_layer+0x18) = sub_obj;
+getLayer(self, id) → dmy_layer
+```
+- 结果：
+```
+ASICALL arg=0 / ASI returned
+DUMLAYER ready
+GETLAYER self=0x000896E8 id=0x072DEAE0 ret=0x04042B20
+trap=1  pc=0x00000000  lr=0x8647F3  (address=0)
+gfx=557696 viewUnified2 7 次
+```
+- 静态对照：崩点在 `0x8647F0 blx r3`，其中
+```
+8647ec: ldr r3,[r0,#0]    ; r0 = layer+0x18 → 取对象
+8647ee: ldr r3,[r3,#12]   ; 再取 vtbl[3]
+8647f0: blx r3            ; ★ r3==0 → pc=0
+```
+  ⇒ 说明**这次调用的对象不是我们造的那个 layer**（我们 vtbl 全槽都填了非零），
+    或调用发生在 getLayer 之外的另一个对象路径上。
+- 下一步：
+  1) 在 `0x8647DC` 这个函数入口加 hook（导出吗？否则用 `getLayer` 返回对象的分发点判断）
+     记录 r0/r1，确认到底是谁传了 vtbl[3]=0 的对象；
+  2) 或者把 `WidgetSystem` 的 layer 表补全（getLayer 真正读的成员），让固件自己拿到合法 layer。
