@@ -1,0 +1,8 @@
+# 第 1 步：只读核查（不改任何东西）
+busybox ls -la /setting/ULOGIO.BIN
+busybox md5sum /setting/ULOGIO.BIN
+busybox dd if=/setting/ULOGIO.BIN bs=1 skip=152 count=12 2>/dev/null | busybox od -A d -t x1
+busybox df | busybox grep -E "setting|log"
+/usr/bin/sndcmd.elf 2>&1 | busybox head -20
+busybox ls -l /dev/sio
+busybox cat /proc/udm/upm_bootmode

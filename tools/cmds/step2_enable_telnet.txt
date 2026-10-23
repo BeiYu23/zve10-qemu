@@ -1,0 +1,7 @@
+# 第 2 步：备份 + 启用 telnet（改 1 个 u32）
+busybox cp /setting/ULOGIO.BIN /log/ULOGIO.BIN.bak
+busybox md5sum /setting/ULOGIO.BIN /log/ULOGIO.BIN.bak
+busybox printf '\001\000\000\000' | busybox dd of=/setting/ULOGIO.BIN bs=1 seek=156 count=4 conv=notrunc
+busybox sync
+busybox md5sum /setting/ULOGIO.BIN
+busybox dd if=/setting/ULOGIO.BIN bs=1 skip=152 count=12 2>/dev/null | busybox od -A d -t x1
