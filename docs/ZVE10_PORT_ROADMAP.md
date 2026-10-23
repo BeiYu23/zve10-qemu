@@ -1946,3 +1946,30 @@ Y9 i=0 gfx=0 res=0 wg=0 w0=1 w2=120   ← GraphicsEngine / ResourceManager / Wid
   1) 用二分法在脏镜像那 ~110 个自制库里定位"哪一个让管理器图能建立"（每次加一半，跑一次）；
   2) 或者直接看 `Application_System_Init` 反汇编，找出它在什么条件下才创建管理器/线程，
      把我们缺的前置条件补齐（比盲试快）。
+
+## c427–c429（2026-10-23 23:15，新 goal 第 3 轮）：Appframework 线程存在但阻塞在 futex
+- c427（interpose `osal_create_thread` + 线程表）：抓到 5 次线程创建，最后一次正是 `Application_System_Init` 发起的：
+```
+OCT a=0x072D7F24 b=0 c=1 d=0x6CF8        ← d=0x6CF8 与 ai 里 GOT 槽偏移一致
+OCT ret=0x000000AA (tid 170)
+线程表：tid=170 c=Appframework w=futex_wait_queue_me   ← 线程建起来了，但阻塞在 futex
+```
+  ⇒ **根因不是"线程没建"，而是"线程建了但卡在 futex"**，所以管理器图（gfx/res/wg）永远建不出来。
+- 内核 ZZFUTEX 日志给出它等待的地址：
+```
+ZZFUTEX Appframework pid=170 op=0x81 uaddr=0x08FF6CCC lr=0x0409CD8D
+ZZFUTEX Appframework pid=170 op=0x80 uaddr=0x072DFF44 lr=0x0409FD5F
+```
+  （0x0409xxxx 是 libc/pthread 的 futex 封装；uaddr 均落在进程堆/静态区，正好对应 libObj .bss 里的线程对象附近）
+- c428（扫描该线程栈找 libObj 返回地址）：拿到 `tid=170 ss=0x93834944`，但扫描区间内**没有** libObj 代码指针
+  （说明它当时停在 libc 的等待里，libObj 帧不在扫描窗口内或被优化掉了）。
+- c429（尝试在用户态注册 backup 端点 0x3E014D 作应答方）：
+```
+osal_reg_msg_queue_cb(0x3E014D, cb) → rc=-1024（无效）
+```
+  ⇒ 该 API/该 id 组合不对（0x3E014D 是"子系统 0x3E + 本地 0x014D"的全局形态，
+  注册本地队列要用本地 id，或要用另一个注册 API）。需要先弄清 im.elf/libMWF 用的注册方式。
+- 下一步：
+  1) 用 im.elf/libMWF 实际用的注册 API（对照 libMWF 的导入：osal_reg_msg_queue_cb / osal_reg_sync_msg_queue_cb）
+     并试本地 id（0x014D）注册；
+  2) 或直接反汇编 libObj 的 Application_System_Init 线程入口，看它第一步等的是什么（futex 的 owner 是谁）。
