@@ -82,3 +82,24 @@ dlsym(RTLD_DEFAULT,"_ZN17OBJAVBBCBASECLASS13SeqController20CreateAndAddSequenceE
      弄清它依赖哪些服务/配置（很可能需要 Backup/DDS/Infini 的模型状态）；
   3) 一旦能触发一次 `CreateAndAddSequence`，App 就会往帧源缓冲（0x080C4880）落笔，
      现有 GPE 执行器会自动把画面合成到 0x08AEC800 并显示——**无需再改 QEMU**。
+
+
+## 九、libBizFw.so 已成功抽取（2026-10-23，318,780 字节）
+产物：`/mnt/build/tmp/libBizFw.so`（可用 `nm -D -C` 直接看符号）。
+
+关键导出（`T`，说明是真实现）：
+```
+OBJAVBBCBASECLASS::SeqController::CreateAndAddSequence(unsigned, MWF::ObjMsg*)     @0x3FD40
+OBJAVBBCBASECLASS::SeqController::GenerateSequence(unsigned, MWF::ObjMsg*, MWF::ObjMsg*) @0x3FE88
+OBJAVBBCBASECLASS::SeqController::DelayCreateSequence(...)                        @0x3FDE0
+OBJAVBBCBASECLASS::SeqController::SeqController(unsigned, ObjActiveBaseAvbbc*, GlobalAccessor*) @0x3FCDC
+OBJAVBBCBASECLASS::DefaultSeqController::CanExecute / EnqueueMsg / DequeueMsg
+```
+⇒ **构造签名揭示了依赖**：`SeqController(uint, ObjActiveBaseAvbbc*, GlobalAccessor*)`
+   - 需要一个 **ObjActiveBaseAvbbc\***（BBC 活动对象，通常随 view/model 初始化创建）
+   - 和一个 **GlobalAccessor\***
+⇒ 因此"让 App 落笔"的正确顺序是：**先有 view/model 侧的 ObjActiveBaseAvbbc 实例**，
+   才能构造 SeqController 并提交序列；这也解释了为什么直接 openView 之后仍然不画。
+
+下阶段第一步：在 libBizFw 里反汇编 `ObjActiveBaseAvbbc` 的初始化路径（谁 new 它、依赖什么服务），
+再决定补服务还是补状态。

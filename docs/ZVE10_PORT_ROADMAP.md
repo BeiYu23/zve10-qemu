@@ -1386,3 +1386,15 @@ DefaultSeqController::CanExecute = 0x085B0FB9（同一库）
 - ⇒ **BBC 业务/序列层 = libBizFw.so**，这正是"让 App 落笔"的最后一层。
 - 下阶段入口（已写入 NEXT_STEPS 第八节）：用抽取通道取出 libBizFw.so → 分析 SeqController 初始化与依赖 →
   触发一次 CreateAndAddSequence → App 开始往 0x080C4880 绘图 → 现有执行器自动上屏。
+
+
+## c357（2026-10-23 08:40）：libBizFw.so 抽取成功（318,780B，29 个 SeqController 符号）
+- 用 guest 抽取通道拿到 `/usr/lib/libBizFw.so`，`nm -D -C` 可见：
+```
+SeqController::CreateAndAddSequence(uint, MWF::ObjMsg*)            @0x3FD40
+SeqController::SeqController(uint, ObjActiveBaseAvbbc*, GlobalAccessor*) @0x3FCDC
+DefaultSeqController::CanExecute/EnqueueMsg/DequeueMsg
+```
+- **依赖关系明确**：要构造 SeqController，必须先有 `ObjActiveBaseAvbbc*`（BBC 活动对象）与 `GlobalAccessor*`，
+  这正是"view/model 侧"从未建立的部分。
+- 产物：`/mnt/build/tmp/libBizFw.so`（下阶段可直接反汇编分析）。
