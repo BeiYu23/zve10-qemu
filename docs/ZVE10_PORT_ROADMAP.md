@@ -2041,3 +2041,27 @@ Unknown symbol 归零（所有依赖模块都能解析 backup 符号）
 下一步：确认 grm_ma 的保留内存窗口（是否需要在 QEMU 机型里补一块 RAM/region），
        或临时 stub 掉 grm_ma 看链路能否继续（代价：GRM 位图分配不可用）。
 ```
+
+## c437–c440（2026-10-24 00:15，第 6 轮）：grm_ma 替换后**完全不崩了**，但管理器仍不建；并修正一个误读
+- c437 失败于**磁盘介质错误**（`sd 2:0:0:0 [sdc] Sense Key : Medium Error`，sector 295365552），
+  `ab_v435.img` 在 453MB 处不可读 ⇒ 已用 `ab_v424` + stub 重建（新镜像 ab_v438）。**磁盘有坏道，后续注意校验。**
+- c438（`backup_stub3`(145 符号+参数) + `grm_ma_stub`）：
+```
+probe=1  modloads=35  trap=0   ← grm_ma 的 mspace_malloc oops 消失，全程稳定
+但 gfx=0 res=0 wg=0 pVM=0
+```
+- c440（同一镜像跑 **330s**）：仍然是 `gfx=0 res=0 wg=0` ⇒ **不是"时间不够"**，是真的一直没建。
+- ★ **修正一个误读**：c431 里 `osal_valloc_msg_wait` 返回 0，我之前当成"返回 NULL（失败）"，
+  但 OSAL 的约定是 **0 = 成功**（消息指针通过第二个参数 out 返回）。所以
+  **"消息池耗尽"这个结论不成立**，那条因果链要撤掉一半（ulogio 装载失败→日志堆积仍成立，但"池耗尽导致 valloc 失败"不成立）。
+- 现在的真实状态：
+```
+✅ 启动链稳定：35 模块、无内核 oops、探针常驻、可以跑 330s 不动
+❌ 管理器图（gfx/res/wg）依然为 0 —— 调用 Application_System_Init 后线程存在（c427: tid170 Appframework），
+   但它不产出管理器；且 330s 也不产出 ⇒ 不是等待，是逻辑上就没走到
+```
+- 下一步（下一轮）：
+  1) 反汇编 `ux::gfxeng::GraphicsEngine::sys_getInstance` / `ResourceManager::sys_getInstance`，
+     确认单例是"首次调用即创建"还是"必须由某个 init 创建"；
+  2) 若是后者，找出那个 init（很可能在 `DPro_App_UI_init`(gui.so，本机缺失) 或 libObj 内部某 init 里），
+     评估能否由我们直接调用。
