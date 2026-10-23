@@ -397,3 +397,72 @@ void *inst = calloc(1, 0x240);          // 全零
 
 ⇒ 手工引导能**验证引擎链**，但**不保证直接出现 UI**。这一步的价值是：
 把"引擎初始化能不能跑"这个问题单独隔离出来验证，而不是继续被"创建点不存在"堵死。
+
+---
+
+# 补充（第六轮）：`0x145CBC4` 回调表 + selector 函数 + futex 重新解读
+
+## 一、`libObj+0x145CBC4` 是什么
+
+**它不是 GOT 变量，而是用"直接 PC 相对寻址"访问的模块内静态指针**：
+
+```asm
+ldr  r3, [pc, #16]        ; 字面量是"相对增量"，不是绝对地址
+add  r3, pc               ; → 得到绝对地址 0x145CBC4
+ldr  r3, [r3, #0]         ; r3 = *(0x145CBC4)  ← 那个指针
+ldr  r3, [r3, #0x48]      ; 取回调
+cbz  r3, skip
+blx  r3                   ; 非 NULL 才调用
+```
+
+⇒ **它是一个"可选回调表"对象指针**：表内是函数指针，槽位见到 `+0x3C` / `+0x48` / `+0x4C` / `+0x5C` 等。
+⇒ 语义是 **"宿主若装了钩子就调用，没装就静默跳过"**。
+⇒ `getFramebufferWidth/Height`（`0x63D2D8`/`0x63D2F0`）正是通过它 + `+0x5C` 的槽去拿 framebuffer 尺寸。
+
+**为什么之前搜不到**：它是**直接 PC 相对寻址**，文件里存的是"相对增量"，不是绝对地址
+`0x0145CBC4`（后者出现 0 次）。这也解释了为何按 GOT 槽搜只找到 5 处。
+
+> 我后来用"相对增量反解"的方法搜，`0x145CAB8` 出现 3 处疑似引用，
+> 逐个核实均为**假阳性**（差值 0x145CAB4 / 0x145CABC，差 4 字节），
+> 故"libObj 内无引擎创建点"的结论**仍然成立**，且已被 QEMU 侧 60 次采样实测独立确认。
+
+## 二、selector 函数 `0x640220` 是什么
+
+```asm
+640220:
+  r4 = r0                                  ; selector
+  r3 = *(GOT+…)                            ; 某全局对象
+  r0 = *(r3 + 0x14)                        ; 子对象
+  if (r0 == 0) return r2                   ; ★ 没有后端就直接返回，不阻塞
+  r3 = *(r0)                               ; vtable
+  r3 = *(r3 + 0x1C)                        ; 虚函数 @0x1C
+  r0 = r3(selector=r4, r2)                  ; 调用
+  return r0
+```
+
+⇒ 它是**虚拟分发**：把 selector 转给 `global->[+0x14]` 这个后端对象的 `vtbl[+0x1C]` 方法。
+⇒ `uxengine_init` 里 `selector 5 / 11 / 12` 是三次**特性查询**（结果转 bool 传给 GraphicsEngine setter）。
+⇒ **后端为空时直接返回、不阻塞** —— 所以 `uxengine_init` 不是阻塞点（事实也证明它跑完了）。
+
+## 三、★ futex 需重新解读
+
+`Appframework 线程 futex_wait_queue_me` **可能根本不是 bug**：
+
+该线程体在 `uxengine_init` 之后是
+`snprintf → createRequestModelExecuteEvent(1, buf) → 进入循环`。
+一个**事件循环线程在空闲时本来就该坐在 futex 上等消息队列**。
+
+⇒ 需要区分的是：
+
+| 现象 | 含义 |
+|---|---|
+| 线程**能建管理员**但空闲在 futex | **正常**，只是没人给它派活 |
+| 线程在调管理员构造**之前**就卡住 | 真 bug |
+
+**建议的判别方法**：不要只看内核 `futex_wait_queue_me`，而要抓**用户态栈**
+（`/proc/<tid>/stack` 只有内核栈；需要 gdb 或 walk 用户栈）
+看它停在 `osal_rcv_msg`（= 正常空闲）还是别的调用里。
+
+配套观察：若线程空闲在 `osal_rcv_msg`，那么问题变成
+**"谁应该给 Appframework 发 '创建视图' 的消息"** —— 这与
+`createRequestModelExecuteEvent(1, …)` 的消费者未定位是同一件事。
