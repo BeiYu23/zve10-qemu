@@ -86,6 +86,7 @@ zv-e10-toolkit（本地 `/root/fw/zv-e10-toolkit`，GitHub
 | [`docs/FIRMWARE_REPORT.md`](docs/FIRMWARE_REPORT.md) | 从官方升级包到**完全解密解包**的完整流程 |
 | [`docs/GEN1_SYSTEM_STRUCTURE.md`](docs/GEN1_SYSTEM_STRUCTURE.md) | 系统结构测绘（启动链、模块、服务、图形栈） |
 | [`docs/JIRITSU_CHANNEL.md`](docs/JIRITSU_CHANNEL.md) | JIRITSU 命令通道的定位与协议 |
+| [`docs/EXTERNAL_ZVE10_RE.md`](docs/EXTERNAL_ZVE10_RE.md) | 外部 ZV-E10 逆向成果对照（qn06142/zv-e10-re）：已验证项、冲突项、可用项 |
 | [`data/partition_map.tsv`](data/partition_map.tsv) | 分区表（含"表内偏移 → 镜像偏移 +0x400000"换算） |
 | [`data/imdb_table.tsv`](data/imdb_table.tsv) | IMDB 表（App 会 dlopen 的库与符号） |
 | [`data/machine_comparison.tsv`](data/machine_comparison.tsv) | A6400 / ZV-E10 / ZV-1F / ZV-E10 II 对照 |
