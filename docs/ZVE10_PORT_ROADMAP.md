@@ -1465,3 +1465,26 @@ DPro_App_UI_init        @0x780 : 同上
 - 如果这个判断成立，那么"零售 UI 版固件"才是下一步需要的输入；
   当前镜像下我们能做的只剩：给 uxengine/ViewManager 造数据（等于重写业务层），不现实。
 - 待验证：`BIZ_Init` 是否在任何时刻被调用（interpose 计数）；若从未调用，则确认业务层完全未启用。
+
+## ★★★ c364–c370（2026-10-23 10:55，补 model 层）：可以人工构造 BBC 对象了
+- c364：interpose `BIZ_Init/subapp_init/vssapp_init/DPro_App_UI_init` → **全 0 次调用**
+  ⇒ 业务层入口在正常启动中从未被调用。
+- c365：主动调用 `DDSUserInit / InfraAvbbc_Init / grm_init / dmp_allocator_lib_init / CapIdSync_Init`
+  → 均无副作用（BBC ctor 仍 0、GPE 仍 11 kick）。
+- c366/c367：`AvbbcLogManager::Initialize()` 返回 1；`InitEnv4PcModeling` 需先 dlopen libBizFw 才可见。
+- c368：`ObjAvbbcCmn::InitEnv4PcModeling(0)`（正确符号 `_ZN11ObjAvbbcCmn18InitEnv4PcModelingEj`）
+  **返回 0（成功）**，但 BBC ctor 仍 0。
+- c369/c370（关键）：**手工构造成功**
+```
+malloc ObjActiveBaseAvbbc(0x800) → ctor(0,"ScalarApp",0)   ✅ 无崩溃
+malloc GlobalAccessor(0x400)   → ctor()                   ✅ 无崩溃
+malloc SeqController(0x400)    → ctor(0,oab,ga)           ✅ 无崩溃
+CreateAndAddSequence(seq,0,0)  → **进入后阻塞**（打印 "calling CAS" 后无返回，无 trap）
+```
+  ⇒ 这是全项目第一次把 BBC/序列对象造出来并真正进入提交函数；
+  它**阻塞**而不是崩溃，说明：序列提交需要**序列执行者/命令接收者**（真机由 BBC 运行时提供）。
+- 结论：
+  1) 缺的确实不是"某个开关"，而是 BBC 运行时（序列执行线程 + 命令接收者 + ObjAvbbcCmn 环境）；
+  2) `InitEnv4PcModeling` 成功但不会自动建这些；
+  3) 若要继续，需要在 libBizFw 里找 **AddSeqFactoryToCmdReceiver / AddCmdFactoryToSequenceManager**
+     （ObjActiveBaseAvbbc 的两个 weak 导出）以及命令接收线程的创建点，把运行时补起来。
