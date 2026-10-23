@@ -1511,3 +1511,20 @@ libObj 只导出 InfraAvbbc_Init/Res/Sus；viewUnified2.so（14.3MB，已抽取�
      并同时替换 `GRM_bitmapGetPhysicalAddress/GetRowPixelCount/gpermFillrect/gpermRectblit`，
      让 uxengine 有一个"指向 VDF 的屏幕位图"可以画；
   2) 再调 `View::drawDirect()`，若成功即出画面（GPE 执行器已就绪）。
+
+## c375/c376（2026-10-23 11:20）：用户态 BMP 后端首次拦截成功，但该 run pVM=0
+- c376 探针实现了 **BMP_Create 的用户态替换**（真实失败时用真实 ctor `libObj+0x69B38C` 造 0x80 对象 + 52B 数据块，
+  并把位图直接映射到 VDF `0x20312000`），并替换了 `GRM_bitmapGetPhysicalAddress / GetRowPixelCount / gpermFillrect`。
+- 实测：
+```
+FBMP w=640 h=480 obj=0x0005F5A0 vdf=0x0F740000     ← 成功拦截并返回自建位图
+DRW pvm=0x00000000                                 ← 但本 run ViewManager 为空
+kicks=0                                            ← 且 GPE 完全未初始化
+```
+  ⇒ 这个 run 的 App 初始化没有走完（pVM=0、kicks=0），无法据此判断 drawDirect 是否可用；
+  可能是我们的 BMP 替身影响了早期初始化，也可能是 run 间不稳定。
+- 下一步（若继续）：
+  1) 把 BMP 替身做成"**惰性**"：只在 `Application_System_Init` 之后（pVM≠0）才启用，
+     避免影响早期初始化；
+  2) 用稳定基线确认 kicks=11 → 再在 i=50 打开视图并 `drawDirect`，观察是否出现 gperm 绘制调用；
+  3) 若 drawDirect 仍需"屏幕位图"，则同时替换 `GRM_screenGetOnBitmap` 返回我们的 VDF 位图。
