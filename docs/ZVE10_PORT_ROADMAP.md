@@ -2485,3 +2485,25 @@ RCVASYNC 只出现 1 次 → 立刻 trap=1，address=0x0055011E（就是那个 m
    否则只能盲试。下一步请对方给出 DataflowInfraMsg 头部布局（GetMsgType/GetReplyId 的偏移），
    我可以直接构造一条合法消息喂给它。
 ```
+
+## 新 goal 第 5 轮（2026-10-24 04:00）：定位到"谁在等"—— libObj 内部 `0x5304A3` 的接收者
+按对方更正（超时循环里不涉及 DMM；`0x37` 未定），改为**同时观测接收者的身份与调用者**：
+- interpose `DataflowInfraReceiver::ReceiveASync`（4 参数版：this, a1, msg, timeout）：
+```
+RCV self=0x09AE2D48 a1=0x0055011E msg=0x09AE2B34 lr=0x063B24A3  +4=0x058E0000  +8=0x09658BF4
+（稳定重复，说明就是这里在循环）
+```
+  折合偏移（libObj base 0x5E82000）：**lr = libObj+0x5304A3** ⇒ 等待者就在 **libObj 内部**，
+  （该地址夹在导出符号 `ModelCecToInstance`(0x5276F0) 与 `ModelCleaningToInstance`(0x53AC8C) 之间，
+   属于未导出内部函数）
+- 接收者对象字段：`self+4 = 0x058E0000`（不像 qid，更像通道/句柄/标志），`self+8 = 0x09658BF4`（指针）
+  ⇒ 与对方说的"通道对象 +4 字段 = qid"不完全吻合，需要再核对。
+- `osal_rcv_msg_tmo` 观测到的 qid 是 `0x37807D`，但 `ReceiveASync` 收到的第一参数是 `0x0055011E`
+  ⇒ **两者不是同一个值**，说明 qid 在 ReceiveASync 内部由通道对象换算得出（或第一参数是通道/缓冲）。
+- 结论与下一步：
+```
+· 等待者身份已确定：libObj+0x5304A3（内部函数），它通过 DataflowInfraReceiver 等 0x37807D
+· 缺的仍是"消息内容/类型"：需要 DataflowInfraMsg 的布局或该通道期望的消息类型
+· 下一步：hook osal_dynamic_id（注意上次加它会让 rm_init 卡住，需谨慎/改签名）或在
+  ReceiveASync 内部读取 this+4 的换算逻辑（静态看 0x228D8 开头几行即可）
+```
