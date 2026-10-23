@@ -2121,3 +2121,22 @@ af50: cmp r4, #1 / bne …
 - 下一步（第 9 轮）：
   1) 用 dlopen 拦截 + 失败清单做**精确二分**：脏镜像下哪些库是"必须成功 dlopen 才能进 UI"的（c448 已给出纯净侧 33 个失败清单）；
   2) 重点检查 /usr/lib 的**符号链接与版本化 .so（libX.so.N）**——上一轮只复制了 112 个 `.so` 实体，可能漏了链接名。
+
+## c452–c454（2026-10-24 01:15，第 8 轮续）：差异仍未锁定，得到两条硬线索
+- c452（纯净 /usr + **全部 112 个脏镜像库** + 3 字节补丁 im.elf）：
+```
+/lib 条目 321 = 与脏镜像完全一致（逐名核对，无缺）
+但 gfx=0 res=0 wg=0，viewUnified2 仍 0 次加载  ⇒ 库/补丁都不是充分条件
+```
+- c453（再把 udate/upm/accel/mag/compass/grm_ma/backup 换回**原厂**）：内核 oops（`udate_init_clock`）
+  ⇒ 原厂模块在 -rt106+ 内核 + 纯净 /usr 下会崩（脏镜像当年能用，是因为**那批模块在旧内核上 vermagic 不匹配、根本没加载**）。
+- c454（把 /usr/kmod 下 102 个模块全换成"拒绝参数"的通用 stub，只留 fake_gles）：
+  `modloads=32`（stub 无参数时仍能装），但 **probe=0、im.elf 没起来** ⇒ 这条路现在也不通，需要单独收敛。
+- 本轮新增两个精确结论：
+  1. **脏镜像当年"模块没加载"是 vermagic 不匹配的副作用**，不是设计；
+  2. **纯净 /usr 下 dlopen 失败清单里 `libJiritsuUIView.so` 是真机也不存在的库**，
+     而它失败后 **viewUnified*.so 从未被尝试加载** ⇒ 这是"view 不加载"最直接的上游。
+- 下一步（第 9 轮）：
+  1) 找出**谁** dlopen 了 `libJiritsuUIView.so`（在 libObj/libMWF/libJiritsu 里搜字符串不行，改用 probe 记录 dlopen 的 caller LR）；
+  2) 若它是"可选增强库"，可考虑提供**最小 stub**（导出对方 dlsym 的符号）让流程继续，
+     而不是让 UI 初始化在那一步静默终止。
