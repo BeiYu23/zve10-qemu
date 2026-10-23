@@ -109,3 +109,74 @@ im.elf 通过 `dlopen("/usr/lib/libObj.so")` + `dlsym` 拿到并调用。
 但它同样依赖 `libObj` 提供的基础设施（`InfraInput` / `ux::wgtsys` / MWF 事件）。
 ⇒ **只要旧菜单这条链能通，`libObj` 侧的平台能力就被证明是完整的**，
 新菜单移植的接缝就少一大块。
+
+---
+
+# 补充（2026-10-24 第二轮）：`uxengine_init` 才是管理器构造入口
+
+> QEMU 侧给出了两处修正，本文接受并据此重定向分析。
+
+## 〇、更正：消息池耗尽假说**不成立**
+
+QEMU 侧加强 hook 后实测：`osal_valloc_msg_wait` **ret=0（成功）**、
+out 指针每次都是有效堆指针、耗时 0–10 ms ⇒ **从未阻塞**。
+
+我此前按"19456 = 块大小"折算"只剩 13 块"是**误读**：`fblock: (19456) free=266752`
+的含义是 **`(已用块数) free=空闲字节`**。266,752 空闲字节 ÷ 52 字节/块 ≈ 5000+ 块。
+
+⇒ **"池耗尽 → 线程阻塞"整条链作废**，`0x13A` 排空方案也无必要。
+
+## 一、线程入口：`libObj + 0x8A2398`（正是描述符 `+0x08` 指向处）
+
+```
+8a239e: bl 0x6271D4          ; ★ uxengine_init
+8a23a2: snprintf(buf,32,...)
+8a23d4: bl 0x8A2314          ; createRequestModelExecuteEvent(1, buf)
+8a23d8: mov r0, r7           ; 进事件循环
+```
+
+⇒ **引擎初始化就在这个线程体里**，"线程阻塞"与"管理器不建"是同一件事。
+
+## 二、★ `uxengine_init`（`libObj+0x6271D4`）做了什么
+
+```
+r1 = 640, r2 = 480                      ; 引擎分辨率 640×480 = ZV-E10 面板(921,600 点)
+bl  0x610F74   ux::resmgr::ResourceManager::getImageSize(...)
+bl  0x627164   （TextSprite 区域内的未命名函数）
+bl  0x686440   grm_res                  ; ★ GRM 资源层（ZV-E10 上在 libObj 内部）
+bl  0x63D52C   ux::core::TextLayout::registerFontFaceFile(...)
+blx UXEngine::gfxeng()                  ; ★ 取 GraphicsEngine
+blx GraphicsEngine::getAreaCheckExtensionManager()
+    if (结果 != NULL) {
+        setCheckDataPath("/tmp/area_check_data.dat")   ; ★ 注意是 /tmp
+        setLogPath("/tmp/area_check_log.dat")
+    }
+后续：三次 selector(5 / 11 / 12) 查询，结果转 bool 传给 GraphicsEngine 的三个设置函数
+```
+
+**函数内没有 `dlopen`** ⇒ `viewUnified*.so` 的加载不在这一步（应在 view 创建时按名加载）。
+
+## 三、★ 新发现的具体依赖：`/tmp/area_check_data.dat`
+
+`uxengine_init` 让 AreaCheckExtensionManager 从 **`/tmp/`** 读区域检查数据，
+而源文件在 **`/usr/share/app/area_check_data.dat`**（UXAC，10000 条）。
+
+⇒ **开机时必须有东西把 `/usr/share/app/area_check_data.dat` 复制到
+`/tmp/area_check_data.dat`**，否则 `AreaCheckExtensionManager` 拿不到数据。
+
+**这是 QEMU 里立刻可查的一项**：
+- `/tmp/area_check_data.dat` 在 QEMU 的 guest 里存在吗？
+- 谁负责复制？（很可能在 `im.elf` / `bootin.elf` 或某个 init 脚本里）
+- 若缺失，先手工放进 `/tmp` 再跑一次，看 `getAreaCheckExtensionManager()` 是否还返回 NULL
+
+## 四、建议的 hook 点（按性价比）
+
+| 观测 | 意义 |
+|---|---|
+| `UXEngine::gfxeng()` 返回值 | 为 NULL ⇒ 引擎单例没建，后续必然失败 |
+| `GraphicsEngine::getAreaCheckExtensionManager()` 返回值 | 为 NULL ⇒ area-check 路径被跳过（说明 GraphicsEngine 未构造完） |
+| `/tmp/area_check_data.dat` 是否存在 | 上面那条路径能否生效的前提 |
+| `uxengine_init` 是否被调用到 | 若根本没进这个函数，说明线程没起来 |
+
+注意：`uxengine_init` 里分辨率是**硬编码 640×480**，不是运行时探测面板
+（与"新菜单 appFw 运行时探测面板"不同）——这对旧菜单是正常的。
