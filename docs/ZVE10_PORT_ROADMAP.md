@@ -1581,3 +1581,23 @@ bl 0x140F40 ; 然后 tail-call 一个 PLT 入口（疑似"把事件投递给 App
   而当前所有 App 线程都阻塞（futex / osal_rcv_msg_tmo）。
 - 下一步（下一轮）：定位 ai(0) 创建的那个 UI 线程的 tid 与其 wchan/等待对象，
   判断它是在等 UIPC 消息还是等 EventManager 条件变量，再决定注入方式。
+
+## c384–c387（2026-10-23 13:10）：App 线程全景 + PC 采样（App 在"等事件"，不在计算）
+- 线程全景（探针 dump `/proc/self/task/*/{comm,wchan}`，两次采样）：
+```
+134 im.elf.real (futex)   135/136 uipc_proxy_0/1 (__k_4u_wait_cb)  141 uipc_proxy_3
+142 mwf_monitor_inp (hrtimer_nanosleep，周期性轮询)
+143 im.elf.real (w=0 运行中)  146 THREAD_INFRA1 (w=0)  147 THREAD_INFRA2 (w=0)
+149 grm_result(futex) 150 grm_gpe(futex) 191 uxengine_res1 192 uxengine_res2 (futex)
+193 grm_dn_vdf_if (osal_rcv_msg_tmo)
+148/151/152/153/158/159/160/162/164/165/169/171/178/183 …= osal_rcv_msg_tmo（等 UIPC 消息）
+190 Appframework (w=0)
+```
+  ⇒ App 有完整的框架线程群，但**全部处于"等待"状态**（futex 或 UIPC 收包）。
+- PC 采样（QEMU gdbstub `-gdb tcp::1234`，连续 6 次取 `$pc`）：
+```
+PC = 0x040A2146 ×6（落在 libpthread 的 futex/syscall 路径）
+```
+  ⇒ 采样期间 CPU 只在"等锁/等事件"的代码上，**不是**在渲染或忙循环。
+- 结论：App 的 UI 事件处理线程没有可处理的事件源（没有任何输入/定时器驱动它），
+  所以 view/model 永远不会被创建，`drawDirect` 拿不到 model（`[view+0x24]=0xFFFFFFFF`）。
