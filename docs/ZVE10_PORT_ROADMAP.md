@@ -3055,3 +3055,22 @@ IO186 fd=3 req=0x8000000B r=0
   1) 在 `ioctl(0x80000005)` 时 dump **第三个参数（struct 指针）的前 16 字节**，
      取出它请求的 **qid 与 timeout**；
   2) 用该 qid 判断"队列是否存在/是否注册"，再决定是"注册队列"还是"投一条消息"（对方已给 valloc→memcpy→snd 三步法）。
+
+## ★★★ 新 goal 第 19/60 轮（2026-10-24 07:25）：拿到确切 qid —— **`0x003E014D`**（子系统 0x3E），接收恒返回 -1
+- 在 `ioctl` 里 dump 参数结构（tid 186）：
+```
+IO186 fd=3 req=0x8000000A r=0   a0=0x003E014D a1=0x0ED63674 a2=0x003E014D a3=0x1
+IO186 fd=3 req=0x80000005 r=-1  a0=0x003E014D a1=0x0ED63624 a2=0x00000001 a3=0x046ECF6C
+IO186 fd=3 req=0x8000000B r=0   a0=0x003E014D a1=0x046ECF6C a2=0x003E014D a3=0x1
+（循环重复，a2/a3 有不同取值）
+```
+  ⇒ **App 在向 qid `0x3E014D` 发送请求（成功），然后从同一 qid 接收应答（恒 -1）**
+- 该 qid 我们历史上多次见过（早期就判断是 **backup 服务端点**）。而我们的 `backup.ko` 现在是**纯 stub**
+  （只导出符号、不注册队列）⇒ 很可能就是"没有人应答 → 接收报错 → 无限重试"。
+- 另确认：内核模块侧确实提供注册接口 —— `backup.ko` 导入了
+  `osal_reg_msg_queue_cb / osal_reg_sync_msg_queue_cb / osal_snd_msg / osal_valloc_msg_wait / osal_snd_sync_direct` 等。
+  ⇒ **我们的 backup 替代模块完全可以自己注册一个队列并作最小应答。**
+- 下一步（第 20/60 轮）：
+  1) 先用"全线程"记录 `ioctl(0x80000005)` 的参数与返回，找一条 **r>=0 成功** 或 **-1022 超时** 的样本，
+     用来校准该结构体字段含义（a2 到底是超时还是别的）；
+  2) 然后按对方给的"valloc → memcpy → snd"或用内核 `osal_reg_msg_queue_cb` 注册 `0x3E014D` 队列并作最小应答。
