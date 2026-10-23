@@ -2645,3 +2645,35 @@ trap=0，gfx=557712，pVM=0，viewUnified2=0
   1) 用 QEMU gdb 对 guest **多次采样 PC**，看自旋地址是否落在 libObj 某函数（从而定位轮询点）；
   2) 或者用 watchdog 读 `/proc/self/task/<tid>/stat` 的 utime 确认是否真的自旋；
   3) 若确认自旋在某函数，就按"崩哪填哪"的方式补它轮询的条件。
+
+## ★★★ 新 goal 第 12 轮（2026-10-24 05:00）：**突破！** 按对方"名字缓冲区"修正后，固件自己的线程跑起来了，`viewUnified2.so` 被 mmap
+- 根因（对方查出）：`0x8A2EE0` 的名字来自 `.bss 0x14920E8`，由 `Application_System_Init` 填
+  （arg!=0 → strncpy(arg)；arg==0 → 默认 **"X"**）；`0x8A2E70` 用 `strncmp("X",name,20)` 决定是否
+  `initializeConfig()`。我们此前直接调 `0x8A2EE0` 而名字为空 ⇒ 走失败分支 ⇒ 配置对象没生成 ⇒ 崩在 0x14。
+- **修正（一行）**：改为调用 `Application_System_Init(0)`（`libObj+0x8A2408`，参数 NULL）：
+```
+RMSTATE ptr=0 cnt=0
+WS made=0x00089718
+ASICALL arg=0
+ASI returned                        ← 正常返回
+trap=1 address=0x18
+gfx=557744  wg=562968  viewUnified2 出现 7 次！
+```
+- **本轮实证（第一次）**：
+```
+ZZREAD Appframework pid=186 fd=23 count=512 dev=viewUnified2.so
+QMMAP  addr=0 len=0xE4FB10 fd=23 ret=0x0EC64000 name=viewUnified2.so
+QMMAP  addr=0xF7E4000 len=0x228000 off=0xB78000 prot=0x3 fd=23
+映射表：0EC64000-0F7DD000 r-x  viewUnified2.so
+        0F7E4000-0FA0C000 rw-  viewUnified2.so
+```
+  ⇒ **App 自己的线程起来了、真的把 viewUnified2.so 映射进内存**（此前从未发生过）。
+- 新崩点（已定位）：
+```
+0x6137DC: getLayer(id) 返回 0 → add r0,#0x18 → r0=0x18
+0x8647EC: ldr r3,[r0]   ⇒ 崩在 0x18
+```
+  ⇒ 需要 **真正的 WidgetSystem::getLayer 能返回 Layer**；我们手工造的零对象没有 layer 注册表。
+- 下一步：
+  1) 观察 App 是否**自己**创建 WidgetSystem（如果不，就继续手工造，但为 getLayer 补一个最小 Layer 表）；
+  2) 或者拦截 `WidgetSystem::getLayer` 返回一个最小 layer（同类"人造对象"手法）。
