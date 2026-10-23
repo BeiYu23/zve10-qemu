@@ -2795,3 +2795,29 @@ NEW 24 lr=0x0F090AC1   ×N（连续）
   1) 把 NEW 日志加上 **tid**（不加门控、只统计），确认那四个 `new(0x28/0x58/0xAC/0x70)` 是否在**别的线程**发生；
   2) 若确实没有发生过 ⇒ `0x8A2EE0` 在 `0x8A2F26`（pipe）之前就返回/跳走 ⇒ 用 `pipe()` 是否被调用来判定；
   3) 复核 `pVM` 读法（`0x149221C`）—— 对方提出可能是地址/读法偏差，需要交叉验证。
+
+## ★ 新 goal 第 7/60 轮（2026-10-24 05:40）：证实 `0x8A2EE0` **确实在 Appframework 线程（tid 186）里执行**，并走到 `initializeConfig`
+- 关键实验：interpose 导出的 `initializeConfig`（`libObj+0x14BE84`）记录调用者：
+```
+INITCFG tid=186 lr=0x06724EAD
+```
+  折合 lr = **libObj+0x8A2EAD** —— 正是 `0x8A2E70` 里 `strncmp("X",name,20)==0 → blx initializeConfig@plt` 的调用点
+  ⇒ **名字匹配成功、配置子系统初始化被调用、且发生在 Appframework 线程（tid=186）里**
+  ⇒ 说明 **`0x8A2EE0` 的入口段（0x8A2EEE..0x8A2F06）在固件线程里是正常执行了的**。
+- 但同一次运行里：
+```
+NEW2 sz=112 (ViewManager 0x70) = 0 次
+NEW2 sz=172 (ModelManager 0xAC)= 0 次
+pVM=0（两条路径都读：直接读 0x149221C 与经 GOT 槽 0x13DC7B4 解出的 0x0731421C，均为 0）
+trap=0
+```
+- 另本轮复核了对方提的地址疑问：**`pViewManager` 地址 0x149221C 是对的**
+  （`*(u32*)(base+0x13DC7B4)` = 0x0731421C = base+0x149221C ✓）
+- 于是问题被压缩成：
+```
+0x8A2EE0 在 tid 186 里进入 → 名字匹配 → initializeConfig 执行
+  → 但没有走到 0x8A2F4A 之后的四个 new / ViewManager new(0x70)
+⇒ 卡在 initializeConfig 之后、0x8A2F4A 之前的那几步：
+   0x8A2EFE (bl 0x8A2A80) / 0x8A2F0E (osal_wai_sem_tmo 0x83037A) / 0x8A2F26 (pipe)
+```
+- 下一步：把所有 `osal_wai_sem_tmo` / `pipe` 调用**带 tid** 全量记录，看 tid 186 在这三步里停在哪一个。
