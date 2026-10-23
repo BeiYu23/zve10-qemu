@@ -188,3 +188,101 @@ osal_snd_msg(0x37807D, msg);
    每一步只补一个条件、观察下一个等待点，这是当前信息量最大的推进方式。
 
 **一条纪律**：每次只 signal **一次**，不要放进循环里 —— 否则会掩盖"到底等了几次"。
+
+---
+
+## 六、★ 更正：`0x83037A` 是**静态** id，且信号量状态在**内核模块**里
+
+### 6.1 我上轮说"动态分配"是错的
+
+`check_dynamic_sem_id`（`0x47C0`）的逻辑：
+
+```asm
+47c2: tst.w r0, #0x8000
+47d0: ite ne → r4 = 0 (bit15 置位) : r4 = 1 (bit15 清零)
+47dc: r0 = r4 ^ 1                  ; = bit15 ? 1 : 0
+47e0: cmp base, index
+47e2: ite hi → r0 = 0
+47e6: andls   → r0 &= 1
+47ec: cbz r0 → 跳过位图检查
+```
+
+⇒ **位图检查只对 `bit15=1` 的 id 生效**。
+`0x83037A` 的 bit15 = **0** ⇒ **走静态路径，不是动态分配**。
+
+### 6.2 ★ 信号量实现在内核模块 `osal_uipc.ko`
+
+用户态三个函数全都是 **ioctl 薄封装**（无用户态状态）：
+
+```asm
+u_osal_stat_sem:     ioctl(fd, 0x80000000, &{id,  &out})
+u_osal_wai_sem_tmo:  ioctl(fd, 0x8001,     &{id,  timeout})
+u_osal_sig_sem:      ioctl(fd, 0x8002,     &{id,  0})
+```
+
+内核模块里对应符号：
+```
+__k_uipc_cdev_ioctl   __k_4u_sig_sem   __k_4u_wai_sem_tmo
+__k_4u_stat_sem       __k_4u_wait_cb    get_bsem / bsem_dump
+字符串: "[] GSEM"   "[] BSE"
+```
+
+⇒ **signal 到达的是内核里的同一个对象**（id 原样透传，见 6.3）。
+⇒ **"signal 返回 0 但没放行" 的原因只能在 `osal_uipc.ko` 内部**，
+   而 `__k_4u_wait_cb` 的存在提示它可能是**"等待回调"语义**，不是简单计数。
+
+### 6.3 两个函数对 id 的处理完全一致
+
+```asm
+osal_sig_sem:      2f7e: tst.w r4, #0x8000 ; 2f84(本地) → r0=r4 尾调 u_osal_sig_sem
+osal_wai_sem_tmo:  2e9a: tst.w r5, #0x8000 ; 2ea0(本地) → u_osal_wai_sem_tmo(id, timeout)
+```
+
+⇒ **同一 id、同一路透传**，signal 不可能打到别的对象上。
+
+---
+
+## 七、给 QEMU 的三条可执行建议
+
+### ① 诊断：用 `osal_stat_sem` 验证 signal 是否真的落地
+
+```c
+unsigned int st[2] = {0};
+osal_stat_sem(0x83037A, st);        // signal 前
+osal_sig_sem(0x83037A);
+osal_stat_sem(0x83037A, st2);       // signal 后
+```
+- **状态变了** ⇒ signal 落地了，但等待方不在这个 sem 上（或语义不是计数）
+- **状态没变** ⇒ signal 没落地（id 解析或内核侧拒绝）
+
+### ② ★ 试"抢先 signal"（在进入 `0x8A2EE0` **之前**就 post）
+
+如果它是**二元/事件**信号量，等待方会把它**消费掉**：
+- **之后**再 signal 时，等待方可能已经错过了那一次
+- **之前** post，等待方第一次 wait 就能立即通过
+
+```c
+osal_sig_sem(0x83037A);      // 先预置
+call(0x8A2EE0);              // 再进
+```
+这条比"事后 signal × 6"更可能奏效。
+
+### ③ ★★ 更快的路：直接**中和这个 wait**，逐个打通
+
+既然每次都被"某个 ready 条件"挡住，而 QEMU 环境是实验性的、弄坏也无成本：
+
+```c
+int my_wai_sem_tmo(u32 id, int timeout) {
+    if (id == 0x83037A) return 0;      // 只中和这一个
+    return real_wai_sem_tmo(id, timeout);
+}
+```
+
+你们已经试过"返回 0 跳过"——结果不再出现 HSEM，但进了另一个 `hrtimer_nanosleep`。
+**这本身就是进展**：说明后面还有下一个等待点。
+
+⇒ **策略：每中和一个等待点，就记录下一个等待点的 (类型, id, LR)**，
+   直到全部通过或出现数据依赖崩溃。
+   这条路每一轮都能推进一个点，且不会卡死在某一个上。
+
+**判据仍然是**：`pVM`（`0x149221C`）是否变非 0、`ViewManager::ctor`（`0x8A4E28`）是否被固件自己调用。
