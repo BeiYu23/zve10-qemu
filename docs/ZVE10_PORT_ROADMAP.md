@@ -2065,3 +2065,26 @@ probe=1  modloads=35  trap=0   ← grm_ma 的 mspace_malloc oops 消失，全程
      确认单例是"首次调用即创建"还是"必须由某个 init 创建"；
   2) 若是后者，找出那个 init（很可能在 `DPro_App_UI_init`(gui.so，本机缺失) 或 libObj 内部某 init 里），
      评估能否由我们直接调用。
+
+## ★★★ c441–c446（2026-10-24 00:40，第 7 轮）：**重大澄清 —— 脏镜像里的"管理器"是我们探针自己造的**
+- 对照实验（同一颗内核、同一 initrd、同一探针逻辑）：
+```
+c443（脏 /usr ab_v291）: viewUnified2 映射 7 处 → W5 "call init" 执行 → IA 循环调 1768 个函数指针
+                        → gfx=533272 res=115579488 wg=535392 pVM=1.39M   ← 管理器出现
+c438/c441/c442/c444/c445（纯净 /usr）: viewUnified2 映射 0 处 → "W3 no rw line" → W5/IA 不执行
+                        → gfx=0 res=0 wg=0 pVM=0
+```
+⇒ **结论（重要）**：脏镜像里那些"管理器"并不是 App 建起来的，而是**我们探针找到 viewUnified2 的 rw 段后，
+主动调用了它的 init 和 1768 个函数指针**（menuc251 里的 W5/IA 逻辑）才出现的。
+  也就是说：**至今为止，"App 自己建管理器"这件事从未发生过**——此前把它当成进展是误读。
+- 因此真正的卡点变成：**为什么纯净 /usr 下 `viewUnified2.so` 从来没被加载**（脏镜像下它会被加载）。
+- 本轮排除了三种解释（都是单变量）：
+```
++61 个 libInfra* stub        (c444) → viewUnified2 仍 0 映射，管理器仍 0
++6 个图形 stub(libgpx/grm/uxengine/dmpNative/diablo/DMPGlslc) (c441) → 同上
+target=default（替换 argv）   (c446) → 同上
+```
+- 下一步（第 8 轮）：
+  1) 让内核 `IMOPEN` 日志带上**调用者 LR**（一行内核补丁），直接看"谁在 dlopen viewUnified2"、
+     以及纯净 /usr 下这次 dlopen 为什么没发生/失败；
+  2) 或者按 libIMDB 表查 viewUnified2 的 enable 位与 profile 关系，确认它属于哪一组、什么条件下才装载。
