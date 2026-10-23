@@ -1559,3 +1559,25 @@ DRW2 dd                        ← 进入 View::drawDirect()
   2) 再回到 drawDirect；
   3) 屏幕位图替身（GRM_screenGetOnBitmap→VDF）本身已验证可用且不影响早期初始化——
      这条经验可复用（关键是**只在初始化完成后开启**）。
+
+## ★ c379–c383（2026-10-23 12:55，UI 方向定位）：openView 是"发事件"，view 无 model
+- c379/c380：用 `/proc/self/task/<tid>/schedstat` 与 `/proc/self/task/<tid>/stat` 的 utime 做 8 秒差分采样，
+  **没有任何线程出现可测的 CPU 增长** ⇒ App 的线程全是阻塞态（不是空转）。
+- c381：`View::drawDirect()` 反汇编为：
+```
+r0 = [this+0x24] ; b 0x8a4528
+0x8a4528: r4=r0 ; if (ScalarAppfwIF::IsViewModeDiadem()) { r0=[r4+20]; b 0x8a6bc4 } else return
+```
+  实测我们拿到的 view 对象 `[view+0x24] = 0xFFFFFFFF`（无效 model 指针）→ 崩溃地址 0x13/0x14 正是 `[r4+20]`。
+- c382：调用 `ViewManager::getModelInfo(pVM, id, 0..3, 0,0)` → **全部返回 0**（没有任何 model）。
+- c383：用真实 `ux::core::ID::genID("viewBaseMenu")=0xB068A1C7` 再 openView → 返回 1384856，`[view+0x24]` 仍是 0xFFFFFFFF。
+- 反汇编 `viewManagerIf::openView(int,int)`（libObj+0x140FB8）：
+```
+bl 0x140F40 ; 然后 tail-call 一个 PLT 入口（疑似"把事件投递给 App"）
+```
+  ⇒ **openView 是异步"发请求"**，返回的不是 View*，而是该投递调用的返回值（不同 id 返回同一值即可解释）。
+  真正的 view/model 创建发生在 **App 自己的线程**里处理该事件时。
+- 结论：UI 要出画面，必须让 **App 的事件处理线程**跑起来并处理 openView 事件；
+  而当前所有 App 线程都阻塞（futex / osal_rcv_msg_tmo）。
+- 下一步（下一轮）：定位 ai(0) 创建的那个 UI 线程的 tid 与其 wchan/等待对象，
+  判断它是在等 UIPC 消息还是等 EventManager 条件变量，再决定注入方式。
