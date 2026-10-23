@@ -2458,3 +2458,30 @@ WD3 ws=0x00089728 pvm=0x00000000
   1) 找 OSAL 里 0x37 子系统的**注册者**（谁调了 osal_reg_msg_queue_cb 注册该子系统）；
      可在探针里 hook `osal_reg_msg_queue_cb` 记录 (qid, cb) 全量，看谁注册了 0x37xxxx；
   2) 或对照对方真机 dump 判定 0x37 = 哪个服务（a7c2 的 CONTROL/UPDATE/AP/GUI 哪个）。
+
+## 新 goal 第 4 轮（2026-10-24 03:50）：0x37 = DMM；DMM 拦截未命中，ReceiveASync 拦截只能"跳过一次"
+对方判定 **子系统 0x37 = DMM（显存管理）**，并指出"收消息路径里又要申请显存"，形成循环。据此做三组实验：
+- **实验 A：拦 5 个 `DataflowInfraUtility::*MemFromDmmSync` 导出函数（bump 分配器）**：
+```
+完全没有命中（无任何 DMM 日志）
+```
+  ⇒ 说明应用这阶段**还没发出 DMM 请求**（内核 UIPCARG 里也只有 0x8F013A 日志队列的流量），
+    所以"收包路径调 DMM"发生在**收到消息之后**，我们还没走到。
+- **实验 B：拦 `DataflowInfraReceiver::ReceiveASync`（三个重载，导出符号）返回 0**：
+```
+RCVASYNC a=0x09AEED48 msg=0x0055011E    ← 被调用，且立刻被重复调用（循环继续）
+```
+  ⇒ 返回 0 语义上**等于失败/无数据**，调用方继续重试。
+- **实验 C：同样拦截但返回 1 且把 msg 前 64 字节清零**：
+```
+RCVASYNC 只出现 1 次 → 立刻 trap=1，address=0x0055011E（就是那个 msg 指针本身）
+```
+  ⇒ 返回 1 被当作"有数据"，随后代码**按 msg 结构解引用**，而 0x55011E 并不是可写消息缓冲。
+- 本轮结论：
+```
+1) 0x37=DMM 的判定接受；但 DMM 请求发生在"收到消息之后"，所以先要解决"收不到消息"。
+2) ReceiveASync 的返回值语义：0=无数据（调用方重试），非 0=有数据（随后按 msg 布局解析）。
+3) 想真正突破，需要知道 msg（DataflowInfraMsg）的内存布局 + 该队列期望的消息类型；
+   否则只能盲试。下一步请对方给出 DataflowInfraMsg 头部布局（GetMsgType/GetReplyId 的偏移），
+   我可以直接构造一条合法消息喂给它。
+```
