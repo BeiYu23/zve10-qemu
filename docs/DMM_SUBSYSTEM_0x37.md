@@ -124,3 +124,52 @@ DMM 打通后，`0x8A2EE0` 应该能越过"收包超时循环"，继续到：
 - `pVM`（`libObj+0x149221C`）是否变为非 0
 
 **如果 `pVM` 变了，就说明 DMM 这条链真的通了。**
+
+---
+
+## ★ 更正（重要）：超时循环里**不涉及 DMM**，`0x37` 不一定是 DMM
+
+上一节把"`ReceiveASync` 里会调 DMM"当成了循环成因，**这是错的**。
+重新核对 `ReceiveASync`（`0x228D8`）的**指令顺序**：
+
+```asm
+228fc: blx osal_rcv_msg_tmo          ← ① 先收消息
+22906: cmp r0, #0
+22908: bne 22a0e                     ←    失败 → 直接跳错误路径（不碰 DMM）
+22916: bl 0x22548                    ← ② 只有收到消息后才继续
+2291e: blx osal_msg_size
+22934: blx memcpy
+22966: blx isPublicCpuTransfer
+2298c: blx GetMsgType / GetMsgNum
+229ac: blx AllocOpenMemFromDmmSync    ← ③ 处理"携带内存描述符的消息"时才申请显存
+```
+
+⇒ **DMM 申请发生在"收到消息之后"**。QEMU 侧观测到的是"一直超时"，
+**根本没进到第 ③ 步**，所以 DMM 未就绪 **不是**当前循环的原因。
+
+### 这个循环的真正含义
+
+`osal_rcv_msg_tmo(qid=0x37807D, …)` 反复返回 `-1022`（超时）
+⇒ **就是"队列 0x37807D 上没有任何消息到达"**。
+
+结合 QEMU 侧抓到的 uipc：
+```
+37A  1 0 134 0000 0     ← 有 1 条积压
+37B  0 0 1 0 1 0 0 0    ← 有客户端计数
+```
+说明 `0x37` 子系统在 OSAL 里**确实有注册**，但**该队列没人投递消息**。
+
+### 队列 ID 的传递路径（已查明）
+
+```
+DmmCh / DataflowInfraCh 对象 +4 字段 = qid
+        ↓ 作为参数传入
+DataflowInfraCh::rcvAsyncGlobalMsg(ch, buf, size, qid, timeout)
+        ↓
+DataflowInfraReceiver::ReceiveASync(qid, msg, timeout)
+        ↓
+osal_rcv_msg_tmo(qid, ...)
+```
+
+⇒ **qid 是"打开通道时"就定好的字段**，不是运行时算出来的。
+⇒ 想知道 `0x37` 归谁，**hook 通道对象的创建或 `ReceiveASync` 的传入参数**最直接。
