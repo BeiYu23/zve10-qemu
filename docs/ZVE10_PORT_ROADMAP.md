@@ -1769,3 +1769,24 @@ kicks=11  pVM≈1.41M  trap=0
 2. `/kmod` 取同一版本的 `nflasha15/kmod`（不要混用我们的 `grm_gles.ko`）；
 3. `/system`(nflasha3) 与 `/setting`(nflasha2) 用 dump 原样；
 4. 之后再决定探针怎么注入（用 `/setting/mode/preload` 即可，无需替换 im.elf）。
+
+## ★★ c411（2026-10-23 21:00）：内核 vermagic 已对齐真机，但原厂模块仍崩 —— 闸门不止 vermagic
+- 按对方给的结论重建内核：`CONFIG_LOCALVERSION="+"` + `LOCALVERSION_AUTO=n`
+（`localversion-rt` 里已有 `-rt106`，所以 release 拼成 **`3.0.27_nl-rt106+`**，与 Sony 完全一致），
+  用 `LD_LIBRARY_PATH` 指向工具链 compat 目录后编译成功：
+```
+include/config/kernel.release = 3.0.27_nl-rt106+
+arch/arm/boot/zImage          1,769,480 B
+fake_gles.ko vermagic        = 3.0.27_nl-rt106+ SMP preempt mod_unload ARMv7   ← 也已对齐
+```
+- 但用 **纯净 /usr + 原厂 kmod + 对齐后的内核** 启动（ab_v411）：
+```
+内核线程 udm_udate(pid 82) 仍然 trap（address=0, trap_no=0）
+probe=0  kicks=0  gpew=0
+```
+⇒ **vermagic 只是第一道门，过了它原厂模块仍然崩**：我们的内核树是 `a7c-kernel` 的 **QEMU 变体**
+（机型和外设是仿真出来的），而原厂 `udate/dmm/grm_ma/...` 期待**真实外设**，访问即 trap。
+- 结论（重要）：**"纯净 /usr + 原厂模块"这条路在 QEMU 里走不通**，除非我们的 QEMU 机型把这些外设也仿真出来；
+  现实可走的是"混合"：**纯净 /usr + 少数必需模块用我们的仿真版**（如 `grm_gles.ko`）——但要逐个甄别哪些模块必须原厂、哪些必须仿真。
+- 当前仍成立的事实：vermagic 对齐这一步**永久有价值**（以后要加载任何原厂模块都必须如此），已写进配置；
+  fake_gles 已同步重编为同一 vermagic。
