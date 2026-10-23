@@ -2088,3 +2088,36 @@ target=default（替换 argv）   (c446) → 同上
   1) 让内核 `IMOPEN` 日志带上**调用者 LR**（一行内核补丁），直接看"谁在 dlopen viewUnified2"、
      以及纯净 /usr 下这次 dlopen 为什么没发生/失败；
   2) 或者按 libIMDB 表查 viewUnified2 的 enable 位与 profile 关系，确认它属于哪一组、什么条件下才装载。
+
+## ★★★ c447–c451（2026-10-24 01:05，第 8 轮）：找到一个**被早期会话打过补丁的 im.elf**
+- 用 dlopen 拦截对比两个镜像（同内核/同 initrd/同探针）：
+```
+纯净 /usr（c447/c448）: 33 次 dlopen 失败，其中 **DLFAIL libJiritsuUIView.so**（本机不存在）
+                        **从未尝试 dlopen 任何 viewUnified*.so** → 视图层永不加载
+脏 /usr（c449）       : dlopen 失败 0 次；且 **App 自己在 i=2 就把 gfx/res/wg 建起来了**
+                        （早于我们探针的 W5/IA 逻辑，说明脏镜像里是 App 自己建的管理器）
+```
+- 于是逐项比对两边 `/usr`：`/usr/bin` 只差两个文件 `bootin.real.elf`、`im.elf.real`；
+  进一步比对二进制：
+```
+bootin.elf   : 两边 md5 相同 (d8bfb4f7…)
+im.elf 本体  : 脏镜像 /bin/im.elf.real md5 = 9c24e4ce…  ≠  真机原版 f1c746e3…
+差异仅 3 字节：
+  0x2F46/0x2F47 : 10 B9 (cbnz r0)  →  00 BF (nop)
+  0x54F5        : 00 → 30
+```
+  反汇编显示该处位于"target 选择"逻辑里：
+```
+af42: blx strncmp(target, "...", 4)
+af46: cbnz r0, af4e          ← 被 NOP 掉
+af48: orr.w r6, r6, #0x1000   ← 于是【无条件】置上 0x1000 标志
+af4c: str r6, [r5, #28]
+af50: cmp r4, #1 / bne …
+```
+  ⇒ **早期会话为了让 App 走"应用/目标"分支，把 im.elf 里这个条件跳转改成了 NOP，强制设置 0x1000 标志**。
+- 但对**纯净 /usr** 应用这 3 字节补丁（c451）**仍然不建管理器**（gfx/res/wg 还是 0、viewUnified2 仍 0 次加载）
+  ⇒ **补丁不是充分条件**，脏镜像里还有别的东西在起作用。
+- 本轮可复用的新工具：`/mnt/build/tmp/im_patched.elf`（stock im.elf + 3 字节补丁，md5 9c24e4ce…，与脏镜像一致）
+- 下一步（第 9 轮）：
+  1) 用 dlopen 拦截 + 失败清单做**精确二分**：脏镜像下哪些库是"必须成功 dlopen 才能进 UI"的（c448 已给出纯净侧 33 个失败清单）；
+  2) 重点检查 /usr/lib 的**符号链接与版本化 .so（libX.so.N）**——上一轮只复制了 112 个 `.so` 实体，可能漏了链接名。
