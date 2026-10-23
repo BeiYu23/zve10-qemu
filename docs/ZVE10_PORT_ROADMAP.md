@@ -1880,3 +1880,26 @@ kernel/module.c: load_module()
 2) 定位 im.elf 用户态 NULL 解引用：优先怀疑 `backup` 被 stub 后的连锁反应；
    备选方案是**不 stub backup**，而是给它提供"最小的 /dev/backup 语义"（返回失败但结构合法）
 3) 用带 `MODLOAD` 日志的内核继续跑，保持每次只改一个变量。
+
+## ★★ c420–c421（2026-10-23 22:40）：发现 upm/backup 的相互依赖（重要，纠正之前的 stub 策略）
+单变量对照（都基于 accel/mag/compass 已 stub 的 ab_v418）：
+
+| run | upm | backup | 结果 |
+|---|---|---|---|
+| c418/419 | **stub** | stub | 32 模块 + im.elf 启动，用户态 NULL 崩 |
+| **c420** | **原厂** | stub | **32 模块 + im.elf 启动**（upm 不再卡）→ 用户态崩 |
+| **c421** | **原厂** | **原厂** | **只有 22 模块就停住**（停在 upm），无崩溃 |
+
+⇒ 结论 1：**upm 原本"卡死"并不是 upm 自己的问题**——它需要 accel/mag/compass 正常；
+   把传感器 stub 掉之后，**原厂 upm 可以正常装载**。所以 **upm 不该被 stub**（我之前 stub 它是误判，已纠正）。
+⇒ 结论 2：**原厂 backup 会让流程停在 upm**（backup 持有/等待某个与 upm 相关的同步），
+   而 **backup 被 stub 后 upm 才能继续** ⇒ backup 与 upm 之间存在启动期同步依赖。
+⇒ 结论 3：im.elf 的用户态崩溃点在 **`libMWF.so` 内**（pc=0x058AB372 落在 libMWF 映射区，address=0），
+   崩前最后几条是 `UIPC ... f0=0x3E014D`（**backup 服务端点**）⇒ 因为 backup 被 stub，服务无人应答，libMWF 拿到 NULL 后解引用。
+
+### 因此 ① 的正确目标（下一轮）
+不是"随便写个 backup stub"，而是要**提供可用但不会阻塞 upm 的 backup 服务**。两条路：
+1) 写一个最小 backup 内核模块：导出 `Backup_read/Backup_check/backupfile_*` 等符号，并实现
+   `/dev/backup`（或 libbackup.so 实际使用的接口）从 RAM 里返回一份备份数据（可用真机 `Backup.bin` 1,235,836 B 作为内容）；
+2) 或者给原厂 `backup.ko` 打补丁，跳过它会阻塞 upm 的那段同步（需定位 backup_suspend / async_helper）。
+下一步先查清 **libbackup.so 到底怎么和内核通信**（ioctl 号 / 设备名 / 符号），再决定 1 还是 2。
