@@ -2551,3 +2551,27 @@ APPCALL 0x8A2EE0      ← 我们的线程在这一切之后才进入
 - 那么第 2 轮里 gated 探针看到的 `ARCV q=0x37807D` 是**我们的线程直接调 `osal_rcv_msg_tmo`**（不走 DataflowInfraReceiver）
   ⇒ 下一步必须在 `osal_rcv_msg_tmo` 里加 **tid 门控 + 记录 timeout/返回/缓冲指针**，
     弄清它在等哪条队列的什么消息（子系统 0x37，局部 0x807D —— 高位 0x8000 可能是"同步/全局"形态）。
+
+## 新 goal 第 8 轮（2026-10-24 04:25）：卡点最终定位 —— **`osal_wai_sem_tmo(0x83037A, -1)`（无限等）**
+给 `osal_wai_sem_tmo` / `osal_valloc_msg_wait` 加**线程门控**（只记录我们调 `0x8A2EE0` 那条线程）：
+```
+APPCALL 0x8A2EE0
+HVAL q=0x008F013A                         ← 申请日志消息
+HSEM id=0x0083037A lr=0x06724F15          ← ★ 无限等这个信号量
+HVAL q=0x008F013A
+```
+- `lr=0x06724F15` 折合 **libObj+0x8A2F15** ⇒ 正是 `0x8A2EE0` 内部 `8A2F0E: blx osal_wai_sem_tmo` 那条指令之后。
+- 用 watchdog 读该线程 wchan：**`hrtimer_nanosleep`** ⇒ 它在 `osal_wai_sem_tmo` 的超时/轮询实现里睡眠。
+- 把 id==0x83037A 的等待**直接返回 0 跳过**后：不再出现新的 HSEM，但线程又进入 `hrtimer_nanosleep`
+  ⇒ 跳过第一个等待后，它进入另一个**基于 sleep 的轮询**（不是信号量、不是 IPC、不是文件）。
+- 结论（本轮）：
+```
+1) 应用装配函数 0x8A2EE0 在开头就【无限等待信号量 0x83037A】—— 这是当前唯一确定的卡点。
+2) 该信号量应由某个"服务就绪"方 signal；在我们环境里没有任何人 signal 它。
+3) 跳过它之后仍有基于 nanosleep 的轮询 ⇒ 后续还有"等状态"的逻辑（大概率还是在等同一批服务）。
+```
+- 下一步：
+  1) 查 0x83037A 是谁的信号量（OSAL 里 id 与所有者映射：可在内核侧 osal 模块或 /proc/osal 中查；
+     也可在探针里 hook `osal_create_sem` 记录 id↔创建者 LR）；
+  2) 若它是"显示服务就绪"，则回到 a7c2 的路线：由 shim **主动 signal 它**（而非 skip），
+     并同时把该服务的应答补上，让后续轮询条件也满足。
