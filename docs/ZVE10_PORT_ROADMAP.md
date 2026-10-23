@@ -1744,3 +1744,28 @@ kicks=11  pVM≈1.41M  trap=0
      定位"在等谁的回答"；
   2) **真机基准**（对方 B2）：真机 UI 正常时 im.elf 的 maps + cmdline，看真机在同一时刻
      是否已经 mmap 了某个 view*.uxc —— 用来确认我们缺的到底是"某条消息"还是"某个初始化调用"。
+
+## ★★★ c408–c410（2026-10-23 20:45）：换成**纯净真机 /usr** 后，暴露了更底层的问题
+背景：对方核对真机 `/usr/lib` = **209 项**，而我们镜像里是 **319 项 + 一个手写 `libBizInitializer.so`(7,772B, 全 `mov r0,#0; bx lr`)**
+⇒ **我们的 n15 不是纯净真机 /usr**（早期实验加过 stub）。改用 `zve10_delivery/nflasha15.img`
+（sha256 `d9ad9954…`，207 项）重跑：
+
+| run | 组合 | 结果 |
+|---|---|---|
+| c408 | 纯净 /usr 直接换入（含其自带 kmod） | 开机即崩：`udm_udate`(pid 82) trap ⇒ **kmod 与本内核不匹配** |
+| c409 | 纯净 /usr + **我们用惯的 /kmod**(103 个) | 内核正常，**im.elf 起来了但崩在 `InfraOnDmdLdr`**：`address=0x029C19E0 trap=0x0e`；崩溃前连续 `IMOPEN FAIL` 了 `libNVM.so` / `libSaveLoadSettings.so` / `libbkdmn.so` / `libInfraInterchipDatatrans.so` |
+| c410 | 纯净 /usr + 纯净 kmod + **零售 initrd**(nflasha3) | 不崩，但只反复 `EXECVE /bin/ash`，bootin/im.elf 未被拉起 |
+
+**关键推断（这是本轮最重要的结论）**
+- 我们旧镜像里那 **110 个额外文件**（含 `libNVM.so` / `libSaveLoadSettings.so` / `libbkdmn.so` 等的 stub）
+  一直在**掩盖"缺库"失败**，让 im.elf 一路跑到 `kicks=11`；
+- 换成纯净 /usr 后，同样缺这些库，**im.elf 却在 `InfraOnDmdLdr`(按需加载器) 里段错误**；
+  而真机同样缺这些库却不崩 ⇒ **差异不在 /usr，而在我们环境的其它部分**（内核模块集 / /system(nflasha3) / /setting / initrd 版本）。
+- 现存环境是"混搭"：我们的内核 + 部分自制模块 + 纯净 /usr；**版本与模块集不自洽**。
+
+**下一步（下一步必须做的一致性重建）**
+把所有启动件统一到**同一份固件版本**上再谈 App：
+1. 内核 + initrd 取 `nflasha3/boot`（`vmlinux.bin` / `initrd.img`，v2.03）而不是我们改过的 zImage；
+2. `/kmod` 取同一版本的 `nflasha15/kmod`（不要混用我们的 `grm_gles.ko`）；
+3. `/system`(nflasha3) 与 `/setting`(nflasha2) 用 dump 原样；
+4. 之后再决定探针怎么注入（用 `/setting/mode/preload` 即可，无需替换 im.elf）。
