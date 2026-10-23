@@ -1359,3 +1359,18 @@ U _ZN17OBJAVBBCBASECLASS20DefaultSeqController10CanExecuteEjPN3MWF6ObjMsgE
   单靠调用某个导出函数不可行（实例与状态都在那层内部）。
 - 下阶段建议（更新到 NEXT_STEPS）：从 `libmpr.so` 的 `SeqController`/`DefaultSeqController`
   初始化路径入手，找它们在哪创建、依赖哪些服务/配置，再决定是补服务还是补状态。
+
+## ★★ c353/c354（2026-10-23 08:30）：打通"从 guest 抽取任意文件"的通道
+- 方法（可复用，非常重要的能力）：
+  1) 探针用 `/dev/mem` mmap **phys 0x21312000**（帧缓冲映射区偏移 16MB），
+     把目标文件按 64KB 分块读入该物理区，并打印字节数（`CLIB <path> bytes=N`）；
+  2) 宿主机用 **QMP `pmemsave`** 从 0x21312000 导出，再按 N 截断 ⇒ 得到原文件。
+- 实测：
+```
+/usr/lib/libmpr.so     → 13,021,036 字节，ELF 头正确 ✅
+/usr/lib/libMprSeq.so  → 7,548 字节（stub，只有 _init/_fini + 少量符号）
+```
+- 结论：`SeqController` 不在 libMprSeq（stub）也不在 libmpr（stripped 无该符号）；
+  下一步应抽取 **`/usr/lib/libDDS.so`** 与 **`/usr/lib/libmprctrl.so`**（体积较大，最可能承载 BBC/序列实现）。
+- 该通道的用途：**以后任何 guest 文件（库/配置/资源）都可以按需取出做静态分析**，
+  不必再受"分区挂不上"限制。
