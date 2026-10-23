@@ -2843,3 +2843,27 @@ trap=0，pVM=0
      可 interpose `uxengine_init` 前一步的导出调用，或在 `0x8A2A80`（"P wait" 日志函数）上想办法；
   2) 若线程体提前返回，查它在 `bl 0x6271D4`（uxengine_init 真身）里是否卡住/提前返回 ——
      那正好对应我们"人造引擎"可能没满足它的某个前置。
+
+## 新 goal 第 9/60 轮（2026-10-24 06:05）：锚点验证 —— `uxengine_init(0x6271D4)` 只有我们的探针在调；并发现 **guest 只有 1 个 CPU**
+- 用导出锚点验证线程体是否执行到 `0x8A23AA`：
+```
+interpose UXEngine::gfxeng()(0x610FEC) 与 GraphicsEngine::getAreaCheckExtensionManager()(0x612772)：
+  UXG tid=134 lr=0x064A9221     ← tid 134 = 我们探针自己（调 uxengine_init）
+  ACE tid=134 lr=0x064A9225
+  （没有任何来自 tid 186 的记录）
+```
+  ⇒ **`0x6271D4`（uxengine_init 真身）只被我们自己的探针调用过**；
+    Appframework 线程（tid 186）从未执行到线程体 `0x8A2398` 的第一个调用点
+  ⇒ **线程体确实没有真正跑起来**（这与"没有 pipe / 没有管理器分配 / pVM=0"完全一致）。
+- 同轮 c523 的 trap 是我们探针自身的问题（interposer 里 dlopen 递归导致 `0x627231` 崩），**不是 App 的崩溃**。
+- ★ 新线索：内核日志显示
+```
+Brought up 1 CPUs / SMP: Total of 1 processors activated
+```
+  而 `Application_System_Init` 末尾调用 `osal_set_cpu(thread, 15)` ⇒ **把线程绑到 CPU 15**
+  ⇒ 在 1 核（机器 max_cpus 甚至被限制为 1，`-smp 2` 直接报 "max CPUs supported is 1"）环境下，
+    这个亲和性设置必然无效。**"线程建了但没跑起来"很可能与此有关。**
+- 下一步（第 10/60 轮）：
+  1) 读 Appframework 线程的 `/proc/self/task/<tid>/stat` **utime 两次**，确认它是否在跑（utime 是否增长）；
+  2) 若 utime 恒为 0（从未被调度）⇒ 与 CPU 亲和性/osal 线程调度有关，需从 `osal_set_cpu`/osal 线程创建侧解决；
+  3) 若 utime 有增长 ⇒ 线程在跑但卡在某个我们没覆盖的地方，继续锚点二分。
