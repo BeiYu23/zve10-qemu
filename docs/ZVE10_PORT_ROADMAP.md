@@ -2507,3 +2507,23 @@ RCV self=0x09AE2D48 a1=0x0055011E msg=0x09AE2B34 lr=0x063B24A3  +4=0x058E0000  +
 · 下一步：hook osal_dynamic_id（注意上次加它会让 rm_init 卡住，需谨慎/改签名）或在
   ReceiveASync 内部读取 this+4 的换算逻辑（静态看 0x228D8 开头几行即可）
 ```
+
+## 新 goal 第 6 轮（2026-10-24 04:10）：按布局填 msg 返回 0 —— 仍无变化；并发现"这些调用不是我们那条线程"
+- 按对方给出的 `DataflowInfraMsg` 布局（+0x00 vptr / +0x04 msgType(2=全局) / +0x08 msgSize(u16) /
+  +0x0C srcId / +0x10 msgBuf=this+0x14 / +0x14 内嵌缓冲 ≤0x140）实现"合法应答"：
+```c
+*(u32*)(msg+0x04)=2; *(u16*)(msg+0x08)=24; *(u32*)(msg+0x0C)=0xB3; memset(msg+0x14,0,24); return 0;
+```
+  结果：
+```
+RCVA self=0x09CFBD48 qid=0x0055011E msg=0x09CFBB34 al=1 t=0x00000000 sz=0   ← 每次进入时都是"未初始化"
+（调用仍在重复；trap=0；pVM 仍 0；viewUnified2 0）
+```
+  ⇒ 两种可能：(a) 我们填的不是调用方真正使用的那份对象；(b) **这些调用并不来自我们那条被阻塞的线程**。
+- **关键观察**：本轮日志里 `RCVA` 出现在 **`APPCALL` 之前**（`APPCALL`/`WS made` 根本没出现），
+  说明这些 `ReceiveASync` 调用来自**其它 App 线程**（mwf/Infra 等），而不是我们调 `0x8A2EE0` 的那条。
+  ⇒ 之前"RCV 循环 = 我们的卡点"这个因果链需要重新验证。
+- 下一步：
+  1) 给 interpose 加 **线程门控**（只在我们进入 `0x8A2EE0` 之后生效，并记录调用线程 tid），
+     确认"卡住的那条线程"到底在调哪个原语；
+  2) 若确认它并不调 ReceiveASync，则回到 `osal_rcv_msg_tmo` 层面，用 tid 门控抓它自己的 qid 序列。
