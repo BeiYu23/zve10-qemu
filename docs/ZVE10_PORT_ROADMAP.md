@@ -1701,3 +1701,23 @@ kicks=0 gpew=0 无 CMDLINE、无 PV  ⇒ App 根本没被拉起
 - 结论：**bootin / dmode / LD_PRELOAD 这条路径已经完全排除**（两次独立验证 + A/B 对照）。
   下一步按与"救砖"对话的约定：hook `dlsym`（记录 `View*ToInstance` 请求与返回值）
   + 统计 `osal_valloc_msg_wait` 的 qid；并在之前先做一次便宜的 `IMDB_find_entry` 检查。
+
+## c405–c406（2026-10-23 20:10）：`target=` profile 也不改变行为（第三个被排除的变量）
+- c405：直接在 guest 里调 `IMDB_find_target_bit(name)`：
+```
+qemu=2   default=1   nfs=8   set=16   USBJ=-1   RE-SUB=-1
+```
+  ⇒ **qemu 返回 2 而不是 -1** ⇒ im.elf 不会走"静默降级"分支（对方担心的 `bit==-1 → 默认那套` 在 qemu 下不成立）。
+  注意：`f=0x9144` 说明该符号解析到 **im.elf 自身**（0x8000-0xd000 区间），不是 libIMDB 里的实现。
+- c406：A/B 把 `target=qemu` 换成 `target=default`（包壳替换 argv 后再 exec）：
+```
+MAPS libBizInitializer=0   libEMG=3   libAdjustUIProxy=0   libInfraMediaPwrMgr=0
+MAPS viewUnified2=3        libObj.so=3
+kicks=11  gpew=28  pVM≈1.41M  trap=0
+```
+  ⇒ **profile 切换确实生效**（qemu-only 的 `libAdjustUIProxy`/`libInfraMediaPwrMgr` 不再加载，
+  default-only 的 `libEMG` 加载进来了），**但 App 行为完全不变**（kicks/pVM/GPE 与 target=qemu 一致）。
+  `libBizInitializer` 仍未加载（enable=0x01 却没进，说明它还有额外加载条件）。
+- 三个变量已被排除：**bootin 启动方式 / dmode 档位 / target profile**。
+- 下一步（与对方约定的最后一项）：**dlsym hook**（记录 `View*ToInstance` 请求与返回值）
+  + 统计 `osal_valloc_msg_wait` 的 qid —— 回答"卡在建 view 前还是 UIPC 前"。
