@@ -1338,3 +1338,10 @@ kicks=11（不变） gpew=28（不变） pVM=1,380,080  trap=0
   都需要各自实例或全局访问器；当前我们未能拿到 SeqController 实例（也没有工厂导出）。
 - 若后续要继续：从 `OBJAVBBCBASECLASS` 的初始化路径里找 `SeqController` 的创建点（应随 view/model 初始化建立），
   拿到实例后调用 `CreateAndAddSequence` 提交一帧绘制请求，观察 GPE 命令是否出现。
+
+## c351（2026-10-23 08:30）：环境整理
+- 清理了 `tmp/` 下可重建的实验镜像（保留 `tmp/ab_tb_v225.img` 作基线母盘、`ab_v291.img`/`ab_v339.img`）：
+  磁盘占用 **89% → 66%**（释放约 45GB）。
+- 仍保留 `/mnt/build/ab_tb_v114..226.img`（100 个，133GB）——属队友实验产物，未删除；
+  如需进一步释放可自行清理（`ab_v291.img` 可随时由 `tmp/ab_tb_v225.img` + 探针重建）。
+- QEMU 无残留进程（pgrep=0）。
