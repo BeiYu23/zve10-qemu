@@ -1541,3 +1541,21 @@ PV i=52 pVM=0 ；kicks=0
   1) 只在 `i>=50`（App 初始化完成后）由探针显式打开开关，之前完全透传；
   2) 或者不改 BMP_Create，而只替换 `GRM_screenGetOnBitmap` + `gperm*`（这三个只在绘制期调用）。
 - 本轮未能取得 drawDirect 的结果；BBC 方向已证伪（相机控制层），UI 侧下一步是"极窄 GRM 替换 + 绘制期开关"。
+
+## ★ c378（2026-10-23 11:32）：窄化 shim 生效，drawDirect 崩点定位到 libObj+0x8A4534
+- 探针只在 i>=50 打开开关，仅替换 `GRM_screenGetOnBitmap / bitmapGetPhysicalAddress / GetRowPixelCount / gpermFillrect`：
+```
+SHIM on vdf=0x145A3000 fake=0x001B6F90
+DRW2 pvm=0x00156CD0            ← App 正常初始化（ViewManager 非空）
+DRW2 ov=1437168                ← openView(0x75) 返回非零
+DRW2 dd                        ← 进入 View::drawDirect()
+→ trap 0x0e, address=0x00000013, pc=0x06281534 (libObj+0x8A4534), lr 同址
+```
+- ⇒ **屏幕位图替身不足以让 drawDirect 工作**：它在更早的地方解引用了一个 `NULL+0x13` 的对象
+  （崩溃点落在 `ViewManager::getModelInfo` 附近的函数体内），说明 view/model 侧仍缺对象。
+- 结论/下一步（非常具体）：
+  1) 反汇编 `libObj+0x8A4500` 区间的函数（`ViewManager::getModelInfo` 邻近），看它取的是哪个成员
+     （很可能 `[view+?]` 或 `[modelInfo+0x13]`），据此构造对应的最小模型对象；
+  2) 再回到 drawDirect；
+  3) 屏幕位图替身（GRM_screenGetOnBitmap→VDF）本身已验证可用且不影响早期初始化——
+     这条经验可复用（关键是**只在初始化完成后开启**）。
