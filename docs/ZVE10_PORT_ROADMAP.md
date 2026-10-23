@@ -2728,3 +2728,29 @@ gfx=557752  wg=562976  res=0  pVM=0  viewUnified2 仍 7 次相关日志
 - 下一步：
   1) 稳定 `viewUnified2` 的映射（检查 mmap 返回 0 的原因：地址冲突/长度/权限）；
   2) 继续沿"崩点前移"的方式，把 App 线程推到 ViewManager 创建（pVM != 0）。
+
+## 新 goal 第 4/60 轮（2026-10-24 05:15）：App 线程已存活但**空闲在 futex**；InputService 未初始化
+- 55 秒周期采样（ab_v508）：
+```
+pvm=0  res=0  wg=0x87F38(人造)  gfx=0x86AD0(人造)  —— 全部不变
+期间 getLayer 被调用 2 次（id 固定 0x072DEAE0），都走了 createLayer fallback
+```
+- 线程状态与调用者（ab_v509）：
+```
+Appframework tid=185 wchan = futex_wait_queue_me（事件循环空闲）
+getLayer 的调用者 lr = 0x064957D9 ⇒ libObj+0x6137D9（就在 0x6137C0 那段 Widget/Layer 代码里）
+```
+- 事件注入尝试（ab_v510，按对方早前给的触摸注入思路）：
+```
+InputService::m_pMyInstance(libObj+0x1459548) = 0x00000000   ← ★ 输入服务根本没初始化
+⇒ 无法走 createEvent + pushFilterEvent 注入
+```
+- 结论：
+```
+App 侧现在处于"线程活着、事件循环空闲、但各子系统（ResourceManager / InputService / ViewManager）都没起来"的状态。
+它不是崩了，而是没有"继续初始化"的触发源。
+```
+- 下一步：
+  1) 系统盘点：一次性打印 App 侧各单例（ViewManager/ResourceManager/InputService/InfraInput/ViewIdSoTable…）的当前值，
+     找出"哪些是 0"，据此判断还缺哪一层；
+  2) 与对方确认 ASI 之后**正常的下一步是谁触发**（是否有"服务就绪"消息/定时期待处理）。
