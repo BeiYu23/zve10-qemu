@@ -1721,3 +1721,26 @@ kicks=11  gpew=28  pVM≈1.41M  trap=0
 - 三个变量已被排除：**bootin 启动方式 / dmode 档位 / target profile**。
 - 下一步（与对方约定的最后一项）：**dlsym hook**（记录 `View*ToInstance` 请求与返回值）
   + 统计 `osal_valloc_msg_wait` 的 qid —— 回答"卡在建 view 前还是 UIPC 前"。
+
+## c407（2026-10-23 20:20）：**view 工厂 0 次调用** —— 卡点在"请求 view"之前
+- 探针定义并拦截了 8 个 `View*ToInstance` 工厂（ViewRoot / ViewBaseMenu / ViewGlobalMenu /
+  ViewSettingMenu / ViewCaution / ViewSnapShotBoot / ViewRootUtility / ViewRootSelector），
+  命中即打印 `FAC <name>` 并按 `viewUnified2` 基址 + 偏移转发真实实现。
+- 实测一次完整 run：
+```
+FAC 计数 = 0        （没有任何一次 view 工厂请求）
+kicks=11  pVM≈1.41M  trap=0
+```
+- 与既有证据合并，停滞位置被夹在中间：
+```
+✅ 已发生：libObj 映射、viewUnified2 映射、global.xdb/lang_cmn/color_cmn/image_cmn_43 全部映射
+❌ 未发生：任何 view*.uxc 的 mmap；任何 View*ToInstance 的请求
+← 说明 App 在"资源就绪"与"选哪个 view"之间被卡住（不是工厂失败，是根本没走到请求）
+```
+- 结论：卡点应在**更早的初始化/等待**，而非 view 层本身；与 `/proc/osal/uipc` 里
+  `0x13A` 积压 609 条、`0x3E014D` 17,493 次重发相吻合。
+- 下一步两个方向：
+  1) **UIPC 等待分析**：hook `osal_valloc_msg_wait`/`osal_snd_sync_msg`，拿 qid + 调用者 LR，
+     定位"在等谁的回答"；
+  2) **真机基准**（对方 B2）：真机 UI 正常时 im.elf 的 maps + cmdline，看真机在同一时刻
+     是否已经 mmap 了某个 view*.uxc —— 用来确认我们缺的到底是"某条消息"还是"某个初始化调用"。
