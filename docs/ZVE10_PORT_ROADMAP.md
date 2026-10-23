@@ -1488,3 +1488,26 @@ CreateAndAddSequence(seq,0,0)  → **进入后阻塞**（打印 "calling CAS" �
   2) `InitEnv4PcModeling` 成功但不会自动建这些；
   3) 若要继续，需要在 libBizFw 里找 **AddSeqFactoryToCmdReceiver / AddCmdFactoryToSequenceManager**
      （ObjActiveBaseAvbbc 的两个 weak 导出）以及命令接收线程的创建点，把运行时补起来。
+
+## ★★★ c364–c374（2026-10-23 11:15）：**重要更正：BBC 不是 UI 层，是相机控制层**
+- 已实证（本轮新增）：
+```
+BIZ_Init / subapp_init / vssapp_init / DPro_App_UI_init  调用次数 = 0（c364 interpose）
+libBizInitializer.so 里这五个入口全是 ARM stub: `mov r0,#0 ; bx lr`
+DDSUserInit/InfraAvbbc_Init/grm_init/CapIdSync_Init     调用后无任何副作用
+ObjAvbbcCmn::InitEnv4PcModeling(0) 返回 0（成功），但仍不产生 BBC 对象
+手工构造 ObjActiveBaseAvbbc + GlobalAccessor + SeqController 全部成功（无崩溃）
+  → CreateAndAddSequence 进入后**阻塞**（无返回、无 trap）
+libObj 只导出 InfraAvbbc_Init/Res/Sus；viewUnified2.so（14.3MB，已抽取）**0** 个 Avbbc 符号
+```
+- **定性更正**：`libBizFw.so` 的导出是 `SdiCh / HdmiCh / TcubCh / DetectCh / Fsm …`
+  ⇒ **BBC 是相机音视频/基带控制**（Sdi/HDMI/Tcub/检测通道），`SeqController::CreateAndAddSequence`
+  是**相机操作序列**，**不是 UI 绘制入口**。此前"用 SeqController 让 App 落笔"的判断应作废。
+- 因此 UI 侧仍然回到原来的结论：App 的 uxengine/ViewManager 已建立，但**没有屏幕位图**
+  （`GRM_screenGetOnBitmap()=0`、`GRM_fbrmSetScreenPreference()=-9999`），
+  `View::drawDirect()` 因此崩溃；`BMP_Create` 因 grm_ma 分配失败返回 -9999。
+- 真正可尝试的下一步（UI 方向）：
+  1) 在 preload 里**完整替换 BMP_Create**（按真实 0x80 字节布局 + 52 字节数据块）返回自建位图，
+     并同时替换 `GRM_bitmapGetPhysicalAddress/GetRowPixelCount/gpermFillrect/gpermRectblit`，
+     让 uxengine 有一个"指向 VDF 的屏幕位图"可以画；
+  2) 再调 `View::drawDirect()`，若成功即出画面（GPE 执行器已就绪）。
