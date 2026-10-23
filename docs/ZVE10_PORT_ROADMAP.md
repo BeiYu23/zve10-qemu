@@ -1425,3 +1425,28 @@ if (r0 != 0) { 记录日志（getPrintLevel()>0 时）… }
      缺实例与上游 BBC/model 状态；
   4) 建立两项可复用能力：guest 任意文件抽取通道、GPE 执行器骨架（QEMU 内）。
 - 下一步入口：`docs/ZVE10_NEXT_STEPS.md`（第八/九节）。
+
+## ★★ c359–c362（2026-10-23 10:25，补 model 层第 1 步）：**应用阶段入口库是 stub**
+- c359（interpose 观察）：正常启动 120s 内
+```
+ObjActiveBaseAvbbc ctor 调用次数 = 0
+SeqController ctor 调用次数     = 0
+CreateAndAddSequence 调用次数   = 0
+```
+  ⇒ **BBC/序列层从未被初始化**（与"帧缓冲零变化"一致）。
+- c360：`ai(0)` + `openView(viewBaseMenu)` 后仍是 0/0/0 ⇒ ViewManager 路径不会创建 BBC 对象。
+- c361/c362：把 `/usr/lib/libBizInitializer.so` 抽取出来（7,772B），发现它的导出全是 **ARM stub**：
+```
+BIZ_Init                @0x740 : 00 00 a0 e3 1e ff 2f e1   = mov r0,#0 ; bx lr
+Application_System_Init @0x758 : 同上
+subapp_init             @0x760 : 同上
+vssapp_init             @0x770 : 同上
+DPro_App_UI_init        @0x780 : 同上
+```
+  ⇒ **IMDB 应用阶段（idx143–146）指向的四个入口，全都是"返回 0 的空实现"**。
+  这解释了为什么"应用阶段"跑起来也什么都不做——这个机型/镜像里它们是占位 stub。
+- 结论（重要）：
+  1) UI 真实入口只能是 **libObj 的 `Application_System_Init`**（我们已在调用，pVM/gfx/res/wg 均因此建立）；
+  2) BBC/序列层（libBizFw）需要另行初始化——它不是被 IMDB 阶段拉起的。
+- 下一步：查 libObj 里 `Application_System_Init` 创建的 **Appframework 线程**是否真的进入其主循环
+  （线程 wchan/PC 采样），以及它为什么没有产生 view 渲染。
