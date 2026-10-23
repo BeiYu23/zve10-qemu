@@ -1903,3 +1903,26 @@ kernel/module.c: load_module()
    `/dev/backup`（或 libbackup.so 实际使用的接口）从 RAM 里返回一份备份数据（可用真机 `Backup.bin` 1,235,836 B 作为内容）；
 2) 或者给原厂 `backup.ko` 打补丁，跳过它会阻塞 upm 的那段同步（需定位 backup_suspend / async_helper）。
 下一步先查清 **libbackup.so 到底怎么和内核通信**（ioctl 号 / 设备名 / 符号），再决定 1 还是 2。
+
+## ★★★ c422–c423（2026-10-23 22:50，新 goal 第 1 轮）：探针在纯净 /usr 上注入成功，35 模块、不崩
+- c422（长跑 330s 对照，检验"eMMC 慢导致卡住"假设）：
+```
+c421/c422（原厂 backup）: 22 模块后停死，330s 仍无进展；tuning 告警 374/390 次
+c418/c419/c420（stub backup）: 32 模块，im.elf 启动；tuning 告警 582–623 次
+```
+  ⇒ **tuning 次数与"卡不卡"无相关性**；卡死只在"原厂 backup"时出现 ⇒ **不是 eMMC 慢，是 backup 自身阻塞 upm 初始化**。
+- c423（把探针装回纯净 /usr 链）：用"替换 `/usr/bin/im.elf` 为 LD_PRELOAD 包壳 + 真身 im.elf.real"的方式注入：
+```
+probe=1        ← 探针成功加载（纯净 /usr 下第一次）
+modloads=35    ← 模块装载数从 32 → 35（比之前更多）
+trap=0         ← 无崩溃
+PV i=56 pVM=0  ← 但 ViewManager 仍是 0
+Y9 rm_init=1   ← ResourceManager 初始化返回 1（失败）
+Y9 i=0 gfx=0 res=0 wg=0 w0=1 w2=120   ← GraphicsEngine / ResourceManager / WidgetSystem 全为 0
+```
+  ⇒ 结论：**注入链路已打通、启动链已稳定到 im.elf 内部循环**，但 App 的管理器图没建起来
+  （`gfx=0 res=0 wg=0`），卡在更早的初始化（可能仍是 backup 服务缺失导致的连锁，或时间/顺序问题）。
+- 下一步（明确）：
+  1) 查 `rm_init=1` 的含义（ResourceManager::init 返回非 0）；
+  2) 在探针里把 backup 的 UIPC 端点（0x3E014D）**注册成应答方**，看是否能让管理器图建立（这是"最小 backup 服务"最省的做法，先纯用户态）；
+  3) 保持每次只改一个变量，继续用 `MODLOAD` 日志 + `Y9` 日志判定。
