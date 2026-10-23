@@ -1398,3 +1398,21 @@ DefaultSeqController::CanExecute/EnqueueMsg/DequeueMsg
 - **依赖关系明确**：要构造 SeqController，必须先有 `ObjActiveBaseAvbbc*`（BBC 活动对象）与 `GlobalAccessor*`，
   这正是"view/model 侧"从未建立的部分。
 - 产物：`/mnt/build/tmp/libBizFw.so`（下阶段可直接反汇编分析）。
+
+
+## c358（2026-10-23 08:45）：SeqController 构造/提交的静态分析
+- 构造 `SeqController(uint, ObjActiveBaseAvbbc*, GlobalAccessor*)`：
+```
+[this+0] = vtable(SeqController)   [this+4] = r1(uint)
+MWF::ObjLock 构造于 [this+8]
+[this+36] = ObjActiveBaseAvbbc*    [this+40] = GlobalAccessor*
+[this+44] = 0   [this+48] = 0        （若 GlobalAccessor 非空，还会调其 vtable 注册/回调）
+```
+- `CreateAndAddSequence(uint, MWF::ObjMsg*)`：
+```
+r3 = [this->vtable + 0x28] ; blx r3      ; → 是否可创建（返回 0 表示不可创建）
+if (r0 != 0) { 记录日志（getPrintLevel()>0 时）… }
+```
+⇒ 直接用空/伪造对象调用会在 **vtable+0x28 这一步** 失败或崩溃（与之前观察一致）。
+- 因此"最小可行路径"必须提供：**真实的 ObjActiveBaseAvbbc 实例**（随 view/BBC 建立）+ 合法 GlobalAccessor，
+  这确认了 `ZVE10_NEXT_STEPS.md` 第九节的判断：缺的是 model/BBC 层状态，而不是某个开关。
