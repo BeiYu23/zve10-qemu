@@ -1345,3 +1345,17 @@ kicks=11（不变） gpew=28（不变） pVM=1,380,080  trap=0
 - 仍保留 `/mnt/build/ab_tb_v114..226.img`（100 个，133GB）——属队友实验产物，未删除；
   如需进一步释放可自行清理（`ab_v291.img` 可随时由 `tmp/ab_tb_v225.img` + 探针重建）。
 - QEMU 无残留进程（pgrep=0）。
+
+## c352（2026-10-23 08:35）：SeqController 实现在 **libmpr.so**（不是 libObj）
+- 在 libObj 里 `SeqController::*` 全部是 **未定义导入（U）**：
+```
+U _ZN17OBJAVBBCBASECLASS13SeqController20CreateAndAddSequenceEjPN3MWF6ObjMsgE
+U ...GenerateSequence / DelayCreateSequence / OnSeqLifeCycleChanged
+U _ZN17OBJAVBBCBASECLASS20DefaultSeqController10CanExecuteEjPN3MWF6ObjMsgE
+```
+- 而这些符号来自 **`/usr/lib/libmpr.so`**（启动时 QMMAP 已见其被映射，约 21MB）。
+- ⇒ "提交绘制序列"的实现体在 libmpr，与 App 业务（BBC/DDS 模型）同层；
+  这进一步说明：**要让 App 落笔，需要 libmpr 层的模型/序列状态真正被初始化**，
+  单靠调用某个导出函数不可行（实例与状态都在那层内部）。
+- 下阶段建议（更新到 NEXT_STEPS）：从 `libmpr.so` 的 `SeqController`/`DefaultSeqController`
+  初始化路径入手，找它们在哪创建、依赖哪些服务/配置，再决定是补服务还是补状态。
