@@ -2999,3 +2999,23 @@ osal_wai_sem_tmo（任意 id）           → 0 条
 - 下一步（第 16/60 轮）：
   1) 记录 **tid 186 的 open/mmap**（尤其是否反复打开/映射 `*.uxc` 资源）——这最能说明"每轮在重试什么"；
   2) 若确实是反复 mmap 资源文件失败，则问题落回"资源加载/GRM 内存"这条线（与路线⑤衔接）。
+
+## 新 goal 第 16/60 轮（2026-10-24 07:00）：tid186 也不做**任何 open/openat**；PC 采样显示 CPU 大量时间在内核/空闲态
+- 过滤 tid 186 的 `open` / `openat`：**0 条**（同一次运行 c24 仍增长到 938）
+  ⇒ 这个循环**不涉及文件*。
+- 在循环窗口内（~12s 与 ~18s 各采样 20 次）统计 guest PC：
+```
+60149D3C ×19   6014F37C ×5   FFFF0018 ×4   602CF7A0 ×2   602CF680 ×2
+0402472C ×2    04024722 ×2   602CFE50 ×1   602CF5C0 ×1   042F517C ×1
+```
+  - `0x60xxxxxx` 段与 `0xFFFF0018` 都在内核/idle 相关区域 ⇒ **CPU 大部分时间不在用户态跑**
+  - 用户态样本落在 `0x0402xxxx / 0x042Fxxxx`（libc/libMWF 区间），没有落在 libObj/viewUnified2
+- 结合此前 `W7 app wchan = futex_wait_queue_me`：
+```
+⇒ Appframework 线程实际是【阻塞在 futex（pthread 条件变量/互斥量）】，
+  而且我们追踪的 sem/rcv/sleep/open 全部不命中 —— 说明它用的是 pthread 原语，
+  并且是"带超时等待"（约 40ms 醒一次），每轮分配一个 24 字节对象。
+```
+- 下一步（第 17/60 轮）：
+  1) interpose `pthread_cond_timedwait` / `pthread_mutex_lock`，记录 **tid 186 + 返回地址**；
+     返回地址会直接落在 viewUnified2/libObj 的那个重试循环里 ⇒ 一次拿到循环地址与"等的是哪个 condvar"。
