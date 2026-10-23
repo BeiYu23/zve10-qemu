@@ -2408,3 +2408,32 @@ trap=1  address=0x498  pc_off=libObj+0x618C78  lr_off=libObj+0x627518
 - 下一步（第 2 轮）：
   1) 给 `open/openat`、`osal_wai_sem_tmo`、`osal_rcv_msg_tmo` 加日志，定位 `0x610184` 卡在哪一步；
   2) 若是等信号量/消息，判断是谁该发（可能与显示服务就绪相关，回到 a7c2 的 shim 路线）。
+
+## 新 goal 第 2 轮（2026-10-24 03:25）：抓到应用装配函数内部真实的等待序列
+用"门控探针"（只在进入 `0x8A2EE0` 后记录 open / osal_wai_sem_tmo / osal_rcv_msg_tmo / osal_valloc_msg_wait）：
+```
+APPCALL 0x8A2EE0
+AVAL  q=0x008F013A          ← 为日志子系统申请消息
+AWAI  id=0x0083037A         ← 等信号量（就是 0x8A2F0E 那处）
+AWAIRET 0
+AVAL  q=0x008F013A
+ARCVRET -1022               ← 收消息超时（-1022 = ETIMEDOUT）
+AWAI  id=0x0037E019
+AWAIRET 0
+ARCV  q=0x0037807D          ← ★ 反复在等子系统的消息
+ARCVRET -1022
+…（该组合循环，永不返回）
+```
+⇒ **`0x8A2EE0` 卡在"反复向队列 `0x37807D`（子系统 0x37）收消息并超时"的循环上**，
+   信号量 `0x37E019` 只是配套的互斥/通知，不是阻塞源。
+⇒ 这与 a7c2 的结论一致：应用在**等某个服务就绪**（很可能是显示/合成相关子系统 0x37），
+   等不到就一直重试，自然不会走到 ViewManager 创建。
+- 本轮另做的对照：`open` 门控计数为 0 ⇒ **这一阶段不做任何文件 I/O**，纯粹是 IPC 等待；
+  `osal_wai_sem_tmo` 直接返回 0（c482）也不改变结果 ⇒ 不是信号量。
+- 尝试伪造 `0x37807D` 的应答（返回 0 + 零填充）：应用继续走了一步但 **崩在 address=0xFFFFFFFC**
+  ⇒ 说明它**解析应答内容**，零填充不是合法消息；需要真实消息格式。
+- 下一步（第 3 轮）：
+  1) 找子系统 `0x37` 是谁（对照 a7c2 的队列 ID 表：CONTROL/UPDATE/AP/GUI 等），
+     大概率是 OSD/GUI 服务队列；
+  2) 查真机 /proc/osal/uipc 中 0x37 子系统的队列与客户端（需要对方真机数据），
+  3) 若确认是 OSD/GUI 服务，就按 a7c2 契约在 shim 里**实现该队列的应答**（而非直接回 0）。
