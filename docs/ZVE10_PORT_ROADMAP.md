@@ -2527,3 +2527,27 @@ RCVA self=0x09CFBD48 qid=0x0055011E msg=0x09CFBB34 al=1 t=0x00000000 sz=0   ← 
   1) 给 interpose 加 **线程门控**（只在我们进入 `0x8A2EE0` 之后生效，并记录调用线程 tid），
      确认"卡住的那条线程"到底在调哪个原语；
   2) 若确认它并不调 ReceiveASync，则回到 `osal_rcv_msg_tmo` 层面，用 tid 门控抓它自己的 qid 序列。
+
+## 新 goal 第 7 轮（2026-10-24 04:10）：线程门控揭穿因果链 —— 我们的线程**不走 ReceiveASync**
+按对方"qid 就是 r1、无换算"的实证，给 interpose 加**线程门控**（只在我们调用 `0x8A2EE0` 的那条线程上生效）：
+```
+RCV OTHER tid=145 qid=0x0055011E msg=0x09CFBB34
+RCV OTHER tid=146 qid=0x0055011F msg=0x09EFBB34
+RCV OTHER tid=147 qid=0x00550120 msg=0x0A2FBB34
+RCV OTHER tid=150 qid=0x00550121 ...
+RCV OTHER tid=151 qid=0x00550122 ...
+RCV OTHER tid=152 qid=0x005502F2 ...
+RCV OTHER tid=155 qid=0x0055001F ...
+RCV OTHER tid=164 qid=0x009A015A ...
+APPCALL 0x8A2EE0      ← 我们的线程在这一切之后才进入
+```
+⇒ **三条硬结论**：
+```
+1) 所有 ReceiveASync 调用都来自【其它线程】，且 qid 是"子系统 0x55 + 每条线程递增的局部 id"
+   ⇒ 0x55 = 数据流框架的【每线程通道】，不是我们卡住的那条队列。
+2) 我们那条线程（调用 0x8A2EE0 的）从未调用 ReceiveASync。
+3) 因此第 4~6 轮"用 ReceiveASync 投消息"方向对本卡点无效（我之前的因果链错了，现予纠正）。
+```
+- 那么第 2 轮里 gated 探针看到的 `ARCV q=0x37807D` 是**我们的线程直接调 `osal_rcv_msg_tmo`**（不走 DataflowInfraReceiver）
+  ⇒ 下一步必须在 `osal_rcv_msg_tmo` 里加 **tid 门控 + 记录 timeout/返回/缓冲指针**，
+    弄清它在等哪条队列的什么消息（子系统 0x37，局部 0x807D —— 高位 0x8000 可能是"同步/全局"形态）。
