@@ -3019,3 +3019,19 @@ osal_wai_sem_tmo（任意 id）           → 0 条
 - 下一步（第 17/60 轮）：
   1) interpose `pthread_cond_timedwait` / `pthread_mutex_lock`，记录 **tid 186 + 返回地址**；
      返回地址会直接落在 viewUnified2/libObj 的那个重试循环里 ⇒ 一次拿到循环地址与"等的是哪个 condvar"。
+
+## 新 goal 第 17/60 轮（2026-10-24 07:05）：tid186 也不调 pthread condvar/mutex（连 PLT 层都没有）
+- interpose 并在 tid 186 上记录：
+```
+pthread_cond_timedwait / pthread_cond_wait / pthread_mutex_lock → 0 条
+```
+  而同一次运行 c24 仍增长到 938。
+- 累计排除（全部在 tid 186 上）：`sem`、`rcv_msg`、`nanosleep/usleep/clock_nanosleep`、
+  `open/openat`、`pthread_cond_*`、`pthread_mutex_lock` —— **全部 0 条**。
+- 这意味着：**节奏来源只剩"我们还没 hook 的调用"**，最可能是：
+```
+read / write / ioctl（尤其 /dev/dmpgles2、/dev/grm_ma 等设备节点）
+或 mmap/brk/clock_gettime/poll/select 一类
+```
+- 下一步（第 18/60 轮）：interpose `ioctl` / `read` / `write`，仍只在 tid 186 上记录
+  （这类调用若高频出现，就说明循环在"反复给某个设备发请求并被拒绝"）。
