@@ -2708,3 +2708,23 @@ gfx=557696 viewUnified2 7 次
   1) 在 `0x8647DC` 这个函数入口加 hook（导出吗？否则用 `getLayer` 返回对象的分发点判断）
      记录 r0/r1，确认到底是谁传了 vtbl[3]=0 的对象；
   2) 或者把 `WidgetSystem` 的 layer 表补全（getLayer 真正读的成员），让固件自己拿到合法 layer。
+
+## 新 goal 第 3/60 轮（2026-10-24 05:20）：`getLayer` + `createLayer` fallback —— **不再崩溃，线程继续跑到 i=39**
+按对方建议：`getLayer` 未命中时回退调用导出的 `WidgetSystem::createLayer`（`0x6171FC`，构造时自动注册进 +0x484 环形链表）。
+```
+ASICALL arg=0 / ASI returned
+GL2 self=0x00089720 id=0x072DEAE0 real=0x00000000   ×2（真实 getLayer 未命中 → 走 fallback）
+trap=0                     ← ★ 不再崩（此前 pc=0）
+Y9 循环推进到 i=39（此前只到 25）
+gfx=557752  wg=562976  res=0  pVM=0  viewUnified2 仍 7 次相关日志
+日志尾部：IMNANOSLEEP（线程在睡，未崩）
+```
+- 观察与注意：
+```
+· 本次 QMMAP viewUnified2 返回 ret=0（上一次是 0x0EC64000 成功）⇒ 时序不同，映射可能失败，
+  需要下一轮专门看 "viewUnified2 是否成功映射"（对光出画面很关键）。
+· res(RM)=0 与 pVM=0 仍未解决；但线程已能长时间存活（i=39）而不是立刻崩。
+```
+- 下一步：
+  1) 稳定 `viewUnified2` 的映射（检查 mmap 返回 0 的原因：地址冲突/长度/权限）；
+  2) 继续沿"崩点前移"的方式，把 App 线程推到 ViewManager 创建（pVM != 0）。
