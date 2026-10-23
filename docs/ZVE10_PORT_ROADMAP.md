@@ -1811,3 +1811,21 @@ ab_v412（udate→stub + fake_gles）     : trap=0  无崩溃，但停在模块�
   1) 给内核加简单的 `MODLOAD` 名字打印（或改用 initrd 的 insmod 脚本显式逐条加载并打日志）；
   2) 按 T1→T2 顺序，只加载必需模块，逐个排除；
   3) `grm_gles` 用 fake_gles 已证明可行（对方：真机 UI 不需要真实 GPU 命令流）。
+
+## c413（2026-10-23 21:18）：eMMC 是 SDR 而非 HS200（对方真机 klog 对照证实）；初始化脚本不可插桩
+- 真机 vs 我们（klog 对照）：
+```
+真机：eMMC: HS200 mode ×4（0.065s 就辨识出 nflasha/nflashaB0/nflashaB1）
+我方：eMMC: SDR mode；AL_EMMC_SEQ ... Software Tuning is forbiden for non-HS200（反复）
+      + BKOPS/HPI/Sanitize not supported + OCR/EXT_CSD discrepancy
+```
+⇒ 我们的 QEMU eMMC 模型是 **SDR 卡**，驱动退化为"软件 tuning"而软件 tuning 对 non-HS200 被禁止 → 反复重试，
+   极可能拖死后续 insmod/挂载（与 "停在模块装载阶段" 吻合）。
+- 想在 guest 里做 `dd` 计时验证（对方建议 #1），但 **探针根本没加载**（App 没起来）→ 无法从 App 侧测。
+- 重要发现：**我们的 initrd (`handoff_p0/initrd_q4.img`) 与零售 `nflasha3/INITRD.IMG` 是同一份**（同为 2,183,168 B，
+  内部 `/sbin/init` 就是那个 28,580 B 的二进制），**且 initrd 里没有 `/bin`、没有任何 shell**。
+  ⇒ 想插桩 init（逐模块打日志 / 早期 dd 计时），必须先把 busybox 塞进 initrd 并用自己的 init 脚本替换。
+- 下一步（两条并行）：
+  1) **给 QEMU eMMC 模型补 HS200**（或让驱动认为支持），目标：klog 出现 `eMMC: HS200 mode`、tuning 告警消失；
+     这是"能不能继续往下走"的前置条件；
+  2) 同时准备**可插桩 initrd**：塞 busybox + 自定义 init（挂载/逐条 insmod + 日志 + 早期 dd 计时）。
