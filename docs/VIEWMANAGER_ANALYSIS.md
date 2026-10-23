@@ -466,3 +466,88 @@ blx  r3                   ; 非 NULL 才调用
 配套观察：若线程空闲在 `osal_rcv_msg`，那么问题变成
 **"谁应该给 Appframework 发 '创建视图' 的消息"** —— 这与
 `createRequestModelExecuteEvent(1, …)` 的消费者未定位是同一件事。
+
+---
+
+# 补充（第七轮）：**pViewManager 的写入点找到了** —— ViewManager 构造函数
+
+## 一、★ 写入点
+
+```asm
+8a4f5a: ldr  r3, [pc, #40]      ; 字面量 0x4B8C = pViewManager 的 GOT 槽偏移
+8a4f5e: ldr.w r3, [r9, r3]      ; r3 = &pViewManager
+8a4f62: str  r5, [r3, #0]       ; ★ *pViewManager = this
+```
+
+⇒ **`pViewManager` 确实有写入点**（前面"从未被写过"的判断需要修正：
+不是没有写入，而是**那个写入者从未被调用**）。
+
+## 二、写入者 = **ViewManager 构造函数 @ `0x8A4E28`**
+
+定位方法：在该区域扫描 `stmdb sp!, {…}` 函数序言，得到唯一的候选：
+
+```asm
+8a4e28: e92d 4ff0   stmdb sp!, {r4-r11, lr}   ; 大函数序言
+8a4e2c: b083        sub  sp, #12
+8a4e2e: af00        add  r7, sp, #0
+8a4e30: 4605        mov  r5, r0                 ; r5 = this
+        … 多次 blx（取 vtable 槽）+ 逐成员初始化 …
+8a4e60: strb.w r3, [r5, #0x28]
+8a4e6e: str.w  r0, [r5, #4]
+8a4e78: str    r0, [r5, #8]
+8a4e82: str    r0, [r5, #12]
+8a4e86: str.w  fp, [r5, #16]
+8a4e8a: str    r3, [r5, #24]
+8a4e8e: str.w  r8, [r5, #20]
+8a4e92: str    r4, [r5, #28]
+8a4e9a: str    r0, [r5, #0x64]
+8a4ea2: str    r0, [r5, #0x60]
+        …
+8a4f62: str    r5, [&pViewManager]          ; ★ 最后把 this 写进全局
+```
+
+**已推断的成员布局（ViewManager）**：
+
+| 偏移 | 类型 |
+|---|---|
+| `+0x04` `+0x08` `+0x0C` | 指针（各由一次 blx 工厂调用返回） |
+| `+0x10` `+0x14` `+0x18` `+0x1C` | 指针；`+0x14` 指向带 vtable 的对象（析构里 `ldr r0,[r4,#20]; ldr r3,[r0]; ldr r3,[r3,#0x58]; blx`） |
+| `+0x28` | 字节 |
+| `+0x60` `+0x64` `+0x68` | 指针（`+0x68` 由析构 `0x8A4D86` 读取） |
+| 对象大小 | ≥ `0x6C`，建议按 `0x400` 分配 |
+
+**析构函数 = `0x8A4D86`**（遍历并 free 各成员），与构造函数成对。
+
+## 三、★ 给 QEMU 的直接做法（比盲填更干净）
+
+```c
+void *vm = calloc(1, 0x400);
+((void (*)(void *))((char *)libObj_base + 0x8A4E28))(vm);   // 调 ViewManager 构造
+// 副作用：pViewManager (libObj+0x149221C) 自动被写成 vm
+```
+
+⇒ 不需要手工 `*(void**)pVM = xxx`，**构造函数自己会写**，而且顺带把各成员初始化好。
+
+然后再调 `viewManagerIf::openView(...)`（`0x14117D` / `0x140FB9`）看能否继续。
+
+## 四、Appframework 线程体的真实结构（重要）
+
+`libObj+0x8A2398` 全文只有 40 余字节的有效逻辑：
+
+```
+8a239e: bl 0x6271D4            ; uxengine_init
+8a23aa: bl 0x8A2EE0            ; 构造消息对象
+8a23d4: bl 0x8A2314            ; createRequestModelExecuteEvent(1, buf)
+8a23d8: bl 0x8A3104            ; ★ 进入大函数（0x174 栈帧 + 循环）= 主循环
+8a23de: bl 0x8A306C            ; 清理消息对象
+8a23e4: 返回
+```
+
+⇒ **线程体不是"初始化一下就退出"，而是 init → 发一次请求 → 进主循环**。
+主循环在 `0x8A3104`（栈帧 0x174，含 `Backup_nread`/`timeGetNow` 等调用与回跳）。
+
+⇒ 所以 `Appframework 线程 tid=185 futex_wait_queue_me` **很可能就是主循环在等消息，属于正常空闲**。
+
+判别方法仍是：抓**用户态栈**看是否停在主循环的取消息处。
+若确实是空闲，那么"管理图为空"的原因就是 **没人往它的队列投递"创建视图"的消息**，
+与 `createRequestModelExecuteEvent(1, …)` 的消费者缺失是同一件事。
