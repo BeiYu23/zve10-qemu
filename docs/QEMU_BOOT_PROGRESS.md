@@ -20113,3 +20113,46 @@ App 只提交 1 条 opcode=4 的配置命令，之后不再产生任何绘制命
 - 产物：`artifacts/c321/gpe_fill_red.png`、`artifacts/libObj_rm_reg.dis`
 - 镜像：`ab_v291.img`（基线）、`ab_v329–335.img`（实验）
 - 工具：`/mnt/build/run_cap.sh`、`~/fw/fake_gles/fake_gles.c`（含 GLESPC/K3/BUF dump）
+
+---
+
+## 三百三十三、Round 392+（2026-10-23 收尾）：ZV-E10 QEMU UI —— 最终交接状态
+
+### 1. 已完成（可复现、有产物）
+- **显示后端全通**：App 的 GPE 帧描述符（源 `0x080C4880` / 目标 `0x08AEC800` / 640×480 / 使能）
+  → QEMU `zz_gpe_write` 内的执行器合成 → `streamfb` 呈现 → 屏幕出现对应内容（`artifacts/c345/gpe_copy.png`）。
+- **GPE 协议解出**：寄存器块 phys `0x50000000`；`reg[0x1804]=命令块 phys`、`reg[0x1800]=opcode`；
+  命令块 8 word、magic `0x12345678`；帧描述符寄存器 `0x0C00…0x0C18`。
+- **工具链齐备**：QEMU 可改可编（有备份）、`fake_gles` 内核模块可重编、`run_cap.sh` 抓 QEMU stderr、
+  **guest 任意文件抽取通道**（探针写 phys `0x21312000` + QMP `pmemsave`）。
+- **关键库已定位/抽取**：`libmpr.so`(13MB)、`libMprSeq.so`/`libDDS.so`(stub)、**`libBizFw.so`(318KB)**。
+
+### 2. 未完成（唯一阻塞，已量化）
+- App **不产生任何绘制**：源/目标帧缓冲在 12 秒内校验和完全一致（直接测量）。
+- 根因链：
+```
+libObj(UI框架) → libBizFw.so 的 SeqController（BBC/序列层） → GPE → 屏幕
+        ↑ 我们只打通了最右端
+SeqController 构造签名: (uint, ObjActiveBaseAvbbc*, GlobalAccessor*)
+   ⇒ 缺 **ObjActiveBaseAvbbc 实例 + 合法 GlobalAccessor**（随 view/BBC 初始化建立）
+   ⇒ CreateAndAddSequence 第一步就查 vtable+0x28 门控，无实例必失败/崩
+```
+
+### 3. 下一阶段入口（详见 docs/ZVE10_NEXT_STEPS.md）
+1. 在 `libBizFw.so`（已抽取）里反汇编 `ObjActiveBaseAvbbc` 的创建路径，弄清它依赖的服务/配置；
+2. 建立最小 BBC/view 状态使其可构造，然后调用 `SeqController::CreateAndAddSequence`；
+3. App 一旦往 `0x080C4880` 落笔，现有 GPE 执行器自动合成上屏（**无需再改 QEMU**）；
+4. 最后补输入（menu raw `0x1AB`、/dev/dmpgles2 注入路径）。
+
+### 4. 资产索引
+```
+docs/ZVE10_NEXT_STEPS.md        接手指南（含 libBizFw / ObjActiveBaseAvbbc 依赖）
+docs/ZVE10_QEMU_UI_HANDOFF.md   总交接（协议数值 / 工具 / 现状）
+docs/ZVE10_PORT_ROADMAP.md      逐轮记录 c190→c358
+artifacts/c321/gpe_fill_red.png 执行器填充实证
+artifacts/c345/gpe_copy.png     帧合成实证
+artifacts/libObj_rm_reg.dis     GPE 接口反汇编
+/mnt/build/tmp/{libBizFw,libmpr,libMprSeq,libDDS}.so   抽取的库
+/mnt/build/tmp/cx/              cramfs 解包（mf / ud_im.elf / 官方脚本）
+镜像 ab_v291.img（基线）、ab_v339.img（含 mf）
+```
