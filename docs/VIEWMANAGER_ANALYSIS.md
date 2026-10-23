@@ -332,3 +332,68 @@ void *p = calloc(1, 0x400);
 > 但注意：第 1 项的穷尽搜索已证明"写变量"的代码不存在于 libObj，
 > 所以若真有宿主，它也只能通过 **`sys_getInstance()` 之外的另一个导出接口** 来完成，
 > 而那样的接口在 `dynsym` 里并不存在（GraphicsEngine 只有 6 个导出，无创建类）。
+
+---
+
+# 补充（第五轮）：`GraphicsEngine` 对象布局（供 QEMU 手工构造）
+
+> 方法：反汇编该类全部导出方法，getter/setter 读写的偏移即成员偏移。
+> 全部地址基于 `libObj.so`（md5 `12cf982d…`）。
+
+## 一、已确定的成员布局
+
+| 偏移 | 宽度 | 类型/用途 | 证据 |
+|---|---:|---|---|
+| `+0x3C` | ≥0x28 | **内嵌容器**（资源列表） | `updateResource`: `r5 = inst; adds r5, #0x3c` 后传给 `0x61289C` |
+| `+0x60` | 4 | 该容器内字段，**NULL 会打错误日志但继续** | `0x61289C`: `ldr r3,[r0,#0x24]`（r0=inst+0x3c）；为 0 → `Log::write(0x40000000, …)` 后仍往下走 |
+| `+0x220` | 4 | **指针** → 字体/布局度量结构（≥0x40 字节） | 三个访问器分别返回 `P`、`P+0x20`、`P+0x40`（`P = *(inst+0x220)`） |
+| `+0x234` | 4 | **指针** → `AreaCheckExtensionManager` | `getAreaCheckExtensionManager()` = `ldr.w r0,[r0,#564]`；`updateResource` 里 `free` 后置 0 |
+| `+0x239` | 1 | `setOverflowResizeFontAttribute` 第 1 参 | `strb.w r1,[r0,#569]` |
+| `+0x23A` | 1 | 同上第 2 参 | `strb.w r2,[r0,#570]` |
+| `+0x23B` | 1 | 标志 = 1 | `strb.w r3(=1),[r0,#571]` |
+| `+0x23C` | 1 | `setOverflowResizeLayoutAttribute` 参数 | `strb.w r1,[r0,#572]` |
+| `+0x23D` | 1 | 标志 = 1 | `strb.w r3(=1),[r0,#573]` |
+
+⇒ **对象大小 ≥ `0x23E`，按 4 对齐取 `0x240`。**
+
+**注意**：`getFramebufferWidth/Height()` 并**不读** GraphicsEngine 的成员 ——
+它们是尾调用（`0x63D2D8` / `0x63D2F0`），走**另一个对象的 vtable**
+（`*(inst)` → `+0x5c` → `blx` → 取 `*(u16*)(r0+0)` / `(r0+2)`）。
+⇒ 这也再次印证 GraphicsEngine **本身没有 vtable**（类内无虚函数）。
+
+## 二、手工构造的最小可用方案
+
+```c
+void *inst = calloc(1, 0x240);          // 全零
+// 1) +0x234 留 NULL ⇒ getAreaCheckExtensionManager() 返回 NULL
+//    ⇒ uxengine_init 会跳过 setCheckDataPath/setLogPath（那里本来就有 NULL 判断）
+// 2) +0x220 留 NULL ⇒ 三个度量访问器返回 NULL / +0x20 / +0x40
+//    （若后续解引用它而崩，再换成 malloc(0x60) 的零块）
+// 3) +0x60 留 NULL ⇒ 只会打一条错误日志，不中断
+*(void **)((char *)libObj_base + 0x145CAB8) = inst;
+
+// 然后调用 uxengine_init 的真身
+((void (*)(void))((char *)libObj_base + 0x6271D4))();
+```
+
+**预期顺序**：`resmgr::getImageSize` → `grm_res` → `registerFontFaceFile`
+→ `UXEngine::gfxeng()`（这次返回非 NULL）→ `getAreaCheckExtensionManager()`
+（返回 NULL，跳过 area_check 两行）→ 三次 selector(5/11/12) 查询。
+
+## 三、观察点（判断是否推进了）
+
+| 现象 | 含义 |
+|---|---|
+| 不再 trap `0x0e` | 引擎已存在，`uxengine_init` 真身开始执行 |
+| 日志出现 `setCheckDataPath` 之后的 selector | 已过 area_check 分支 |
+| `pViewManager`（`libObj+0x0149221C`）变化 | 链路继续到 ViewManager 构造 |
+| 新增 `TextLayout failed` / `Log::write(0x40000000,…)` | 走到 `+0x60` 的判空逻辑（预期路径） |
+
+## 四、一条需要提前知道的限制
+
+即使引擎手工建成、`uxengine_init` 真身跑通，**ViewManager 的创建仍在别处**
+（`Application_System_Init` 只发请求 + 起线程；线程体里 `createRequestModelExecuteEvent(1, …)`
+发出的是"请求某个 model 执行"，其消费者仍未定位）。
+
+⇒ 手工引导能**验证引擎链**，但**不保证直接出现 UI**。这一步的价值是：
+把"引擎初始化能不能跑"这个问题单独隔离出来验证，而不是继续被"创建点不存在"堵死。
