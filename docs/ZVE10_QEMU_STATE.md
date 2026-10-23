@@ -109,3 +109,41 @@ App 框架从不自行初始化；我们调 Application_System_Init 只起线程
 ### 8.4 下一步
 1. 找 GraphicsEngine 单例的真正创建者（.init_array 或更早的 ux::core 初始化），确认它依赖什么；
 2. 必要时"手工构造引擎并写入单例槽"（类似早期对 BBC 对象的做法）。
+
+## 九、2026-10-24 02:15 现状（第 6–14 轮总结）
+
+### 9.1 已达成的（可复现）
+```
+① 启动链稳定：纯净真机 /usr + 零售 initrd + 3.0.27_nl-rt106+ 内核 + 最小 stub
+   → 35 个模块装载、无内核 oops、可稳定运行 330s
+   stub 清单：udate/upm 保留原厂；accel/mag/compass/backup/grm_ma 用 stub；grm_gles=fake_gles
+   backup stub 必须导出原始 145 个符号并接受模块参数（否则 osal_ulogio 等装载失败）
+② 探针可注入纯净 /usr（把 /usr/bin/im.elf 换成 LD_PRELOAD 包壳 + 真身 im.elf.real）
+③ 可观测：dlopen 序列、osal_valloc_msg_wait、/proc/osal/uipc、线程表、GPE/VDF
+④ GraphicsEngine 人造成功：calloc(0x400) 写 libObj+0x145CAB8，再填 +0x220/+0x234
+   与 libObj+0x145CBC4（可选回调表，零块=全部跳过），然后调 uxengine_init(0x6271D4)
+   → 跑通、不崩、gfx 非 0
+```
+
+### 9.2 卡点（UI 出不来）
+```
+ViewManager 构造(libObj+0x8A4E28) 需要 (this, a, b, c, 配置对象*) 共 5+ 参数，
+其中配置对象带 vtable（vtable[+8] 是工厂）。零对象调用会崩在 libObj+0x8A4E42。
+调用者 = libObj+0x8A2FA6（一个应用引导函数：先 new EventManager/ModelManager 等，再构造 ViewManager）。
+⇒ 要出 UI，等于重建"应用引导函数 + 其依赖的带 vtable 配置对象"这一层。
+```
+
+### 9.3 关键地址表（新增）
+```
+ViewManager 构造       libObj + 0x8A4E28   （5+ 参数，需要带 vtable 的配置对象）
+ViewManager 构造调用者  libObj + 0x8A2FA6   （应用引导函数内部）
+主循环                 libObj + 0x8A3104   （线程体 0x8A2398 末尾进入）
+可选回调表全局         libObj + 0x145CBC4
+GraphicsEngine 单例    libObj + 0x145CAB8
+pViewManager           libObj + 0x149221C
+```
+
+### 9.4 下一步两个选择
+- A：继续逆"应用引导函数(0x8A2FA6 所在)"，把它依赖的 EventManager/ModelManager/配置对象逐一造出来
+      —— 路径明确但工作量相当于重写 App 的一层初始化；
+- B：把目标收窄为"底座 + 引擎层在 QEMU 跑通"（已达成），UI 部分等有应用库/真机界面时再做。
