@@ -551,3 +551,103 @@ void *vm = calloc(1, 0x400);
 判别方法仍是：抓**用户态栈**看是否停在主循环的取消息处。
 若确实是空闲，那么"管理图为空"的原因就是 **没人往它的队列投递"创建视图"的消息**，
 与 `createRequestModelExecuteEvent(1, …)` 的消费者缺失是同一件事。
+
+---
+
+# 补充（第八轮）：**整个 App 对象图的装配函数找到了 = `0x8A2EE0`**
+
+> QEMU 侧反馈"ViewManager 构造不是单参数、要一个带 vtable 的配置对象"。
+> 顺着"找构造函数的调用者"往下走，得到比"造桩"更直接的路。
+
+## 一、构造函数的**唯一**调用点
+
+用 Thumb `BL` 解码扫全 `.text`：调用 `0x8A4E28` 的只有 **1 处** —— `0x8A2FA6`，
+位于函数 **`0x8A2EE0`** 内。
+
+而 **`0x8A2EE0` 正是线程体在 `uxengine_init` 之后调用的那个函数**：
+
+```
+8a239e: bl 0x6271D4     ; uxengine_init
+8a23aa: bl 0x8A2EE0     ; ★ 装配整个 App 对象图（含 ViewManager）
+8a23d4: bl 0x8A2314     ; createRequestModelExecuteEvent(1, buf)
+8a23d8: bl 0x8A3104     ; 主循环
+```
+
+⇒ **ViewManager 的创建本来就在线程体里**。既然 QEMU 侧看到 `pVM==0`，
+说明线程**根本没走到 `0x8A2FA6`**。
+
+## 二、`0x8A2EE0` 的装配顺序（完整对象图）
+
+```asm
+8a2efa: bl 0x8A2E70                 ; 名字 strncpy 到 app+0x2C（≤20 字符）
+8a2efc: str r0,[app,#0x14]          ; ★ 配置对象 = [app+0x14]
+8a2f0e: blx osal_wai_sem_tmo        ; ★★ 信号量等待（可能就是那个 futex！）
+8a2f26: blx pipe                    ; 建管道 + fcntl(O_NONBLOCK)
+8a2f4a: new(0x28) … → [app+0x10]
+8a2f6c: new(?)    → [app+0x0C]
+8a2f72: new(0x58) → [app+0x08]
+8a2f82: new(0xAC) → [app+0x04]
+8a2f94: new(0x70) → [app+0x00]  ← ★ ViewManager（大小 = 0x70 ✓ 与我推断的 ≥0x6C 吻合）
+8a2fa0: str r3,[sp,#0]              ; ViewManager 第 5 参 = [app+0x14]（配置对象）
+8a2fa6: bl 0x8A4E28                 ; ViewManager::ctor
+8a2fac: str r5,[app,#0]             ; 保存 ViewManager*
+```
+
+## 三、ViewManager 构造签名（据此确定）
+
+```
+ctor(this,  r1=[app+0x10],  r2=[app+8],  r3=[app+4],  arg5=[app+0x14])
+                  │             │           │              └─ 配置/工厂对象（带 vtable）
+                  │             │           └─ 0xAC 的 manager
+                  │             └─ 0x58 的 manager
+                  └─ 0x28 的对象
+```
+
+**配置对象的 vtable 槽**（构造里被调用）：`+8`、`+0x10`、`+0x14`、`+0x18`、`+0x44`、`+0x48`
+（`+8` 返回工厂对象；其余槽用来填充 ViewManager 的 `+0/+4/+8/+0xC` 等成员）。
+
+## 四、App 对象成员布局
+
+| 偏移 | 内容 |
+|---|---|
+| `+0x00` | **ViewManager\***（`new(0x70)`） |
+| `+0x04` | manager（`new(0xAC)`） |
+| `+0x08` | manager（`new(0x58)`） |
+| `+0x0C` | manager（size 未定） |
+| `+0x10` | 对象（`new(0x28)` 级别），作为 ViewManager 的 r1 |
+| `+0x14` | **配置/工厂对象**，作为 ViewManager 的 arg5 |
+| `+0x18` | 由 ViewManager 构造写入（= 原 r3 参数） |
+| `+0x24` `+0x28` | int（0 与 0x7FFFFFFF） |
+| `+0x2C..+0x3F` | 名字字符串（`strncpy` ≤20） |
+
+## 五、因此推荐的下一步（比"造桩"简单得多）
+
+**不要手工造配置对象桩，直接调 `0x8A2EE0`** —— 它按正确顺序把整张图建起来：
+
+```c
+void *app = calloc(1, 0x400);
+((void (*)(void *, const char *))((char *)libObj_base + 0x8A2EE0))(app, name);
+// 副作用：app+0x14 配置对象、app+0/4/8/C 四个管理器、
+//         以及 pViewManager 全部就位
+```
+
+**但它内部有 `osal_wai_sem_tmo`** —— 如果它阻塞，那个信号量极可能就是 QEMU 侧
+观测到的 `futex`（`libObj+0x145DF44` 附近）。这样一来因果链就闭合了：
+
+```
+线程体 → 0x8A2EE0 → 等信号量（阻塞）
+        ⇒ 走不到 0x8A2FA6 ⇒ ViewManager 不创建 ⇒ pVM == 0
+```
+
+**验证方法**：让线程 185 的 PC 落在 `0x8A2EE0..0x8A2F10` 之间，就证明是这个信号量。
+然后找谁 `post` 它（该信号量由 `0x8A2F0E` 处的字面量指定）——那才是真正缺的组件。
+
+## 六、给决策的建议
+
+| 选项 | 评价 |
+|---|---|
+| 1（造配置桩） | **不建议** —— 配置对象 vtable 有 6+ 槽，每个返回又是另一种对象，级联无界 |
+| **1'（调 `0x8A2EE0`）** | **建议先试** —— 一次调用就能验证"是不是卡在信号量"，成本极低，信息量最大 |
+| 3（降级固化） | 若 1' 证明卡在信号量且无人 post，就走这条 |
+
+⇒ **先做 1'，一次实验就能定性**；不管结果如何都不会比现在更差。
