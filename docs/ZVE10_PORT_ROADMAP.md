@@ -1653,3 +1653,33 @@ c392: 保留我们的 LD_PRELOAD 包壳 + 真机 im.elf 二进制：
      App 要读的配置（语言/设置/CautionConfig）可能在那个 vfat 分区里；
   2) 用真机 `up.sh` 作为启动脚本（而不是我们的 bootin 包壳），把 /setting 挂载补齐；
   3) 再观察 kicks/GPE 是否出现绘制命令。
+
+## ★★ 与"救砖"对话联调（2026-10-23 19:40）：定位到"缺对端服务"而非缺参数
+- 对方（有真机）结论：C2 参数表不存在（运行时是数字 ID；`PRM_*` 字符串 596/599 只出现在日志格式串）；
+  C4 视图机制 = `global.xdb` 给出资源名 → 派生 `ViewXxxToInstance` → **dlsym** 解析调用（无静态表）；
+  `BACKUP.BIN.fixed` 是伪造（11B 全落在零区），真机原件是 `BACKUP.BIN.real`。
+- 我方（QEMU）本轮实测：
+  1) App 已加载的 UI 脉络（`/proc/self/maps`）：
+     `global.xdb`(12KB) → `lang_cmn.uxc`(4KB) → `color_cmn.uxc`(4KB) → `viewUnified2.so`(15MB) → `image_cmn_43.uxc`(24MB)
+     **但没有任何 `view*.uxc` 被映射** ⇒ view 实例从未创建（与对方 dlsym 假设一致，卡在更早处）。
+  2) `/proc/osal/uipc` 全文（19,689 B）导出成功：
+     ```
+     Global: msgqs 430, sems 99, msgs 627, cbs 222
+     Process 134 (im.elf): msgqs 25, msgs 0      ← 本地队列全空
+     Process 128 / 114: msgqs 0
+     GMSGQ 积压: 0x13A=609, 0x20=8, 0x139=3, 0xF9=2, 0x48=1
+     ```
+     ⇒ **整个 OSAL 世界只有 3 个进程**；发给外部子系统的消息堆在全局队列无人取。
+  3) UIPC 风暴：`0x3E014D` 17,493 次、`0x8F013A` 1,350 次（`0x8F`=子系统，`0x013A`=本地队列 = 上面积压 609 的那个）。
+- **根因判断（比"缺参数"更具体）**：QEMU 的自定义启动链只起了 `im.elf`(+`sen.elf`)，
+  真机 init 会拉起 `launch_shell.elf` / `net_cmdd.elf` / `sen.elf` / `bootin.elf` 等一整套服务；
+  缺了这些对端，App 的 UIPC 请求无人回应 → 重试 → 永远走不到创建 view。
+- 已找到**零售 initrd**：`nflasha3:/initrd.img`（2,183,168 B, ext2），其 `/sbin/init` 字符串含
+  `<<insmod start>> /usr/bin/launch_shell.elf <<init start>> /rootfs /usr/bin/bootin.elf /usr/bin/sen.elf /usr/bin/net_cmdd.elf /bin/ash --login`。
+  用 `-initrd initrd_n3.img` 启动成功（init→bootin/net_cmdd/launch_shell），但 init 会 exit(1) 反复重启，
+  我们的 bootin 包壳未把 im.elf 拉起来（probe=0）。
+- 下一步：
+  1) 修 `bootin.elf` 包壳（直接 exec `/usr/bin/im.elf`，不再依赖缺失的 bootin.real），
+     并确保 `net_cmdd.elf`/`launch_shell.elf`/`sen.elf` 存活，作为 UIPC 对端；
+  2) 复测 `/proc/osal/uipc` 的进程数与 0x13A/0x3E 积压是否消失；
+  3) 基线改用 `BACKUP.BIN.real` 作为 ground truth（`.fixed` 标注为伪造）。
