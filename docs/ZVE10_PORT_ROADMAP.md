@@ -3092,3 +3092,26 @@ IO186 fd=3 req=0x8000000B r=0   a0=0x003E014D a1=0x046ECF6C a2=0x003E014D a3=0x1
   1) 扩展 `backup_stub3.ko`：init 里调用 `osal_reg_msg_queue_cb(0x3E014D, cb)`，
      cb 里打印收到的消息头（qid/长度/前 32 字节）并**回一条最小应答**；
   2) 若注册失败（-1024 等），改用 `osal_reg_sync_msg_queue_cb` 或改用"用户态注册"（对方给过的 API 组合）。
+
+## ★ 新 goal 第 21/60 轮（2026-10-24 07:45）：`osal_reg_msg_queue_cb` **必须三参数**（qid, cb, arg），注册成功 rc=0；但**回调一次都没被调用**
+- 从 `osal_uipc.ko` 反汇编确认签名（`0x3B4C`）：
+```
+tst r0,#0x8000   ; qid 不能带 bit15（0x3E014D 满足）
+cmp r2,#0        ; ★ 第三个参数必须非 0，否则 -1024
+⇒ int osal_reg_msg_queue_cb(unsigned qid, void *cb, void *arg)
+```
+  按三参数改写后：`BKREG rc=0`（注册成功）。此前 2 参数版本的 `-1024` 就是这个原因。
+- 但把该模块与"引擎+WS 假对象 + ASI(0)"探针组合跑（ab_v545）：
+```
+BKREG rc=0
+INITCFG_ENTER tid=186          ← App 线程照旧进入 initializeConfig
+c24 仍增长到 938               ← 循环没有被打破
+（BKCBM：一次都没有 —— 我们的回调从未被调用）
+```
+  ⇒ **App 的请求并没有投递到我们注册的这个队列 cb 上**。
+- 推断：`0x3E014D` 更可能是 **App 自己的应答队列**，真正被请求的服务端是"另一个端口/队列"，
+  或 OSAL 的投递依赖"端口(port)注册"而不只是"队列 cb 注册"。
+- 下一步（第 22/60 轮）：
+  1) 在当前镜像里**全量记录发送侧**（req=0x8000000A/0x8000000B）的参数，特别是 a1/a2 里的目标与长度；
+  2) 用 `osal_stat_msgq(0x3E014D, &st)` 在 App 发送前后各读一次，看"发送是否真的进了这个队列"；
+  3) 若确认 App 发的是"另一个 qid"，就按那个 qid 注册并应答。
