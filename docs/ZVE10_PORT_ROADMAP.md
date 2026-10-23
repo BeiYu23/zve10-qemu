@@ -1683,3 +1683,21 @@ c392: 保留我们的 LD_PRELOAD 包壳 + 真机 im.elf 二进制：
      并确保 `net_cmdd.elf`/`launch_shell.elf`/`sen.elf` 存活，作为 UIPC 对端；
   2) 复测 `/proc/osal/uipc` 的进程数与 0x13A/0x3E 积压是否消失；
   3) 基线改用 `BACKUP.BIN.real` 作为 ground truth（`.fixed` 标注为伪造）。
+
+## c402–c404（2026-10-23 20:00）：bootin/dmode 路径彻底查清 —— 不是卡点
+- c402（真机 bootin + `/setting/mode/dmode=3` + `preload=/lib/libgrmlog.so`）：
+  `kicks=11 gpew=28 pVM≈1.40M trap=0` ⇒ **与直接跑 im.elf 完全一致**。
+- c403：给 `im.elf` 包壳加 argv 记录，抓到 im.elf 的真实命令行：
+```
+CMDLINE[/usr/bin/im.elf.real debug target=qemu s g r u l i a lazy-global ]
+```
+  ⇒ **不是"选一个模式字母"，而是把 7 个字母（s g r u l i a）当成标志一起传**，
+  外加 `debug`、`target=qemu`、`lazy-global`。
+- c404（A/B：dmode=0）：
+```
+kicks=0 gpew=0 无 CMDLINE、无 PV  ⇒ App 根本没被拉起
+```
+  ⇒ dmode=3 才是"启动 App"的档位；dmode=0 连进程都不起。
+- 结论：**bootin / dmode / LD_PRELOAD 这条路径已经完全排除**（两次独立验证 + A/B 对照）。
+  下一步按与"救砖"对话的约定：hook `dlsym`（记录 `View*ToInstance` 请求与返回值）
+  + 统计 `osal_valloc_msg_wait` 的 qid；并在之前先做一次便宜的 `IMDB_find_entry` 检查。
