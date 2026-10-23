@@ -651,3 +651,92 @@ void *app = calloc(1, 0x400);
 | 3（降级固化） | 若 1' 证明卡在信号量且无人 post，就走这条 |
 
 ⇒ **先做 1'，一次实验就能定性**；不管结果如何都不会比现在更差。
+
+---
+
+# 补充（第九轮）：`wgtsys` 崩溃根因 = WidgetSystem 单例为 NULL（已钉死）
+
+> 依据 QEMU 侧 ab_v471：`trap address=0x498`，`pc=libObj+0x618C78`，`lr=libObj+0x627518`。
+
+## 一、★ 完整因果链（反汇编实证）
+
+崩点在 `0x627514: bl 0x618C78`，而 `0x618C78` 就是 `HasListP()`：`ldr r0,[r0,#4]`。
+被校验对象来自 `0x6274E4`（语义由三条日志串确定）：
+
+```
+"item: invalid argument <UX_LOG_ERROR>"
+"item != this: invalid argument <UX_LOG_ERROR>"
+"item->HasListP(): invalid argument <UX_LOG_ERROR>"
+```
+
+**关键在调用者 `0x627580` 的尾部**：
+
+```asm
+6275c4: ldr r3,[pc,#28]      ; 字面量 @0x6275E4 = 0x7608  ← WidgetSystem 单例 GOT 槽偏移
+6275c8: ldr r3,[r5,r3]       ; r3 = &WidgetSystem 单例变量
+6275ca: ldr r0,[r3,#0]       ; r0 = WidgetSystem*         ← ★ 取单例
+6275cc: add.w r0, r0, #1152  ; r0 += 0x480
+6275d0: adds r0, #4          ; r0 += 4   ⇒ r0 = WidgetSystem + 0x484
+6275d2: bl 0x627554          ; 双向链表插入(container, newNode)
+```
+
+而 `0x627554` 把 `container+16` 作为 `item` 传给校验函数（`add.w r1, r5, #16`）。
+
+**⇒ 若 `WidgetSystem* == NULL`：**
+```
+r0 = 0 + 0x484 = 0x484
+item = 0x484 + 16 = 0x494
+HasListP: ldr r0,[0x494,#4] → 访问 0x498  ⇒ ★ 与实测 address=0x498 完全一致
+```
+
+**⇒ 根因确定：`WidgetSystem::sys_getInstance()` 返回 NULL（单例从未被创建）。**
+
+## 二、WidgetSystem 与 GraphicsEngine 同构
+
+| | GraphicsEngine | WidgetSystem |
+|---|---|---|
+| getter | `0x61229C` 纯读 GOT 槽 | `0x616FE4` 纯读 GOT 槽（槽偏移 `0x7608`，变量 `0x145CB1C`） |
+| `UXEngine::xxx()` | `0x610FEC` 纯尾调用 | `0x61102C` 纯尾调用 |
+| 导出接口数 | 6，**无创建类** | **12，无创建/初始化类** |
+
+## 三、★ 手工构造 WidgetSystem 的关键：`+0x484` 必须是自指链表头
+
+`0x627554` 的插入逻辑：
+
+```asm
+r2 = [container+8]      ; next
+r3 = [container+4]      ; prev
+[newNode+12] = container
+[newNode+8]  = r2
+[r2+12]      = newNode      ; ← r2 必须有效，否则写地址 0xC 崩
+r2 = [r3+32]                ; count
+[newNode+4]  = r3
+[container+8] = newNode
+[r3+32]      = r2 + 1       ; ← r3 必须有效
+```
+
+⇒ **零初始化的块不行**（会 `str r4,[r2+12]` 写到地址 12 崩）。
+⇒ **必须把 `+0x484` 初始化成自指的头**：
+
+```c
+char *ws = calloc(1, 0x2000);
+unsigned int head = (unsigned int)(ws + 0x484);
+*(unsigned int *)(head + 4)  = head;   // prev → 自己
+*(unsigned int *)(head + 8)  = head;   // next → 自己
+*(unsigned int *)(head + 32) = 0;      // count
+*(void **)((char *)libObj_base + 0x145CB1C) = ws;
+```
+
+WidgetSystem 内部很可能还有**多个**同类链表头，所以策略是：**崩一次补一个**。
+
+## 四、搜索引擎的方法学修正（重要）
+
+此前"libObj 内无创建点"的结论建立在 **GOT 槽字面量**搜索上（GraphicsEngine 只找到 5 处）。
+改用**直接 PC 相对寻址**（`ldr rX,[pc,#imm]; add rX,pc`，字面量是**相对增量**而非绝对地址）重搜：
+
+- `GraphicsEngine` 单例：**24 处**引用（不是 5 处）
+- `WidgetSystem` 单例：**24 处**引用
+
+但逐处检查写入后，**确认的 store 只有析构路径**（`0x63D1FE: str r3,[r4]`，r3=0），
+其余为读。⇒ **"无创建者"结论仍然成立**，但**搜索方法必须用 PC 相对方式**，
+后续再查任何 .bss 全局都应按此法（这也是当初查回调表 `0x145CBC4` 用的方法）。
