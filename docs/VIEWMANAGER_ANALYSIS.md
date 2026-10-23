@@ -180,3 +180,89 @@ blx GraphicsEngine::getAreaCheckExtensionManager()
 
 注意：`uxengine_init` 里分辨率是**硬编码 640×480**，不是运行时探测面板
 （与"新菜单 appFw 运行时探测面板"不同）——这对旧菜单是正常的。
+
+---
+
+# 补充（第三轮）：GraphicsEngine 单例在 libObj 里**没有任何创建点**
+
+> 依据 QEMU 侧钉到的变量 `libObj+0x145CAB8` 与 GOT 槽 `libObj+0x13DCB78`。
+
+## 一、先纠正两个符号事实
+
+| 符号 | 地址 | 实际内容 |
+|---|---|---|
+| `uxengine_init` | `0x6271CC` | **空桩**：`push {r7,lr}; add r7,sp,#0; pop {r7,pc}` |
+| （QEMU 实际调用的） | `0x6271D4` | 紧跟其后的**未命名函数** —— 它才假定引擎已存在（所以直接调会 trap） |
+| `uxengine_app_fw_init` | `0x627335` | 也是 **6 字节空桩** |
+
+## 二、`UXEngine::gfxeng()` 是纯转发
+
+```
+0x610FEC  UXEngine::gfxeng():
+    push {r7,lr}; add r7,sp,#0; ldmia sp!,{r7,lr}
+    b.w  GraphicsEngine::sys_getInstance()      ← 尾调用，无任何创建逻辑
+```
+
+而 `GraphicsEngine::sys_getInstance()`（`0x61229C`）是纯 getter：
+
+```
+ldr r3,[GOT+0x4F50]     ; r3 = 0x145CAB8  (&s_instance)
+ldr r0,[r3,#0]          ; r0 = s_instance
+```
+
+⇒ **两者都没有惰性创建。**
+
+## 三、★ 决定性：`0x145CAB8` 在 libObj 里只有 5 处代码引用，**无一写入非 0**
+
+用 GOT 偏移字面量 `0x4F50`（及其 ±2/±4 变体）全文搜索，代码侧命中：
+
+| 文件偏移 | 作用 |
+|---|---|
+| `0x6122B0` | `sys_getInstance` 的字面量池 → **读** |
+| `0x612500` / `0x612520` / `0x612540` | 三处内联 getInstance + 读成员 `[inst+0x220]` → **读** |
+| `0x613130` / `0x6131C4` | **销毁路径**：`free(s_instance); s_instance = 0`（`0x613128: str r3,[r4]`，r3=0） |
+
+另外：
+- `0x145CAB8` 落在 **`.bss`**（`.bss` 起点 `0x1459328`）⇒ 加载时恒为 0
+- 绝对地址字面量 `0x0145CAB8` 全文只有 **1 处**，就是 GOT 槽本体（`0x13d4b78`）
+- 该类**没有 vtable / typeinfo**（非多态），也没有导出构造函数
+
+⇒ **libObj 自己既没有构造函数调用，也没有任何 store 非 0 的写入点。**
+
+## 四、对照：`ResourceManager` 用的是**另一种单例惯用法**
+
+```
+0x610218  ResourceManager::sys_getInstance():
+    r0 = *(GOT+0)
+    if (r0 == 0) r0 = &<静态回退对象>
+    return r0
+```
+即 **弱指针 + 静态默认实例**。而 `GraphicsEngine` 是 **纯指针，无回退**。
+
+⇒ 这个差异说明：`GraphicsEngine` 是**必须由外部先创建好**的，
+`ResourceManager` 则自带默认实例。两者设计前提不同。
+
+## 五、结论与给 QEMU 的两条可执行路径
+
+**结论**：`GraphicsEngine` 的实例**不由 libObj 创建**。可能原因（按可能性）：
+
+1. **PLT 介入（interposition）**：libObj 内部调用 `sys_getInstance` 走的是
+   `0x108138` 这个 **PLT 桩**，不是直接调用本文件定义。若加载顺序里另有对象
+   导出同名符号，就会绑定到那份（而那份可能带惰性创建）。
+2. **创建者在外部**（im.elf / 其它库），通过我们尚未定位的路径。
+
+**路径 A（最便宜，能一步定性）**：LD_PRELOAD 一个
+`_ZN2ux6gfxeng14GraphicsEngine15sys_getInstanceEv` 的 interposer，
+在首次调用时打印 `dladdr()`（**谁真正提供这个符号**）+ 调用栈。
+- 若解析到 libObj → 它确实没有创建者，需要在预加载里自己 new
+- 若解析到别的库 → 那个库才是入口，直接去看它
+
+**路径 B**：在 `.init_array`（`vaddr 0x1365DD4`，**272 个**初始化函数）里
+筛出会调用 `operator new`/`malloc` 且随后 `str` 到某个 `.bss` 全局的函数。
+（272 个不多，但要写脚本批量反汇编筛选。）
+
+## 六、附带确认
+
+- `uxengine_init` 真身（`0x6271D4`）第一步就拿 `UXEngine::gfxeng()` 的返回值用，
+  所以引擎为 0 时**必然 trap** —— 与 QEMU 实测「直接调它 → 0x0e」完全一致。
+- `area_check_data.dat` 从未被打开，与此互相印证：**引擎初始化一步都没进去**。
