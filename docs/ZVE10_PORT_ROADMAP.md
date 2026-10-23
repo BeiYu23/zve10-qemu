@@ -2002,3 +2002,42 @@ realtime vblock: 13A(28768) / 3C(128) / 48(64) / F9(128) …
 下一步（下一轮直接做）：
 1) interpose `osal_valloc_msg_wait`：记录参数、返回值、阻塞时长 —— 直接确认 Appframework 是否卡在这里；
 2) 查 `0x13A` 是谁的队列、谁应该消费（对照 im.elf/libMWF 的注册与收包线程）。
+
+## c431–c436（2026-10-23 23:58，第 4–5 轮）：**因果链补全 —— stub backup 导致 ulogio 等模块装载失败 → 消息池耗尽**
+- c431（interpose `osal_valloc_msg_wait`）：30 次调用**全部立即返回 NULL**（dt=0–1cs，不阻塞），
+  其中 28 次目标是 **qid `0x8F013A`**、调用者 lr=`0x0000B0DF`（im.elf 自身）⇒ **im.elf 在疯狂重试申请消息**。
+- c432（先启动 `/usr/bin/ulogio.elf` 再跑 im.elf）：日志暴露了真正的错误：
+```
+osal_ulogio: Unknown symbol Backup_read (err 0)
+osal_ulogio: Unknown symbol Backup_get_datasize (err 0)
+init ko_insmod: error(2): insmod /usr/kmod/osal_ulogio.ko ...
+```
+  ⇒ **我们把 `backup.ko` 换成纯 stub 后，`osal_ulogio.ko` 因符号缺失装载失败**
+  ⇒ 日志子系统缺失 ⇒ 日志消息堆在 `0x8F013A` 无人消费（428 条）⇒ 消息池耗尽 ⇒ 后续 `valloc` 全 NULL ⇒ App 初始化停摆。
+  **这是一条完整因果链**（对方关于"池耗尽"的判断方向正确）。
+- c433/c434：给 backup stub 补导出符号。第一次失败原因很具体：
+```
+init ko_insmod: error(2): insmod /usr/kmod/backup.ko Backup_load=1
+backup_stub2: Unknown parameter `Backup_load'
+```
+  ⇒ **init 会给 backup.ko 传模块参数**（`Backup_load=1` 等），stub 必须声明同名 `module_param`。
+- c435（按原始 backup.ko 的 145 个导出符号**全量生成 stub**，并接受参数）：
+```
+Unknown symbol 归零（所有依赖模块都能解析 backup 符号）
+但下一层崩溃：PC is at mspace_malloc+0x530/0xc64 [grm_ma]
+             LR is at mspace_memalign+0xa0/0x1b8 [grm_ma]
+             r6=0x5A5A5A5A（毒值）, r8=0x54000000
+```
+  ⇒ grm_ma（GRM 内存分配器）在初始化时崩，疑似访问/分配 `0x54000000` 附近的保留内存（我们 QEMU 机型可能没有这块）。
+- c436（把 backup stub 改"成功返回+零填充"）：**退回 22 模块**（upm 又卡住）⇒
+  **upm 的阻塞与 "Backup_* 返回成功" 相关**，所以"全 -1"的 stub3 才是能推进的版本。
+
+### 结论与下一步
+```
+✅ 已确认完整因果链：backup stub 缺符号 → osal_ulogio 装载失败 → 日志队列 0x8F013A 堆 428 条
+   → 消息池耗尽 → valloc 全 NULL → Appframework 无法建管理器（无 UI）
+✅ 已做出"能装载 145 个 backup 符号 + 接受模块参数"的替代模块（backup_stub3.ko）
+❌ 新卡点：grm_ma 初始化崩（mspace_memalign，毒值 5A5A5A5A，疑似 0x54000000 保留内存）
+下一步：确认 grm_ma 的保留内存窗口（是否需要在 QEMU 机型里补一块 RAM/region），
+       或临时 stub 掉 grm_ma 看链路能否继续（代价：GRM 位图分配不可用）。
+```
