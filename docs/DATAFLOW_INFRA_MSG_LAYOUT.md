@@ -208,3 +208,49 @@ buf+0x00  replyId   (u32)
 buf+0x0C  off       (u32)
 buf+off+4 topMsgSize(u16)
 ```
+
+---
+
+## 九、✅ 确认：`r1` 就是 qid，直接透传（机器码级证据）
+
+```asm
+228e2: 460e        mov   r6, r1        ; ★ r6 = 入口 r1（保存）
+228f6: f107 0108   add.w r1, r7, #8    ; ★ r1 被覆盖 = 局部缓冲 (sp+8)
+228fa: 4630        mov   r0, r6        ; ★ arg0 = 入口 r1
+228fc: f7fd ed0e   blx   osal_rcv_msg_tmo
+```
+
+⇒ **`osal_rcv_msg_tmo(qid = 入口 r1, buf = &sp[8], timeout)`**
+
+**结论：`r1` 是 qid，接收缓冲是局部变量，不是 r1。**
+⇒ 因此 `0x0055011E` 与 `0x37807D` **必然来自两次不同的调用**（不同线程/不同调用点）。
+
+---
+
+## 十、为什么 `self` 每次都变、`msgType/msgSize` 每次都是 0
+
+### `self` 是**调用方的栈上对象**，不是堆对象
+
+`DataflowInfraCh::rcvAsyncGlobalMsg` 里：
+
+```asm
+33e56: add.w r0, r7, #276 ; 0x114      ; ← 栈上槽位
+33e58: blx   DataflowInfraReceiverC1   ; 构造一个局部 receiver
+33e5e: add.w r0, r7, #276 ; 0x114
+33e62: mov   r1, r4                    ; qid
+33e64: mov   r2, r7                    ; msg
+33e68: blx   ReceiveASync              ; this = 栈地址
+```
+
+⇒ **`self` 永远是调用方栈帧里的地址** ⇒ 每次调用/每个线程都不同，**这是正常的**，
+   不代表"对象不对"。
+
+### `t=0 sz=0` 每次都是 0 的含义
+
+`msg` 是调用方（`DmmCh`/`DataflowInfraCh` 的使用者）持有的对象。
+进入时 `msgType==0 && msgSize==0` 说明：
+- 调用方**每次调用前都重新初始化了 msg**（或用的是刚构造的新对象）
+
+⇒ **在 interposer 里填好它、返回 0，下一轮会被覆盖 —— 所以"填了没效果"是预期的。**
+
+真正该做的是**让调用方的业务流程往前走**，而不是反复往一个每轮都被重置的对象里灌数据。
