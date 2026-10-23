@@ -2914,3 +2914,23 @@ lr = 0x0F074AC1 ⇒ 实际返回地址 0x0F074AC0（Thumb 位 1）
   1) 从已知导出符号（`ViewRootRemoteToInstance` 0x3326D4）向后定位该内部函数的真实入口，
      完整反汇编 0x3E0A00..0x3E0B20，找出循环条件与它调用的外部 API；
   2) 判断它是"遍历某个列表"还是"重试创建资源" —— 前者看它遍历的结构，后者看它等的资源（可能又回到 GRM/DMM）。
+
+## 新 goal 第 12/60 轮（2026-10-24 06:30）：装 GRM shim（12 个函数）—— 一个都没被调用；PC 采样显示 CPU 大部分耗在内核态
+- 本轮实现并在探针里 interpose 了 12 个 GRM 导出函数（bitmapCreate/Composite/GetPhysicalAddress/GetRowPixelCount/
+  GetSubRectangle/WriteLockBits/WriteUnlockBits/gpermFillrect/gpermRectblit/screenGetOnBitmap/fbrmInitializeYUV/fbrmSetScreenPreference）：
+```
+（无论是否按 tid 门控，GRM 日志一条都没有）
+⇒ 这些函数在当前阶段【没有被任何线程调用】（或被 libObj 内部直接绑定，绕过 PLT）
+```
+- c24（tid186 的 24 字节分配计数）在不同运行间波动很大（938 / 9），**与是否装 GRM shim 无关**（是同一次实验的随机性）。
+- `INITCFG_ENTER=1, EXIT=0` 仍然成立 ⇒ 初始化仍在 `initializeConfig` 内部不返回。
+- 用 QEMU gdb 对 guest **采样 PC**（8 次）：
+```
+PC=60149D3C ×5 / PC=602CF7A0 / PC=6014F37C
+```
+  这些地址都在内核态范围 ⇒ CPU 主要耗在**内核**（大量 24 字节分配引发的缺页/memset 等），
+  而不是明显停在某个用户态函数里（因为循环太快，采样容易落进内核）。
+- 下一步（第 13/60 轮）：
+  1) 换策略：**只用 `Application_System_Init(0)`（名字修复）而不预填 engine/WS 假对象**，
+     看固件是否能自己走完（此前的 wgtsys 崩溃可能只是"我们直接调 0x8A2EE0"造成的）；
+  2) 若不行，再回到"循环条件"分析：用 gdb 连续采样并统计用户态 PC 的分布（过滤 <0x10000000）。
