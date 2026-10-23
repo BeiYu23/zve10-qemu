@@ -97,3 +97,32 @@ image_cmn_43.uxc   : 75 78 63 64 07 00 00 00   (变体类型字节不同)
 
 810 个 `PRM_*` + 204 个 `VAL_*` 的完整列表见
 `tools/param_vocabulary.txt`（可作 QEMU 日志解析的对照词表用）。
+
+---
+
+## 七、旁证：`BACKUP.BIN` 校准数据的权威版本（2026-10-23 补）
+
+`libWlanAdjust.so` 通过 `Backup_read` / `Backup_get_datasize` 读取射频校准
+数据。本地有三个同名变体，md5 比对定论：
+
+| 文件 | md5 | 与真机 `/setting` 的关系 |
+|---|---|---|
+| `BACKUP.BIN.real` | `76e7ccfafc3075b7bc2d41773598f0f4` | ✅ **＝ `nflasha2.img` 里的 `/setting/BACKUP.BIN`**（真机原件） |
+| `BACKUP.BAK.real` | `156f6fc965c65b27b71e43d284959bff` | ✅ **＝ `/setting/BACKUP.BAK`**（真机原件） |
+| `BACKUP.BIN.fixed` | `62cbbdc9ec04a9225a89929a3d15a79e` | ❌ 真机上没有；11 字节被手工改成非零（QEMU 实验产物） |
+
+`.fixed` 相对 `.real` 的 11 处改动，全部落在一段**原本全零**的区域：
+
+```
+0x0BDA41..0x0BDA43  00→80 09 20
+0x0BDB15..0x0BDB16  00→C0 07
+0x0BDB79..0x0BDB7B  00→60 5C 03
+0x0BDB91..0x0BDB93  00→60 5C 03
+（该 0x152 字节区间在真机原件中 100% 为零）
+```
+
+文件结构：魔数 `BK4` @ 0x0C，之后是若干 u32 尺寸字段；全文件零字节占 40.6%。
+
+⇒ **QEMU 侧应以 `BACKUP.BIN.real` 为基准**。若某次实验为了"让流程往下走"
+而手工补了这段校准值，那推进来自**伪造数据**，不能作为真机行为证据；
+反过来，如果真机在这段全零时 WiFi 校准链路仍能走通，说明该段不是阻塞必要条件。
