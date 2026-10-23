@@ -33,9 +33,18 @@ debugfs -R "ls /share/app" → viewMonitorBrightness.uxc … 文件齐全
 步骤做了重新同步。**对移植方案的影响**：我们离线整区写 `nflasha15` 的路线
 不受 LZP 说法影响（绕开文件系统层），但「刷完是否被回滚」需要真机验证一次。
 
-另一处小差异：他们的 `REFERENCE.md` 列 cmdline 有 `wdt.mode=1 xrstreq=1`，
-我们的 `real_cmdline.txt` **只有 `wdt.timeout=500`，没有 `wdt.mode`** ⇒ 内核
-态看门狗在本机是 **OFF**，与我们实测 `WDT TIMERCTL=0` 一致。
+**更正（2026-10-23 晚）**：上面这句结论**错了**，他们的 `wdt.mode=1 xrstreq=1`
+才是对的。我方 `real_cmdline.txt` 是 **QEMU 实验改过的副本**（`console=ttyAM0`），
+不是真机值。权威来源是 **`/setting/KEMCO.TXT`**（bootloader 读取）与真机
+`/proc/cmdline`（`zve10_delivery/a_p0/01_cmdline.txt`，10-16 实抓），两者一致：
+
+```
+console=ttynull xrstreq=1 wdt.mode=1   ← 真机内核看门狗是【开启】的，500 ms
+```
+
+`nflasha1` 里 `@0x66C4C0` 的 `wdt.mode=0 / xrstreq=0` 只是会被覆盖的模板。
+⇒ 与实测 `WDT TIMERCTL=0` 并不矛盾：**BootROM 串口启动路径会把它清掉**，
+所以注入后读 0；而正常开机时它确实是武装的。
 
 ## 3. 对我们三条线的新增价值
 
