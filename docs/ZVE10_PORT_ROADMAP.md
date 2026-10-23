@@ -1973,3 +1973,32 @@ osal_reg_msg_queue_cb(0x3E014D, cb) → rc=-1024（无效）
   1) 用 im.elf/libMWF 实际用的注册 API（对照 libMWF 的导入：osal_reg_msg_queue_cb / osal_reg_sync_msg_queue_cb）
      并试本地 id（0x014D）注册；
   2) 或直接反汇编 libObj 的 Application_System_Init 线程入口，看它第一步等的是什么（futex 的 owner 是谁）。
+
+## ★★★ c430（2026-10-23 23:20，新 goal 第 3 轮续）：找到 Appframework 卡住的**具体函数**
+对方建议"别急着通读 `Application_System_Init`，去看它内部每一步"——按这个思路反汇编 `createRequestModelExecuteEvent`
+（`libObj+0x8A2314`，`Application_System_Init` 在起线程前调用它）发现：
+
+```asm
+8a2314  push {r4,r5,r6,r7,lr}
+8a231a  mov  r6, r1                 ; r1 = name 指针
+8a2328  movs r2, #52                ; ★ 请求 52 字节消息
+8a232a  ldr  r0, [pc]               ; 消息池句柄/参数
+8a232e  blx  osal_valloc_msg_wait@plt   ; ★★ 这里可能阻塞
+8a2332  cbnz r0, 8a237a             ; 失败则走错误分支
+```
+⇒ **`createRequestModelExecuteEvent` 第一件事就是 `osal_valloc_msg_wait(…, 52)`**，
+而 Appframework 线程实测阻塞在 futex —— **极可能就是卡在这次消息分配/等待上**。
+
+同轮从纯净环境导出的 `/proc/osal/uipc`（15,026 B）：
+```
+Global: msgqs 273, sems 71, msgs 441, cbs 63
+fblock: (19456) free=266752          ← 空闲块充足
+realtime vblock: 13A(28768) / 3C(128) / 48(64) / F9(128) …
+有积压的队列(M>0)：13A=428, 20=4, 3C=2, F9=2, 48=1
+```
+⇒ **441 条消息里 428 条堆在队列 `0x13A`**（占 97%），该队列没有消费者。
+（注意：这次 pristine 环境是 428 条，之前脏环境是 609 条，形态一致。）
+
+下一步（下一轮直接做）：
+1) interpose `osal_valloc_msg_wait`：记录参数、返回值、阻塞时长 —— 直接确认 Appframework 是否卡在这里；
+2) 查 `0x13A` 是谁的队列、谁应该消费（对照 im.elf/libMWF 的注册与收包线程）。
