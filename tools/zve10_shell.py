@@ -40,7 +40,7 @@ def drain(camera, seconds: float) -> bytes:
     """Discard pending terminal output."""
     end = time.time() + seconds
     while time.time() < end:
-        camera.readTerminal()
+        camera.dev.readTerminal()
     return b""
 
 
@@ -50,13 +50,13 @@ def run(camera, command: str, quiet_idle: float = IDLE_LIMIT) -> str:
     wrapped = b"echo __B%s__; %s; echo __E%s__\n" % (tag, command.encode(), tag)
 
     drain(camera, 0.2)
-    camera.writeTerminal(wrapped)
+    camera.dev.writeTerminal(wrapped)
 
     out = b""
     last = time.time()
     deadline = time.time() + 60.0
     while time.time() < deadline:
-        chunk = camera.readTerminal()
+        chunk = camera.dev.readTerminal()
         if chunk:
             out += chunk
             last = time.time()
