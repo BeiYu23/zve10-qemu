@@ -1790,3 +1790,24 @@ probe=0  kicks=0  gpew=0
   现实可走的是"混合"：**纯净 /usr + 少数必需模块用我们的仿真版**（如 `grm_gles.ko`）——但要逐个甄别哪些模块必须原厂、哪些必须仿真。
 - 当前仍成立的事实：vermagic 对齐这一步**永久有价值**（以后要加载任何原厂模块都必须如此），已写进配置；
   fake_gles 已同步重编为同一 vermagic。
+
+## c412（2026-10-23 21:10）：混合集第一版（udate→stub + fake_gles）—— 崩溃消除，但启动停在模块装载阶段
+- 对方从零售 initrd 的 `/sbin/init` 内挖出**35 条 insmod 表**，并给出分层：
+  T1 引导必经(6) / T2 UI 前必需(21) / T3 硬件强绑(udate/liro/hdmi/cec/accel/mag/compass/usbg_*/bcmdhd) / T4 缺失容忍(nfc/sata_drv/msen_drv)
+- 我方建了 `udate_stub.ko`（`module_init` 直接返回 0，无线程），vermagic 已对齐 `3.0.27_nl-rt106+`；
+  并替换 `grm_gles.ko` → 我们的 `fake_gles.ko`（提供 `/dev/dmpgles2`）。组合成 ab_v412。
+- 结果对比：
+```
+ab_v411（纯净 /usr + 原厂 kmod）      : udm_udate trap（address=0）          ← 崩
+ab_v412（udate→stub + fake_gles）     : trap=0  无崩溃，但停在模块装载/挂载阶段
+                                        probe=0  kicks=0  gpew=0
+                                        日志尾部：MODLOAD attempt ×22 + AL_EMMC_SEQ tuning 警告
+```
+- 注意：`mounting1 /dev/dnflasha* failed errno(6)` 这 3 条**在历史成功 run 里也一直存在**（init 会走回退分支并成功），
+  所以它们不是本次停滞的原因，不要误判。
+- 结论：udate 这个 T3 模块确实是崩溃点，替换有效；但要走到 chroot/im.elf 还需要**逐个解决后续模块**
+  （当前卡在模块装载/挂载阶段，需要更细的模块级 trace 才能定位是哪一个）。
+- 下一步：
+  1) 给内核加简单的 `MODLOAD` 名字打印（或改用 initrd 的 insmod 脚本显式逐条加载并打日志）；
+  2) 按 T1→T2 顺序，只加载必需模块，逐个排除；
+  3) `grm_gles` 用 fake_gles 已证明可行（对方：真机 UI 不需要真实 GPU 命令流）。
