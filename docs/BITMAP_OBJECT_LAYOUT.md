@@ -492,3 +492,66 @@ RGBA4444 : R15:12  G11:8   B7:4   A3:0
 | 花屏 / 斜条 | stride 或 bpp 错 | `geo+0x18`、`table[geo+0x1C]` |
 | 位置对颜色错 | 通道序错 | §13.3 纯绿测试 |
 | 色块对但缺内容 | 缺 blit 路径 | 补 `GRM_gpermRectblit` |
+
+---
+
+## 十四、★★ 真机填充路径是**同步阻塞**的（完整追踪，经三次反复才定案）
+
+### 14.1 调用链
+
+```
+GRM_gpermFillrect
+  → 0x1156C0（填充例程，内部 new(0x78) 构造命令）
+    → 0x118B58（命令构造）
+      → 0x118B9C: mov.w r1,#0xFFFFFFFF     ← ★ arg1 = -1
+        0x118BA0: movs  r2,#0              ← arg2 = NULL
+        0x118BA2: blx GRM_bitmapWriteLockBits@plt
+```
+
+### 14.2 `writeLockBits` 内部的 `-1` 分支
+
+```asm
+0x11BB78: mov.w r8,#0              ; ★ r8 初值 = 0
+0x11BB92: cbz   r5, 0x11BBDE       ; 只有 arg1 == 0 才跳去把 r8 设为 r5
+0x11BB94: cmp.w r5,#-1             ; arg1 == -1 → 继续往下
+0x11BBA0: cbnz  r0, skip           ; 前提：0x11BAF4 返回 0
+0x11BBA2: cmp.w r8,#0              ; r8 == 0 → 不跳
+0x11BBA8: blx   pthread_cond_wait(bitmap+0x40, bitmap+0x24)   ★★ 阻塞
+```
+
+**⇒ 真机 `gpermFillrect` 会在这里等 GPU 完成信号 ⇒ 路径是【同步】的。**
+
+### 14.3 ⇒ 实现要求：**必须 interpose `GRM_bitmapWriteLockBits`**
+
+```c
+int my_bitmapWriteLockBits(void *bmp, int arg1, void **out)
+{
+    if (arg1 == -1) {
+        /* 真机在此等 GPU；没有 GPU ⇒ 视为"已完成" */
+        void *pix = *(void **)((char *)bmp + 0x08);
+        if (out) *out = pix;
+        return pix ? 0 : -1;      /* 拿不到就返回错误，避免"成功但空指针" */
+    }
+    return real_bitmapWriteLockBits(bmp, arg1, out);
+}
+```
+
+**必要性**：libObj 内 `mov.w r1,#0xFFFFFFFF`（`4ff0ff31`）出现 **182 处**，
+"传 -1"是常见模式 ⇒ 只要有一条路径以 -1 调用，就会有线程永久静默阻塞。
+
+### 14.4 ⚠️ 排查教训（记录以免重犯）
+
+这个结论经过三次反复：
+
+| 轮次 | 说法 | 对错 |
+|---|---|---|
+| 1 | "填充路径可能等完成 ⇒ 替换等于移除一个等待" | ✅ 对 |
+| 2 | "两个函数体内扫不到阻塞原语 ⇒ 异步" | ❌ 错（漏了间接调用） |
+| 3 | "发现了间接调用，但只是 mutex，没有 GPU 等待" | ❌ 错（**没追参数值**） |
+| 4 | "`arg1 == -1` ⇒ 落入 cond_wait" | ✅ 对（定案） |
+
+**教训**：
+1. **"扫某函数体内有没有 X"是一个被过滤器限定的命题** —— 必须说明怎么扫的、筛掉了什么
+2. **"看到调用"不等于"知道它做什么"** —— 从调用图到行为之间还隔着**参数取值**
+
+**⇒ 结论 = f(调用图, 参数取值, 被调函数内部路径)；缺任一项都可能出错。**
