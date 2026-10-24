@@ -315,3 +315,74 @@ void my_gpermFillrect(void *a, void *b, const FillRectParam *p, uintptr_t c) {
     bmp_vfn(bmp,0x50)(bmp);
 }
 ```
+
+## 十、回答移植侧的两个请求
+
+### 10.1 `GRM_fbrmSetScreenPreference` **不含像素格式**（否定的）
+
+实测它就是 VDF 命令分发器：
+
+```c
+GRM_fbrmSetScreenPreference(int pref)
+{
+    if ((pref - 1) > 3) goto 错误/日志路径;      /* pref ∉ {1,2,3,4} */
+    cmd = table[pref - 1];                        /* 1→0xE800 2→0xE802 3→0xE803 4→0xE801 */
+    return sub_11F0F8(cmd);
+}
+
+sub_11F0F8(int cmd)
+{
+    if ((cmd - 0xE800) > 3) return 2;             /* 越界返回 2 */
+    sub_11DE70();
+    sub_124DE4();                                  /* vdf_if_port_init 区域 */
+    sub_123322(r0, cmd);                           /* rsrc_port_init 区域 */
+    return 0;
+}
+```
+
+**⇒ 这是"屏幕偏好 → VDF/资源端口命令"的路由，里面没有任何 bpp/format 枚举。**
+
+### 10.2 `GRM_bitmapGetSubRectangle` 机制确认（闭环）
+
+```c
+GRM_bitmapGetSubRectangle(void *bitmap, void *rect_out)
+{
+    rect_out = sub_1149B8(rect_out);      /* 空操作转换 */
+    0x1192B4(bitmap, rect_out);
+    return sub_11497C(...);               /* 空操作转换 */
+}
+
+0x1192B4(bitmap, arg)
+{
+    assert(bitmap != NULL);               /* 行号 0xD4 = 212 */
+    vtable = *(void**)bitmap;
+    fn = *(void**)(vtable + 0x14);        /* 虚函数槽 +0x14 */
+    fn(bitmap, arg);                       /* r0=bitmap, r1=输出结构，原样传递 */
+}
+```
+
+**⇒ 输出结构由 `vtable+0x14` 的**具体实现**填写，静态看不到字段。**
+**⇒ 移植侧在 `gpermFillrect` 调用点观察到的 `+4=width / +6=height`（int16）是实证，比静态更强 —— 可以闭环。**
+
+### 10.3 ★ format/stride 的新解法：打 `GRM_bitmapCreate` 的参数
+
+`BMP_Create` 的初始化 `0x11B774` 里：
+
+```asm
+11b790: cbnz r1 → assert(r1 != NULL)   ; 行号 0x8a = 138
+11b7a2: r5 = [bitmap + 4]              ; geo
+11b7a4: r1 = r5 + 4
+11b7a6: r3 = r5 + 12
+11b7aa: {r0,r1} = *(geo+4)             ; 读 geo+4/+6（两个 int16，宽高）
+11b7ac: *(geo+0x0C) = {r0,r1}          ; 复制到 geo+0x0C/+0x0E（工作副本）
+11b7b2: [bitmap + 0x0C] = r1(arg1)
+```
+
+**⇒ 没有任何"格式 → 常量"的映射表；格式/stride 完全来自调用方传的参数。**
+
+**⇒ 最优解不是推像素，而是：interpose `GRM_bitmapCreate`，把 10 个参数全打印出来。**
+
+App 建位图时格式值是固定的（比如恒为 1 或 2），**一次运行直接读到**，
+比"画一个纯色再反推重复单元"更直接、更确定。
+
+**⇒ 建议顺序改为：① 打 `GRM_bitmapCreate` 参数 → ② 若还需确认，再 dumper 像素。**
