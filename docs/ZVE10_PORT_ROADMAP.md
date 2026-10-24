@@ -5407,3 +5407,32 @@ pthread_mutex_lock/unlock 追踪（0x072df000-0x072e0000 区间）：
 2) 若是我们缺失的外部服务（sensor/stream 等）导致 142 卡住 ⇒ 补该服务
 3) 若纯粹是 App 内部顺序问题 ⇒ 用"限时 trylock + 让路"的定向补丁（只针对 0x072dff44）
 ```
+
+## 2026-10-25 09:00 新发现：osal_ulogio.ko 加载失败 + 我们自己补上 0x8F0139 应答
+### 关键事实（启动日志）
+```
+init ko_insmod:(1228): error(1): insmod /usr/kmod/osal_ulogio.ko ulogio_initfile=/setting/ulogio.bin
+[ulogio] failed to load config from driver!
+⇒ osal_ulogio.ko 一直没加载成功（vermagic 一致、依赖符号 Backup_* 我们的 stub 也已导出）
+⇒ 因此日志控制队列 0x8F0139 【没有应答方】
+   （协作方反汇编：backup.ko 在 size>limit 的警告路径会 osal_snd_sync_msg(0x8F0139)，
+     然后读 msg[2]，若为 0 就往地址 0 写 ⇒ 真模块崩在 0x91C 的原因）
+```
+### 我们做的修补
+```
+在 backup stub 里额外注册 0x8F0139 的同步应答（cb 里置 msg[2]=1）：
+  ULOGIOREG rc=0   ✅ 注册成功
+  随后端上出现 EXIT ULOGIOD_MAIN pid=129 code=0
+```
+### 真 /setting 内容已定位
+```
+/root/fw/_archive/dirs/zve10_setting/ 共 7.2MB（Backup.bin/Bak、DmmConfig.bin、psd.bin、ulogio.bin、mode_* 等 28 项）
+· n7(rootfs, 8MB) 只剩 238 空闲块 ⇒ 放不下
+· 已试验：把 ulogio.bin(3796B)+DmmConfig.bin(78KB) 放进 n7 /setting ⇒ ulogio 模块仍 insmod 失败
+  ⇒ 说明它的失败不是缺文件，而是别的依赖（待查）
+```
+### 仍然卡住的地方（不变）
+```
+tid=142 持 0x072dff44 并等 0x072dfd30；tid=187（initializeConfig）等 0x072dff44
+⇒ 下一步：找出 0x072dfd30 的持有者
+```
