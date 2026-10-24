@@ -5479,3 +5479,25 @@ key = w[6]（0x0092001B 等）   ⇒ 在 Backup.bin 里越界（page 0x92 count=
 ```
 - 现状：无论按哪种取法，`initializeConfig` 仍不返回；而同轮 mutex/栈分析显示
   **tid139 与 tid143 互相持锁等待**（ABBA 死锁），这是当前最可能的直接原因。
+
+## ★★ 2026-10-25 10:20 死锁线程身份确认：不是 App 业务线程，是 **Infra 线程池**
+- 同轮 THR/STK 采集（ab_v1035 / rc）：
+```
+pid=139 comm=THREAD_INFRA0  pc=040a2146(libpthread)  sp=09458bc8
+pid=142 comm=THREAD_INFRA0  pc=040a2146            sp 内含 072e5cf0/072e5cd4
+pid=143 comm=THREAD_INFRA0  pc=04023384            stack 含 libObj+0x767BC7
+另有 THREAD_INFRA1(140) / THREAD_INFRA2(141)
+⇒ 卡住的是 libInfra* 的通用工作线程池（THREAD_INFRA0/1/2），不是 Camera/App 业务线程
+```
+- 含义：
+```
+· 有任务被投递到 Infra 线程池后永久阻塞（互等），把整个线程池占死
+· 依赖该线程池的初始化（如 OnDemandLoader 的加载任务）随之停摆
+· 这类"线程池被占死"通常由【某个任务等一个永不发生的事件】引起
+  —— 与我们此前看到的"等外部服务/数据"方向一致
+```
+- 下一步候选（下轮做主）：
+```
+B) 按 IMDB 199 条清单重排模块/库加载顺序（a7c2 记录过顺序错会造成这类怪卡）
+C) 定向给 THREAD_INFRA 池的 mutex 加"限时 trylock 后让路"，看是否能自愈
+```
