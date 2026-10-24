@@ -4650,3 +4650,22 @@ MAPD 采样 840 行（上限 300 vma/次）
    （内核里读 task->thread.futex.uaddr 或直接打印 thread_info），即可同轮对上
 3) 或更省事：既然所有线程都在等，直接对 im.elf 全部线程发 SIGUSR1/超时唤醒并观察行为
 ```
+
+## 2026-10-25 00:20 老菜单：用 exit/dlsym interpose 验证"失败路径 exit(0)"假设 —— 未命中
+- 协作方反汇编结论：`0x14BD58`（配置构造函数）4 次 load 后失败会走 `blx exit@plt` ⇒ exit(0)
+- 我方验证（ab_v665 / o25，preload 内 interpose `exit` / `_exit` / `dlsym`）：
+```
+libexitprobe 已加载（日志可见）、INITCFG_ENTER=1（App 确实跑到该处）
+但 EXIT_CALLED = 0、_EXIT_CALLED = 0、DLSYM(initialize*) = 0
+⇒ exit 路径【未被触发】，或者 App 用的是别的退出/解析方式（exit_group 直接 syscall / 内部解析）
+```
+- 两种可能：
+```
+① 4 次 load 都成功了，initializeConfig 没走失败分支，但仍不返回
+   ⇒ 卡在 4 次 load 内部（其中某次 dlopen/内部加载卡住）
+② App 调用 exit 的方式绕过了 PLT（如直接 exit_group 系统调用）
+   ⇒ 用内核侧 hook exit_group 才能看到
+```
+- 下一步（第 57/60 轮，剩 4 轮）：
+  1) 内核侧 hook `exit_group`/`exit` 系统调用并打印 comm+pid（一定能看到）
+  2) 或者在 0x14BD58 的失败出口地址（0x14BE02~0x14BE08）下断点式探针（patch 成跳转到我们的日志+继续）
