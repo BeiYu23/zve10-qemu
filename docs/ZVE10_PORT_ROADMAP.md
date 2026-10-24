@@ -3384,3 +3384,30 @@ lr 0x32407  MonQueue::IsNearlyFull()  +0xB      ← 调 GetQueueRemain(this)
   1) 用 `-nostdlib`（纯裸 syscall）编一个探针，构造期从 `/proc/self/maps` 解析 libMWF 基址，
      主动调用 `libMWF+0x311F0`（`MonDrv::Init()`），看崩溃是否消失；
   2) 若 `MonDrv::Init()` 自身依赖设备（UART/monitor 节点），再补那个设备/节点。
+
+## ★★★ 2026-10-24 14:40：**根因确认 —— `MonDrv::Init()` 里 `mmap("/dev/mem")` 失败**（日志实证）
+- 按对方提示，直接在串口日志里找三条诊断串，结果所有镜像/所有轮次都是同一条：
+```
+open_fail("Failed to open stream driver!") = 0 次
+mmap_fail("Failed to mmap!")              = 1 次   ★ 每次都是它
+Physical Addr / Mon Buf Size 打印          = 0 次
+```
+  ⇒ **`open("/dev/mem")` 成功，`mmap` 失败** ⇒ `MonDrv::Init()` 走提前返回分支
+  ⇒ `MWF::ObjIf_Mcmd::mp_mon` 保持 NULL（我方 `ZZMWF` 实测：`base=05B1D000 mp_mon=00000000`）
+  ⇒ 之后 `Monitor::Init()` 打印横幅 → `MonLib::ConPutStr` → `MonDrv::PutsNoCR` → `PutcharSub` → `MonQueue::IsNearlyFull(NULL)` → **崩在 0x0**
+- `MonDrv::Init` 反汇编确认的取数顺序：
+```
+3121c: Backup_read_4Byte(ID1) → r6   （物理地址）
+31222: Backup_read_4Byte(ID2) → r9   （缓冲区大小）
+31232: open("/dev/mem", 0x1002)
+3127c: mmap(addr=0, len=r9, prot=3, flags=1, fd, offset=r6)
+```
+  我们的 backup stub 对这些 ID 返回 -1 或 0x1000 ⇒ **mmap 参数非法/越界 ⇒ 失败**。
+- 因此这是**平台层缺口**（与菜单新旧无关，两版 libMWF 该段代码完全相同）。
+- 下一步（第 30/60 轮）：
+  1) 让 `Backup_read_4Byte` 对这两个 ID 返回**真实值**（解析 `/setting/Backup.bin`，magic `BK4`，
+     共 1,235,836 B；需要先摸清条目格式/ID 编码 —— 直接在文件里搜 0xFA0028/0xFA005D 没命中，
+     说明 ID 是"索引式"而非字面量）；
+  2) 或退一步：让 mmap 请求落在 QEMU 已映射的 RAM 区间（`0x00000000-0x40000000` / `0x80000000-0xC0000000`）；
+  3) 或最小侵入：把 `Monitor::Init()` 里的打印调用全部 NOP 掉（本次试了 0x32652 一处仍未消除，
+     说明还有第二处打印点，需逐个定位）。
