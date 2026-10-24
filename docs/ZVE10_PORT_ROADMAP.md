@@ -3923,3 +3923,27 @@ FAKEGLES mmap seq=1 va=0x0C000000 size=0x20000 pgoff=0x0     ★ App 只做了�
    GRM_gpermFillrect(314B) / GRM_gpermRectblit(824B) 等 21 个 GRM_* 导出
 ③ 下一步：在 shim 里用 CPU 实现 GRM_gperm*，再由 GRM_screenGetOnBitmap 出帧
 ```
+
+## ★ 2026-10-24 19:05 新菜单线：SIGILL 之谜解开 —— 是 OpenSSL 的 CPU 特性探测（正常行为）
+- 之前日志里反复出现的 `[ZZSIG] sig=4` 一直以为异常，本轮定位到具体指令：
+```
+从 hybrid /usr/lib 提取 libcrypto.so.3（2,656,568 B），按崩溃 pc 反汇编：
+  0x12BB5C  nop.w
+  0x12BB60  vorr q0, q0, q0        ← NEON 探测
+  0x12BB66  mrrc p15/... cr14      ← 特性探测
+  0x12BB6C  aese.8 q0, q0, q0      ← ARMv8 crypto 探测
+  0x12BB72  sha1c.32 q0, q0, q0    ← crypto 探测
+⇒ 这是 OpenSSL 3 的 ARM capability 探测：故意执行不支持指令、靠 SIGILL 捕获来关特性
+⇒ SIGILL ×10 属【正常】，不是 bug
+```
+- 也验证了 CPU 模型的影响：
+```
+-cpu cortex-a15：内核起不来（卡在 booting the kernel）
+-cpu cortex-a9 ：正常启动（35 模块），SIGILL 仍是 10 次（探测），主崩溃仍在
+⇒ 换 CPU 模型不解决主问题
+```
+- 下一步（第 38/60 轮）：
+  1) 主崩溃仍是"先于任何 GRM_gperm*/bitmap* 调用就 SIGABRT"，需要继续定位它的来源
+     （已排除 abort/assert/stack_chk/raise/gsignal/pthread_kill 等 interpose，说明是 libc 内部路径）
+  2) 可用手段：内核里在 `die_kernel`/`__do_user_fault` 与信号投递处打印更完整的 siginfo（修正字段偏移）
+  3) 一旦能到绘制阶段，软件 GPE shim 已按最新规格写好（format→bpp 表 / stride geo+0x18 / 不碰锁）
