@@ -386,3 +386,75 @@ App 建位图时格式值是固定的（比如恒为 1 或 2），**一次运行
 比"画一个纯色再反推重复单元"更直接、更确定。
 
 **⇒ 建议顺序改为：① 打 `GRM_bitmapCreate` 参数 → ② 若还需确认，再 dumper 像素。**
+
+## 十一、★★★ `writeLockBits` 的阻塞条件（精确定位）
+
+实现 `0x11BB68`：
+
+```c
+writeLockBits(bitmap=r4, arg1=r5, arg2=r9)
+{
+    pthread_mutex_lock(bitmap + 0x24);        /* 加锁 */
+    [bitmap + 0x1C]++;                        /* 引用计数 */
+
+    if (arg1 == 0)          goto 返回;         /* ★ arg1 == 0 → 直接返回，不等待 */
+    if (arg1 != 0xFFFFFFFF) goto 另一条路径;   /* 其它值 */
+
+    /* ★★ arg1 == -1 (0xFFFFFFFF) */
+    sub_11BAF4(bitmap);
+    if (r0 != 0) goto 出错;
+    pthread_cond_wait(bitmap + 0x40, bitmap + 0x24);   /* ★★★ 永久阻塞点 */
+    ...
+}
+```
+
+### ⇒ 结论一：只有 `arg1 == -1` 才会阻塞
+
+**`writeLockBits(bitmap, 0, ...)` 不会被阻塞。**
+
+### ⇒ 结论二：`BMP_WriteLockBits` 会把 `r1` 原样透传（不设置它）
+
+```asm
+119494 BMP_WriteLockBits:
+  119498: cbnz r0, 1194ae      ; assert(bitmap)
+  1194ae: ldr  r3, [r0, #0]    ; vtable
+  1194b0: ldr  r3, [r3, #76]   ; +0x4C
+  1194b2: blx  r3              ; ★ r0=bitmap, r1 = 调用者传进来的值，未修改
+```
+
+**⇒ `BMP_WriteLockBits` 实际是【2 参数】：`(void *bmp, int timeout)`，第二个参数决定是否阻塞。**
+
+**⇒ ★ 调用它时必须显式传 `0`，绝不能让它变成 `-1`（或未初始化栈值）。**
+
+### ⇒ 由此给出的安全写法
+
+```c
+void *pix = ((void *(*)(void *, int))BMP_WriteLockBits)(bmp, 0);   /* 永不阻塞 */
+```
+
+**比"完全绕开锁"更稳** —— 保留了引用计数和互斥，只是不等待 GPU。
+
+## 十二、★ `[bmp+0x08]` 能否直接读？（更正移植侧的结论）
+
+- 构造函数 `0x11B6C0`：`str r5,[r4,#8]`，其中 `r5 = 0` ⇒ **`[bmp+0x08]` 被清零**
+- 初始化 `0x11B774`：**没有设置 `[bmp+0x08]`**，但设置了 `[bmp+0x0C] = arg1`
+
+**⇒ "完全不调虚函数、直接读 `[bmp+0x08]`" 有风险 —— 它可能仍是 0。**
+
+**两点更正**：
+1. 绘制前必须**先确认 `[bmp+0x08] != 0`**；若为 0，说明像素指针是 `writeLockBits` 过程中才建立的
+2. **`[bmp+0x0C] = arg1`**（初始化里设的）—— arg1 很可能是像素缓冲或其描述符，**值得一并打印**
+
+**⇒ 推荐：先打印 `[bmp+0x08]` / `[bmp+0x0C]` 的实际值再决定走哪条路。**
+
+## 十三、`info` 块字段语义（补充移植侧的发现）
+
+| 偏移 | 内容 |
+|---|---|
+| `+0x0C` | **矩形 `{int16 x, y, w, h}`**（`GetSubRectangle` 返回它的地址） |
+| `+0x14` | **rowPixelCount**（像素计 stride；`getRowPixelCount` 返回它的地址） |
+| `+0x18` / `+0x1A` | 初始化算出的派生值（与宽高相关） |
+| `+0x24` | **物理地址** |
+
+**注意**：这几个 getter 通过 out 参数返回的是【字段地址】，不是数值：
+`out = info + 0x14` ⇒ 需再 `*(int*)out` 取值。
