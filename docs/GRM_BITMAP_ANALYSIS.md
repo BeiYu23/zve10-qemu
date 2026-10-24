@@ -113,3 +113,43 @@ r3 = arg3
 1. `GRM_fbrmSetScreenPreference`(88B) / `GRM_fbrmCheckUpdateFinished`(24B) 的真实实现
 2. `0x1193D4` / `0x1198BC` / `0x119524` / `0x1192B4` 的内部（可反推 bitmap 完整布局）
 3. `BMP_Create` 10 个参数的确切语义（需结合调用点交叉验证）
+
+## 五、★ bitmap 虚表槽位映射（补全 §四.2）
+
+所有 `GRM_bitmap*` 最终都走**虚函数分派**：`vtable = *(void**)bmp`，再按固定偏移调。
+
+| vtable 偏移 | 槽位号 | 语义 | 观察来源 |
+|---|---:|---|---|
+| `+0x14` | 5 | 未知（GetSubRectangle 用） | `0x1192B4` |
+| **`+0x18`** | 6 | **getRowPixelCount**（out 参数） | `0x1198BC` |
+| **`+0x30`** | 12 | **getPhysicalAddress** | `0x1193D4` |
+| **`+0x4C`** | 19 | **writeLockBits → 返回可写像素指针** | `0x119494` |
+| **`+0x50`** | 20 | **writeUnlockBits** | `0x1194C4` |
+| `+0x58` | 22 | 未知（Release 第二步） | `0x119524` |
+| `+0x64` | 25 | 未知（Release 第一步） | `0x119524` |
+
+**⇒ 至少 26 个虚函数槽**（最大偏移 0x64 = 索引 25）。
+
+### 调用模板（移植侧可直接照抄）
+
+```c
+static inline void *bmp_vfn(void *bmp, unsigned off) {
+    void *vt = *(void **)bmp;
+    return *(void **)((char *)vt + off);
+}
+
+/* 取可写像素（软件绘制入口） */
+void *pixels = ((void *(*)(void *))bmp_vfn(bmp, 0x4C))(bmp);
+/* ... CPU 绘制 ... */
+((void (*)(void *))bmp_vfn(bmp, 0x50))(bmp);
+
+/* 取物理地址 / 行像素数 */
+((void (*)(void *, unsigned *))bmp_vfn(bmp, 0x30))(bmp, &phys);
+((void (*)(void *, int *))bmp_vfn(bmp, 0x18))(bmp, &rowpx);
+```
+
+### 由此得到的一条替代方案
+
+bitmap 是**抽象基类 + 虚表**，所以除了拦截 `GRM_gperm*`，
+还可以**把自己的 CPU 实现挂成一个兼容虚表的 bitmap 对象**（填满 26 槽，至少 `+0x4C`/`+0x50`/`+0x18`/`+0x30`）。
+后者更"贴近真机结构"，但工作量更大；**建议先用拦截 `gperm*` 的路线**。
