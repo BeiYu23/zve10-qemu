@@ -3439,3 +3439,29 @@ EXECVE /usr/bin/im.elf → im.elf.real
   1) 反汇编 `libc-2.11.2.so +0x15796` 看是哪条指令（trap 6 = 未定义指令，常见于跳转到 0 或执行数据）；
   2) 同步 dump 崩溃前该线程的调用链（栈上 0x04xxxxxx 的返回地址）；
   3) 若仍是"某个函数指针为 0"，继续按"缺哪个初始化"补。
+
+## ★★★ 2026-10-24 14:58 新菜单线：**libc 崩溃的真相 = App 自己 abort**（DMP 分配器初始化失败）
+- 在日志里找到崩溃前最后一行应用输出：
+```
+im.elf.real: dmp_allocator.c:108: dmp_allocator_lib_init: Assertion `e == MA_ErrNone' failed.
+ZZTGKILL THREAD_INFRA0 pid=118 tgid=134 sig=6 pc=04265796 lr=04274D8F
+```
+  ⇒ 崩溃不是"随机非法指令"，而是 **`abort()`（SIGABRT=6）**：
+    libc `raise()`→`gsignal()`→`tgkill` 的路径（pc/lr 均落在 `libc-2.11.2.so` 的 raise/gsignal 内），
+    随后信号处理/返回把 pc 拉到 0 → 我们内核报成 "trap 6 非法指令"。
+- 断言位置归属已查明：
+```
+在 /usr 分区里搜 "dmp_allocator" → 命中块 → icheck → inode 180 → ncheck = /lib/appFw.so
+⇒ dmp_allocator.c 是编进 appFw.so 的（53 MB），不是独立库
+appFw.so 的动态符号里没有 dmp/MA 导入（717 个未定义符号里都没有）⇒ 分配器实现是静态内联/内部调用
+```
+- 结论（本轮）：
+```
+新菜单 App 已经跑到"初始化 DMP 分配器"这一步，
+但它初始化失败 → 断言 → abort ⇒ 这是【真实硬件 GPU/内存分配器】依赖，属 a7c2 那条 shim 路线覆盖范围
+（a7c2 的 menu-observe 里正是软件实现 DMP/GRM 分配）
+```
+- 下一步（第 27/60 轮）：
+  1) 在 appFw.so 里定位 `dmp_allocator_lib_init`（用断言字符串 xref / 找 `__assert_fail` 调用点）；
+  2) 看它初始化时依赖什么（设备节点 / ioctl / dlsym / 物理内存），决定是 shim 还是补设备；
+  3) 若它走 `dlsym` 或某个导出 API，就直接按 a7c2 做法软件实现。
