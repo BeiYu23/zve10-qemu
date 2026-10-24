@@ -3754,3 +3754,16 @@ FAKEGLES mmapI va=0x08000000 size=0x10000000 map=0x10000000 ident=0x08000000
   1) preload 里 interpose `abort`、`__assert_fail`、`__stack_chk_fail`，打印 return_address
   2) 结合 maps 把该地址定位到库/偏移
   3) 若是栈保护/堆破坏 ⇒ 说明我们伪造的显存内容让某个解析越界，需要按语义填窗口
+
+## 2026-10-24 17:35 新菜单线：abort 抓取未命中；另发现 mmap 路径有内核侧告警
+- preload 追加 `libabortshim.so`（interpose `abort/__assert_fail/__stack_chk_fail`，打印 return_address）
+```
+日志确认已加载：IMOPEN OK /usr/lib/libabortshim.so，maps 里有 libabortshim.so r-x
+但【没有】任何 ABORT/ASSERT/STACKCHK 输出 ⇒ 致命路径不是这三个符号（可能是直接 raise(SIGABRT) 或内部 longjmp）
+```
+- 同时内核日志里出现 mmap 路径的告警栈（do_mmap_pgoff / sys_mmap_pgoff）——需要单独看是不是
+  我们 256 MB 逐页 remap 导致的（映射页数多、耗时/锁竞争），下一轮要确认并优化（例如只 map 需要的子区间）。
+- 下一步（第 34/60 轮）：
+  1) interpose `raise`/`gsignal`/`pthread_kill`，直接抓 SIGABRT 的投递点
+  2) 检查 mmap 路径告警是否由"256MB 逐页 remap"引起；若是则改成按需映射（惰性/分段）
+  3) 若 abort 来自某库内部的致命判定，再按语义补数据
