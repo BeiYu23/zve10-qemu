@@ -4560,3 +4560,19 @@ GRM2 init fb=0x474E000  ✅ shim 正常初始化
      下一步用**多探针组合**（INITCFG_EN/EX、WAISEM、RCV、ZZFUTEX）观察它放行后停在哪
   2) 若它实际卡在"等 GPU 事件"，就把 fake 的 event 语义按真驱动常量填对
   3) L2 shim 保留，App 一旦走到绘制即可直接出图
+
+## 2026-10-24 23:40 老菜单：sem bypass + L2 shim 组合仍不出图（瓶颈确认在 App 初始化）
+- 组合实验（ab_v661）：`libsemfix`（0x18004B5 直接返回 0）+ `libgrm2`（bitmap→VDF 缓冲 + CPU gperm）+ 探针
+```
+SEMFIX 命中 1 次 ✅
+GRM2 init fb=0x476F000 ✅
+但 GRM2 绘制日志 = 0，INITCFG_EXIT = 0，屏幕仍以黑色为主
+⇒ 放行 dmp_allocator 的 sem 并不能让 initializeConfig 返回
+```
+- 结论（本轮最终判定）：
+```
+显示层：✅ 完全打通（满屏彩条，几何 640×480/stride1280/RGB565）
+绘制层：✅ shim 就绪（GRM_bitmapCreate 指向 VDF 缓冲 + CPU gpermFillrect/Rectblit）
+应用层：❌ initializeConfig 不返回 ⇒ App 从未进入绘制
+⇒ 唯一剩余瓶颈 = App 初始化（libObj 里的配置初始化链）
+```
