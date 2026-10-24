@@ -4251,3 +4251,25 @@ lr = 0x040B3D8D / 0x040B4D0D   ← libpthread 区（推断 pthread_cond_wait / m
      —— 直接看它卡在/缺什么（比猜快）
   2) 若确认某个 /setting 或 /system 资源缺失，补进镜像
   3) 一旦 sen.elf 能跑起来，再评估 App 是否进入正常 UI 初始化
+
+## ★★★ 2026-10-24 21:55 重大自查：**最近几轮"零崩溃"其实是 appFw 根本没加载**（用户质疑完全正确）
+- 证据（同一条判据：日志里 appFw 出现次数 / maps 里的 appFw vma）：
+```
+v35(v43 基底) h69 : appFw=14 处、maps 里 5 个 vma、crash=1      ← appFw 真的加载并运行了
+v52/v53 h75/h77/h79: appFw=0 处、无 vma、crash=0、kicks=4      ← appFw 从未加载
+隔离实验 h80（v55 = v43 + 新 fake_gles，无 mmapad/mprotsh）：appFw=0、crash=0
+⇒ 结论：是【fake_gles 改成"未实现 ioctl 返回 -EINVAL"】导致 App 走了错误分支，
+        此后根本不再加载 appFw.so
+```
+- 含义（必须记下的教训）：
+```
+① 前几轮"零崩溃/稳定 190s"是假象：UI 框架没起来，自然不崩
+② 之前追的 appFw 内部崩溃（0x1F26B96 越界、guard page、dmm 崩溃）才是"程序真的在跑"的证据
+③ 判断"有没有前进"必须用【appFw 是否加载 + 是否调用绘制接口】为判据，
+   不能用"有没有崩"当判据
+```
+- 下一步（第 48/60 轮）：
+  1) 回退 fake_gles 的 ioctl 语义到"未实现返回 0"（让 appFw 能加载），
+     改用【mmapad + mprotsh】来吸收越界（h73 已证明能越过那 368 字节）
+  2) 在"appFw 已加载"的前提下，逐个处理 dmm 崩溃（h73 那条 dmm_ctrl_Main+0x140）
+  3) 建立固定判据：每轮记录 appFw 是否加载、绘制接口是否被调用、屏幕是否有内容
