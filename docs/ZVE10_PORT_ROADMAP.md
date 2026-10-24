@@ -4273,3 +4273,34 @@ v52/v53 h75/h77/h79: appFw=0 处、无 vma、crash=0、kicks=4      ← appFw �
      改用【mmapad + mprotsh】来吸收越界（h73 已证明能越过那 368 字节）
   2) 在"appFw 已加载"的前提下，逐个处理 dmm 崩溃（h73 那条 dmm_ctrl_Main+0x140）
   3) 建立固定判据：每轮记录 appFw 是否加载、绘制接口是否被调用、屏幕是否有内容
+
+## ★★ 2026-10-24 22:05 切回老菜单（ZV-E10 原 /usr）：基线复现 + 定位到"加载完 CautionConfig 后进入空闲"
+- 基线复跑（ab_v603 / o1）：
+```
+modloads=35、sen.elf 启动 ✅、im.elf 启动 ✅、crash=0、INITCFG_ENTER=1 / EXIT=0
+屏幕：仍是 0x20312000 的旧噪声（非黑 282732）——未绘制
+```
+- `INITCFG_ENTER` 之后实际发生的事（日志时间顺序）：
+```
+1) NEW2 sz=24 tid=186                       （分配配置对象）
+2) MISSSO //lib/viewUnified2.so → ZZREAD dev=viewUnified2.so
+   QMMAP viewUnified2.so 0xE4FB10 字节（r-x）
+   QMMAP 偏移 0xB78000 处 0x228000（数据段）
+3) MISSSO //lib/CautionConfig.so → ZZREAD dev=CautionConfig.so
+   QMMAP CautionConfig.so 0x12098D8 字节 + 数据段 + 一块 anon
+4) 之后：只剩 IMNANOSLEEP / ZZFUTEX，无新 open/read
+⇒ initializeConfig 在加载完这两个模块后【不再有 I/O】，进入 condvar 等待
+```
+- 尝试与结论：
+```
+· 试过 interpose libc dlsym 来抓 initializeViewConfig/initializeModelConfig 的调用 —— 无效
+  （DLSYM 日志 0 条；libcfgtrace.so 确认已加载）
+⇒ 因为 viewUnified2/CautionConfig 是【im.elf 自带 OnDemandLoader 手动加载】的，
+  符号解析不走 libc dlsym ⇒ 必须换挂钩点
+```
+- 下一步（第 47/60 轮）：
+  1) 挂钩 `libOnDemandLoader.so` 的导出（`OnDemandLoaderInitialize` / `odl_init` / `odl_res`…），
+     在它"加载完一个模块并返回入口"时打点，确认它把哪个入口交给了 initializeConfig
+  2) 或者直接在 viewUnified2.so 的 `initializeViewConfig`(0x67D740) 入口做 **inline hook**
+     （函数已导出且是尾调，改动风险可控）
+  3) 若确认卡在 initializeViewConfig 内部，再逐层看它等哪个队列/锁
