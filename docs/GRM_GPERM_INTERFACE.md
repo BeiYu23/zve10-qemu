@@ -128,3 +128,57 @@ ZV-1F 的 `0x1153D8` **完全相同**（同样是 8 字节、return 0）。
 4. `GRM_screenGetOnBitmap` 保持返回 0（与真机一致）
 5. 位图内存的真身取决于 `GRM_bitmapCreate*` / `GetPhysicalAddress` / `WriteLockBits`
    —— 那部分需要与 `session-6d5bc1eb` 的结论合并
+
+---
+
+## 六、与 `session-6d5bc1eb` 的 bitmap 结论合并 —— 软件绘制已可实现
+
+### 6.1 两半拼起来
+
+我方（`gperm*` 参数结构）＋ 对方（`BMP_*` 取像素接口）：
+
+```c
+/* GRM_gpermFillrect(void *a, void *b, const FillRectParam *p, uintptr_t c) */
+BMP0 = *(void**)((char*)p + 0x00);      /* 目标 bitmap */
+pix  = BMP_WriteLockBits(BMP0);         /* 直接拿到可写像素缓冲 */
+/* rect   = p+0x08 (x0,y0) / p+0x0C (x1,y1)  int16 */
+/* color  = p+0x04..0x07  四个字节，原样内存序 */
+/* mode   = p+0x10  只接受 1 / 2；其它 ⇒ 直接 return 0 不绘制 */
+BMP_WriteUnlockBits(BMP0);
+```
+
+⇒ **不需要解完整 bitmap 布局**，只要有 bitmap 指针 + `WriteLockBits` 即可绘制。
+
+### 6.2 对方补充的关键事实
+
+- `BMP_WriteLockBits(bmp)`：`vtable = *(void**)bmp`；`fn = *(void**)(vtable + 0x4C)`；`return fn(bmp)`
+- `BMP_WriteUnlockBits(bmp)`：`*(void**)(*(void**)bmp + 0x50)`
+- `BMP_Create`：`new(0x80)` = **Bitmap 对象 128 字节**，≥10 个参数
+- **7 个 `GRM_fbrm*YUV*` 与 `GRM_screenGetOnBitmap` 全是 `return 0` 空桩**
+  ⇒ 整条 YUV 帧缓冲路径在 ZV-1F 上未实现，软件 GPE 不需要实现它们
+
+### 6.3 仍需确认的一项：颜色字节顺序
+
+`GRM_gperm*` 没有任何外部导入者（只有 `libObj` 内部经 PLT 调用），
+⇒ **静态找调用点成本高**（PLT 条目间还夹着字面量，布局不规则）。
+
+**⇒ 更可靠的做法：在 shim 里运行时把 `FillRectParam` 的前 0x18 字节原样打印出来。**
+
+已知 UI 常见色（纯黑 `0x00000000`、白、菜单高亮的特定色）几乎立刻能反推出通道顺序：
+- 若打印到 `00 00 00 FF` ⇒ 说明第 4 字节是 alpha（RGBA 序）
+- 若打印到 `FF 00 00 00` ⇒ ARGB 序
+
+⇒ 一次运行即可确定，比静态逆推更快。
+
+### 6.4 仍需 bitmap 布局提供的信息
+
+虽然 `WriteLockBits` 能拿到指针，但要**正确写入像素**还需要：
+
+| 需要 | 为什么 | 来源 |
+|---|---|---|
+| **stride / pitch** | 逐行跳转 | bitmap 布局（对方 §4.2） |
+| **像素格式**（RGB565 / RGBA5551 / RGBA8888） | 颜色编码 | 同上 |
+| **width / height** | 边界裁剪 | 同上（`BMP_Create` 的 arg5/arg6 疑为宽高） |
+| WriteLockBits 返回的是**像素基址**还是**含 stride 的结构** | 决定怎么写 | 同上 |
+
+⇒ **对方 §4.2（bitmap 完整布局）现在是软件绘制的唯一阻塞项**，值得优先。
