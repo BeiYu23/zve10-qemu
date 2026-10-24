@@ -4532,3 +4532,31 @@ TESTPAT 写入 0x20312000（/dev/mem mmap，VA 0x474e000）
 3) 难点：App 目前仍卡在 initializeConfig（未画）——
    这两步先做成"随时可用"，等 App 能走到绘制就能立刻出内容
 ```
+
+## 2026-10-24 23:30 老菜单：L2 shim 已就位，但 App 仍未调用 GRM_*（卡在初始化，不在绘制层）
+- 新增 `libgrm2.so`（-nostdlib）：
+```
+构造函数：open("/dev/mem") + mmap(0x20312000, 0x1E0000) → fb VA（实测 0x474E000）
+interpose GRM_bitmapCreate：真库造对象后，把 [bmp+0x08] 指向 fb，
+   并写 geo+0x18=640(stride) / geo+0x1A=480 / geo+0x1C=1(format) / geo+0x24=0x20312000
+interpose GRM_bitmapWriteLockBits → 直接返回 fb
+interpose GRM_gpermFillrect → CPU 填充（按 bpp_tab / format）
+interpose GRM_gpermRectblit → 目前只记录
+```
+- 实测（ab_v660 / o20）：
+```
+GRM2 init fb=0x474E000  ✅ shim 正常初始化
+但 GRM2 其它日志 = 0 条 ⇒ App 一次都没有调用 GRM_bitmapCreate / gperm*
+屏幕：仍以黑色为主（App 自己的零散内容）
+```
+- 结论：
+```
+① 显示层（L1）已彻底打通：我们可以把任意像素显示到屏幕（满屏彩条已验证）
+② 绘制层（L2）的 shim 已准备好，但 App 不走绘制 —— 因为 initializeConfig 不返回
+③ 所以当前唯一瓶颈回到 App 初始化：initializeConfig
+```
+- 下一步（第 51/60 轮）：
+  1) 回到 initializeConfig：既然 dmp_allocator_lib_init 的 sem 已能 interpose 放行，
+     下一步用**多探针组合**（INITCFG_EN/EX、WAISEM、RCV、ZZFUTEX）观察它放行后停在哪
+  2) 若它实际卡在"等 GPU 事件"，就把 fake 的 event 语义按真驱动常量填对
+  3) L2 shim 保留，App 一旦走到绘制即可直接出图
