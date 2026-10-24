@@ -4374,3 +4374,26 @@ c621（读后按行过滤 r-xp）    → 输出 "MAPSX empty"（read 返回 <=0�
 · backup 同步队列已实现且 bootin 阶段正常
 · 待验证：等待点是否在 viewUnified2 的构造函数里（对方建议查 1768 个 DT_INIT_ARRAY）
 ```
+
+## ★★★ 2026-10-24 22:30 老菜单：**找到一个"只等不signaled"的信号量 0x018004B5**（dmp_allocator 用的那个）
+- 方法：interpose `osal_wai_sem_tmo` / `osal_sig_sem`，按 sem 去重打印，取"等了但从未被 signal"的集合：
+```
+去重后 waits 22 个 sem，其中 21 个都有对应 SIGSEM
+★ 唯一"WAITED-BUT-NEVER-SIGNALED"：
+   sem = 0x018004B5   caller lr = 0x0653EB69
+（0x18004B5 正是我们早前在 dmp_allocator_lib_init 反汇编里看到的字面量）
+```
+- 对照实验：让 `osal_wai_sem_tmo(0x018004B5, -1)` 直接返回 0（BYPASS）后重跑：
+```
+WAISEM_BYPASS 命中 1 次
+但 INITCFG_ENTER=1 / EXIT=0 仍然不变，crash=0
+⇒ 这个信号量不是 initializeConfig 的唯一阻塞点（它可能是 DMP 分配器线程自己的等待）
+```
+- 结论/下一步（第 47/60 轮）：
+```
+1) 把"BYPASS + 去重信号量表"合并进同一个探针，
+   下一轮就能立刻看出：bypass 之后【下一个】从未被 signal 的 sem 是哪个
+2) 同时把 lr=0x0653EB69 解析到具体库/函数（需要 im.elf 的 maps —— 内核侧 dump 计划仍待做）
+3) 若 signal 侧本该由某个被我们 stub 掉的模块发出（grm_ma/dmm/upm），
+   就在对应 stub 里补上 osal_sig_sem 调用
+```
