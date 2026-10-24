@@ -3304,3 +3304,17 @@ bootin 不再崩（trap=0），启动链完整走到：bootin → sen.elf → la
 - 下一步（第 28/60 轮）：
   1) 用 BKCBN 记录的 `rb[0]/rb[2]` 操作码做应答字段试探（把"成功码"写进应答，看 EXIT 是否出现）；
   2) 同时看 initializeConfig 现在是否又卡在别的队列（用之前的 ioctl/stat 组合观察）。
+
+## 2026-10-24 13:30 新菜单线：v4（ZV-1F 的 im.elf + bootin.elf）—— 仍然崩在 NULL，且崩在库内而非 im.elf 本体
+- 用对方 v4 整盘镜像（`zve10_hybrid_full_v4.img`，md5 0f6245dc…）+ 我们的 stub 模块（backup/accel/mag/compass/grm_ma/upm）启动：
+```
+modloads=32（越过 upm）
+EXECVE /usr/bin/bootin.elf → EXECVE /usr/bin/im.elf
+IMOPEN FAIL //etc/ld.so.cache (err=-2)        ← 对照：ZV-E10 正常启动时同样会 FAIL 3 次，属正常
+崩溃：program=/usr/bin/im.elf(pid 118) address=0x0 trap=0x0e
+[ZZEXCSTACK] sp=5EFFFB58 pc=0x05B4F3BE lr=0x05B4F407
+栈上代码指针：0x04900DE0 / 0x04074D07 / 0x0406F2C1 / 0x0406F07B（都在 0x04xxxxxx = libc/库区）
+```
+  ⇒ **换 im.elf 版本没有解决问题**；崩点在库内部（libc 区调用链），im.elf 本体（0x8000 段）没出现在栈上。
+  ⇒ 更像"某个前置数据/句柄为空，导致库函数对 NULL 解引用"。
+- 已请对方走 A（对比 ZV-E10 vs ZV-1F 的 /etc），我方提议可往 hybrid /usr 注入探针抓 maps + dlopen 序列。
