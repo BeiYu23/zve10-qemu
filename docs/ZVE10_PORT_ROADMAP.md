@@ -3318,3 +3318,24 @@ IMOPEN FAIL //etc/ld.so.cache (err=-2)        ← 对照：ZV-E10 正常启动�
   ⇒ **换 im.elf 版本没有解决问题**；崩点在库内部（libc 区调用链），im.elf 本体（0x8000 段）没出现在栈上。
   ⇒ 更像"某个前置数据/句柄为空，导致库函数对 NULL 解引用"。
 - 已请对方走 A（对比 ZV-E10 vs ZV-1F 的 /etc），我方提议可往 hybrid /usr 注入探针抓 maps + dlopen 序列。
+
+## 2026-10-24 14:00 新菜单线：upm_bootmode 假设被否；探针注入遇上 loader 路径问题
+- 按对方建议，把 `upm` stub 升级为**同时创建 `/proc/udm/upm_bootmode`（返回 "0\n"）**：
+```
+upm_stub2 loaded udm_dir=6a5c6ce0 bootmode=6a5c6c60    ← proc 节点创建成功
+bootin → im.elf → 仍然 address=0x0 崩溃（trap 0x0e）
+```
+  ⇒ **`/proc/udm/upm_bootmode` 缺失不是原因**（该假设排除）。
+- 按对方授权尝试注入崩溃探针（SIGSEGV handler 打印 pc + 归属映射）：
+```
+镜像里：/usr/bin/im.elf → 包壳（LD_PRELOAD=/usr/lib/libcrashprobe.so）
+        /usr/bin/im.elf.real ← 原 ZV-1F im.elf
+        /usr/lib/libcrashprobe.so ← 探针
+结果：im.elf.real: error while loading shared libraries: ld-linux-armhf.so.3: cannot open shared
+      （IMOPEN FAIL //usr/lib/ld-linux-armhf.so.3）
+⇒ 包壳方式在这个 /usr 布局下触发 loader 的 path 解析问题，探针没跑起来。
+```
+- 下一步（第 28/60 轮）：
+  1) 换注入方式：把探针放到 rootfs 侧并用 `LD_PRELOAD=/lib/...`（与 im.elf 原本的 loader 搜索路径一致），
+     或改用**内核异常钩子**（我们已有 ZZEXCSTACK）在崩溃时额外 dump `/proc/<pid>/maps`；
+  2) 一旦拿到 pc 对应的映射（0x05B4F3BE 属哪个库），就能定位真正的 NULL 解引用点。
