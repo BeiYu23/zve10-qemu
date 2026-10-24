@@ -4620,3 +4620,17 @@ pc=0x04023390  ×12
   1) 在 kernelside 把 pid 与探针里的 tid 对齐（探针用 gettid 打印），锁定 Appframework 线程的具体等待地址
   2) 用 ZZFUTEX 的 uaddr 判断它等的是哪个对象（condvar 地址 → 对应哪个库/结构）
   3) 若是等"GPU/VDF 事件"，就按真驱动语义把事件源补上（我们已有 fake 的事件 ioctl 通道）
+
+## 2026-10-24 23:59 老菜单：尝试把 futex uaddr 解析到映射（未成功，原因明确）
+- 改动：MAPD 从"只 dump VM_EXEC"改为"dump 所有 vma（上限 60）"
+- 实测（ab_v663 / o23）：
+```
+把之前 ZZFUTEX 记录的两个等待地址拿去匹配：
+  0x08FF6CFC -> NOT FOUND
+  0x072DFF44 -> NOT FOUND
+原因：vma 数量超过 60，dump 被截断；这两个地址在我没打全的那一段
+```
+- 下一步（第 56/60 轮，剩 5 轮）：
+  1) MAPD 上限提到 300，或只打印"含目标地址区间"的 vma（把目标地址作为模块参数传入）
+  2) 拿到映射名后，就能判断 Appframework 线程等的是"哪个库里的哪个对象"
+  3) 若该对象属于某被 stub 的模块，就在 stub 里主动 signal 唤醒
