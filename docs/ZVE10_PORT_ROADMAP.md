@@ -4330,3 +4330,23 @@ MAPS| 标记打印出来了，但内容为空（读返回 0 或 kmsg 单次写�
   1) 改进 maps dump（逐行、限长），拿到 im.elf 的地址布局 → 把 ZZFUTEX 的 uaddr/lr 解析成"哪个库的哪个函数"
   2) 若确认等待点落在 viewUnified2 内部，就针对该处做 shim（例如把它的等待改为直接返回）
   3) 同时验证对方给的下一卡点：initializeConfig 返回后 osal_wai_sem_tmo(0x83037A,-1)
+
+## ★★ 2026-10-24 22:15 新菜单回归定位（协作会话要求的验证）：**只 revert -EINVAL 不够**
+- 实验：
+```
+v43（原始 fake，宽松 mmap + 未实现返回 0）      → appFw=14 处、maps 有 vma、crash=1   ← appFw 会加载
+v55（v43 + 新 fake，未实现→-EINVAL）            → appFw=0、crash=0
+v56（v43 + 新 fake，未实现→return 0，其余同 v55）→ appFw=0、crash=0                    ← 仍然不加载！
+⇒ 说明导致"appFw 不加载"的不只是 -EINVAL，
+  新 fake 的其它改动（很可能是"忠实 mmap 契约"：只接受 0x4000/0x20000、其它 -EINVAL）
+  同样会让 App 走错误分支
+```
+- 结论（写清楚，避免以后重复踩）：
+```
+· 新菜单这条线【没有死】——v43 证明 appFw 能加载、能跑到绘制前
+· 但"忠实驱动契约"这一步（限制 mmap 尺寸、ioctl 返回 -EINVAL）会改变 App 控制流
+  ⇒ 要么按协作会话给的真驱动常量填合法值（0x20000 / 0x4000 / format 匹配显示格式），
+     让上层在"成功分支"上跑；要么暂时保留宽松行为
+· 当前用户指定主攻老菜单，新菜单保留 v43 作为"appFw 可加载"的基线
+```
+- 老菜单线不受影响，继续推进（卡点：initializeConfig 不返回，疑在 viewUnified2 构造函数/内部等待）
