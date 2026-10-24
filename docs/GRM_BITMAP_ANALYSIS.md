@@ -220,3 +220,98 @@ App 调 GRM_fbrmCheckUpdateFinished() → shim 返回 0
 
 **⇒ 即：`GRM_bitmapCreate` 应让真实 `BMP_Create` 正常跑**（它自己 malloc，内存是真实的），
 **只有在 `gperm*` 里才换成 CPU 实现**。这样位图对象、像素缓冲、物理地址全部由真实代码提供。
+
+## 八、★ bitmap 对象真实布局（构造函数 `0x11B6C0` 实证）
+
+```c
+Bitmap_ctor(bitmap, arg1, arg2, arg3)
+{
+    [bitmap+0x00] = vtable;            // vtable 地址 + 8（ARM C++ ABI 常规）
+    [bitmap+0x04] = 0;                 // 稍后被 calloc 的几何结构覆盖
+    [bitmap+0x08..0x20] = 0;
+    [bitmap+0x70..0x7C] = 0;
+
+    geo = calloc(...);
+    [bitmap+0x04] = geo;               // ★ +0x04 = 几何结构指针
+    assert(geo);
+
+    [geo+0x00] = 0x00ABCDEF;           // ★ 魔数（AB CD EF，不是格式 ID）
+    [geo+0x04] = 0;  [geo+0x06] = 0;   // int16
+    [geo+0x08] = arg1;                 // int16  ← 维度 1
+    [geo+0x0A] = arg2;                 // int16  ← 维度 2
+    [geo+0x1C] = arg3;
+    [geo+0x20] = <栈参数1>;
+    [geo+0x2C] = <栈参数2>;
+    [geo+0x30] = <栈参数3>;
+    [geo+0x0C..0x13] = {两字}
+
+    pthread_mutex_init(bitmap + 0x24, NULL);   // ★★ +0x24 = mutex
+    pthread_cond_init (bitmap + 0x40, NULL);   // ★★ +0x40 = condvar
+}
+```
+
+### ★★ 8.1 关键风险：`WriteLockBits` 可能【阻塞】
+
+bitmap 里带 **mutex（+0x24）和 condvar（+0x40）** ⇒ 典型是 **GPU fence 同步**：
+`WriteLockBits` 等 GPU 空闲 → 返回可写指针；`WriteUnlockBits` 交还并 signal。
+
+**⇒ 在没有 GPU 的 shim 里直接调真 `BMP_WriteLockBits`，可能永久阻塞。**
+
+**⇒ 建议：连 `BMP_WriteLockBits` / `BMP_WriteUnlockBits` 一起 interpose，
+做成"立即返回缓冲 / 立即解锁"，绕开 mutex+condvar。**
+
+### 8.2 `WriteLockBits` 的返回值语义
+
+- 虚函数以 **单参数** `fn(bitmap)` 调用，返回值在 **r0** 直接返回
+- `GRM_bitmap*` 外层那几个"转换"函数（`0x11497C` / `0x114982` / `0x11498E` / `0x1149B8` …）
+  实测全是 **空操作**：`push {r7,lr}; add r7,sp,#0; pop {r7,pc}` ⇒ **原样透传**
+
+**⇒ 结论：`WriteLockBits` 返回的是【标量指针】（像素基址），不是含 stride/format 的结构。**
+
+### 8.3 `GetSubRectangle` 输出结构（确认移植侧的观察）
+
+`0x1192B4` 用 `vtable+0x14` 写输出结构。结合移植侧"`+4` 宽、`+6` 高（int16）"的观察：
+
+```
++0x00  int16  x
++0x02  int16  y
++0x04  int16  width    ← ★
++0x06  int16  height   ← ★
+```
+
+**⇒ 宽高不用另找，`GetSubRectangle` 就给。**
+
+### 8.4 stride / 像素格式
+
+**构造函数没有用常量设置 stride/format**（`geo+0x04/+0x06` 初始化为 0），
+说明它们由 `BMP_Create` 里那个 `0x11B774` 初始化调用按参数填入。
+
+**⇒ 静态拿不到，必须运行时取。** 建议在 shim 里打印：
+```
+bitmap 指针、[bitmap+0x04] 的几何结构前 0x40 字节、WriteLockBits 返回值、其前 64 字节
+```
+一次运行即可同时确定 stride 与通道序。
+
+---
+
+## 九、给移植侧的最终实现建议（合并两半）
+
+```c
+/* ① 让真实 BMP_Create 跑，位图对象与像素缓冲都是真的 */
+/* ② interpose 掉锁，避免等 GPU fence */
+void *my_writeLock(void *bmp)   { return real_writeLock(bmp); }   /* 若真实现不阻塞则直接用 */
+void  my_writeUnlock(void *bmp) { /* 立即返回 */ }
+
+/* ③ gpermFillrect 全程 CPU 绘制 */
+void my_gpermFillrect(void *a, void *b, const FillRectParam *p, uintptr_t c) {
+    u32 mode = *(u32*)((char*)p + 0x10);
+    if (mode != 1 && mode != 2) return;          /* ★ 照抄真机：其它值不绘制 */
+    void *bmp = *(void**)((char*)p + 0x00);
+    int  *r   = (int*)((char*)p + 0x08);          /* x0,y0,x1,y1 四个 int16 */
+    u8   *col = (u8*)((char*)p + 0x04);
+    void *pix = bmp_vfn(bmp,0x4C)(bmp);
+    int   rowpx; bmp_vfn(bmp,0x18)(bmp, &rowpx);  /* 行像素数 */
+    /* 按 stride = rowpx * bpp 逐行填 col */
+    bmp_vfn(bmp,0x50)(bmp);
+}
+```
