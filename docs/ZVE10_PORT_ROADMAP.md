@@ -5199,3 +5199,30 @@ libObj 中 Backup_read@plt 调用点 = 306 处
 反汇编 BackupManager::Bkup_Read（以及 initializeViewConfig 里对它的调用处），
 找出"什么返回值会让它不重试" —— 这是最后一块拼图
 ```
+
+## 2026-10-25 04:45 新 goal 第 32/40 轮：协作方解出 osal_snd_sync_msg 内部机制 + 我方补充
+### 协作方结论（重要，作为后续依据）
+```
+u_osal_snd_sync_msg(qid, msg):
+  ioctl(fd, 0x8005, &{qid, msg, out_fn=0, out_len=0})
+  取回 out_fn（函数指针）+ out_len
+  fn(msg, out_len)      ← ★ 由内核给出的回调把【应答拷进 msg】
+⇒ 应答落在请求的 msg 缓冲里（不是别的内存）
+⇒ 客户端读的就是 msg 偏移（我们已定位：结果在 msg[4..7] = reply_buf-8）
+```
+### 我方补充（已实测）
+```
+· rb[7] 指向用户栈（0x5EFFFA9C），内容 dump 出：
+  00000000 00000001 00013208 5EFFFAB0 0000996B ...（像是局部结构，不像数据缓冲）
+· 往 *(rb[7]) 写 0：无变化（已试）
+· 把 *(reply_buf-8) 写 0/4/0x100：均无变化（已试）
+· 原厂 backup.ko 直接崩（NULL deref）⇒ stub 必须保留
+· 重试/校验逻辑在 libObj::BackupManager（Bkup_Read/Bkup_GetDataSize，两者都只是薄封装直调 libbackup）
+  ⇒ BackupManager 本身不做校验，真正判定在更上层（initializeViewConfig 的调用点）
+```
+### 下一步（第 33/40 轮）
+```
+1) 反汇编 BackupManager::Bkup_Read(0x168320) 的调用处（initializeViewConfig 内），
+   看它对返回值/长度的判定条件 —— 这决定"什么应答才算成功"
+2) 请协作方解 op=8（0x5594）语义（它出现在我们的调用序列里）
+```
