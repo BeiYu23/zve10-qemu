@@ -3843,3 +3843,25 @@ mmapI2 / mmapI3 计数 = 0
   2) 若仍不行，考虑在 preload 里 interpose `/proc/self/maps` 读取，
      让 App 看到"比实际映射小"的区间（技术可行但要谨慎）
   3) 让 streamfb 的 scanout 范围 clamp 在实际映射区内，避免把"扫描越界"误判成 App 越界
+
+## 2026-10-24 18:35 新菜单线：raw-syscall 版按需映射（SIGSEGV）尝试失败，回退到 v35 基线
+- 尝试：用 raw `rt_sigaction`(174) + 内核 struct sigaction 布局装 SIGSEGV/SIGBUS handler，
+  故障时对 GPU 区间内的地址按需 `mmap(MAP_FIXED|MAP_ANON)` 一页
+```
+结果：FIXMAP2 mmap ret=8000000（窗口映射成功）
+      但一次 "FIXMAP fix" 都没有；最终异常 dump 异常（address=0、trap=0、error_code=0x5efffdd0）
+      ⇒ handler 多半没装上或执行路径破坏了栈
+```
+- 决定：**停止这条路线**（ABI/信号语义风险高、收益不确定），回到 v35 基线（32/64MB 恒等窗口 + 单次 remap）。
+- 当前可复现基线（新菜单）：
+```
+镜像 /mnt/build/tmp/hb/v32.img / v35.img
+  · 真 backup/grm_ma/dmm + fake_gles(恒等窗口) + stub upm/accel/mag/compass
+  · cmdline: memmap=64M$0x08000000（run_resv64.sh）
+  · QEMU: -global driver=bionz-streamfb,property=addr,value=0x08000000
+状态：屏幕能出内容（稳定色块），崩溃点固定为 "窗口末 + 6MB"，尚未收敛
+```
+- 待办（下一轮起）：
+  1) 判断 App 是否通过 `/proc/self/maps` 读取窗口大小（可在 preload 里 interpose open/read 观察）
+  2) 若是，则"映射 > 可见"策略：对 maps 做重写，让 App 看到更小的区间
+  3) 若否，则回到 ioctl 返回值排查
