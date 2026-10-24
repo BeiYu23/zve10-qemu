@@ -3159,3 +3159,23 @@ viewUnified2 仍出现 7 次；pVM 仍 0；trap=0
   1) 用不同 `msgType/长度/字段组合`做小步试探（先试 `type=2, size=64`、再试 `type=1`），
      每轮只看 `INITCFG_EXIT` 是否出现；
   2) 同时问对方：ZV-E10 的 `0x3E014D`（backup 服务）应答的**最小字段集**是什么。
+
+## 新 goal 第 24/60 轮（2026-10-24 12:25）：按对方新线索查 `dlopen` —— 只看到重复 `libObj.so` 成功加载，没看到 `viewUnified2.so` 的配置初始化入口被调用
+- 对方查明 `initializeConfig`（`libObj+0x14BE85`）实际是 **dlopen 配置模块并调入口**：
+```
+libObj.so        → initializeModelConfig() / getModelConfig()
+viewUnified2.so  → initializeViewConfig()  / getViewConfig()
+（失败会 printf "sym( %s ) failed - dlerror() = %s"）
+```
+- 我方 interpose `dlopen`（带 tid）实测：
+```
+DL2 tid=121 /usr/lib/libObj.so r=0x39B08
+DL2 tid=138/139/140 /usr/lib/libObj.so r=0x39B08   ×N（同一路径反复成功）
+（没有观察到 initializeViewConfig 相关的 dlopen 序列，且 INITCFG 本轮也没出现）
+```
+  ⇒ `dlopen` 本身不是阻塞点（成功且返回句柄）；
+  ⇒ 但**日志被早期加载刷满**，配置阶段的 dlopen 可能被 cap 截断，需下一轮用"只记录失败 + 只记录 view/Config 关键字"的方式复核。
+- 下一步（第 25/60 轮）：
+  1) 只记录 **r==0（失败）** 的 dlopen，以及路径含 `view`/`Config` 的 dlopen；
+  2) 同时记录 `initializeViewConfig` / `getViewConfig`（能用 dlsym 从 viewUnified2 句柄取到符号就 hook，取不到就只记录 dlsym 调用）；
+  3) 若确认配置模块初始化卡住，则回到"它的构造函数里向哪个队列要数据"（对方已给出 ViewConfig 构造链）。
