@@ -615,3 +615,75 @@ int my_bitmapWriteLockBits(void *bmp, int arg1, void **out)
 **⇒ 这比"直接崩"更难排查**（无输出、无崩溃、无日志）。
 
 **⇒ `WriteLockBits` 中性化必须与空指针修复同时上线，不能分两次试。**
+
+---
+
+## 十六、🚨 `WriteLockBits` / `WriteUnlockBits` **必须成对中性化**
+
+### 16.1 `[+0x18]` 是引用计数，减到负数会 assert
+
+```
+0x11B250:  ldr r3,[r4,#24]; subs r3,#1; str → [+0x18]--   ← Unlock 侧
+0x11B252:  cmp r3,#0
+0x11B254:  bge 0x11B26A            ; ≥0 才继续
+           ; <0 → assert（行 0x1AA = 426）
+```
+
+```
+0x11B5E4:  ldr r3,[r4,#24]; subs r3,#1; str → [+0x18]--   ← 另一 Unlock 路径
+0x11B5E6:  cmp r3,#0
+0x11B5E8:  bge 0x11B5FE
+           ; <0 → assert（行 0x1B8 = 440）
+```
+
+```
+0x11BCB2:  ldr r3,[r4,#24]; adds r3,#1; str → [+0x18]++   ← Lock 侧
+```
+
+**⇒ `[+0x18]`（另一计数 `[+0x1C]` 同理）是 lock `++` / unlock `--` 配对。**
+
+### 16.2 ⇒ 只中性化 Lock 会制造新 abort
+
+```
+计数 0  → shim Lock（不 ++）→ 真 Unlock（--）→ 变成 -1 → assert → abort
+```
+
+**现象：画了几帧之后突然 abort** —— 非常隐蔽。
+
+### 16.3 ✅ 正确实现：两个都 interpose，成对空操作
+
+```c
+int my_bitmapWriteLockBits(void *bmp, int arg1, void **out)
+{
+    /* 不看任何计数器，直接给像素 —— 避免所有 cond_wait 路径 */
+    void *pix = *(void **)((char *)bmp + 0x08);
+    if (!pix) { if (out) *out = NULL; return -1; }
+    if (out) *out = pix;
+    return 0;
+}
+
+int my_bitmapWriteUnlockBits(void *bmp)
+{
+    return 0;                  /* ★ 空操作，不动任何计数 ⇒ 不会下溢 */
+}
+```
+
+**符号名（C 符号，无 `_ZN` 修饰）：**
+```
+GRM_bitmapWriteLockBits
+GRM_bitmapWriteUnlockBits
+```
+
+### 16.4 ⚠️ 对"现象诊断"的影响
+
+`abort` 现在至少有两个可能来源：
+1. 图形初始化之前的空指针
+2. **lock/unlock 不配对导致的计数下溢 assert（行 426 / 440）**
+
+**⇒ pc/lr 若落在 `0x11B256` / `0x11B5EA` 附近，就是第 2 种。**
+
+### 16.5 方法论第 6 条（本轮新增）
+
+> **预测一个状态机的行为前，先枚举所有【写】这个状态的位置。**
+
+—— 对方正是靠"查 `[+0x18]` 的写入者"发现"第一次必过"这个前提不成立。
