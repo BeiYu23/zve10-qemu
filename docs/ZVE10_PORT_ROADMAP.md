@@ -3891,3 +3891,35 @@ w[] 里 0x0DA6BD38 之类是用户态指针（命令缓冲），不是窗口地�
      （重点：0xC004820D 返回 1、0xC0048211/0xC0048212 返回 0，是否应为长度/地址）
   2) 给这些 cmd 返回合理值后再看崩溃是否消失
   3) 若仍崩，用内核异常钩子把"崩溃前 16 条 ioctl"和"崩溃时 r0/r4"一起关联分析
+
+## ★★★ 2026-10-24 18:50 新菜单线：按真驱动契约重写 fake_gles —— **App 只做了一次 128KB mmap（证实契约模型）**
+- 两个协作会话共同确认（基于 `grm_gles.ko` 反汇编）：
+```
+① 寄存器窗口：ioremap 固定物理 0xF1000000，16 KB
+② 环缓冲：单块 vmalloc(128KB)，驱动 init 时只分配一次
+③ 128KB 路径要求 vm_pgoff == 0；其它尺寸（0x200/0x2000000）真机直接 BUG()
+⇒ 每次 128KB mmap 是【同一块环的别名】，不是相邻切片
+⇒ 大窗口（16/32/64MB）是调试构造，不是真机行为
+```
+- 本轮按契约重写 fake_gles：
+```
+fake_open  : vmalloc(128 KB) 环缓冲，page 映射用
+fake_mmap  : 0x4000  -> remap 固定 pfn 0xF1000（物理 0xF1000000）
+             0x20000 -> 要求 pgoff==0，逐页映射同一块环
+             其它    -> 返回 -EINVAL（真机是 BUG()）
+preload    : 取消大窗口 MAP_FIXED（不再人为制造 0x08000000 窗口）
+```
+- 实测（v37 / h54）：
+```
+FAKEGLES open(1) ctx=0 ring=0xB22A6000 bytes=131072
+FAKEGLES mmap seq=1 va=0x0C000000 size=0x20000 pgoff=0x0     ★ App 只做了一次 128KB mmap！
+⇒ 证实"App 只使用 128KB 命令环"的契约模型
+随后：SIGABRT（trap 6, address=0），屏幕黑
+```
+- 结论与方向（与两个会话一致）：
+```
+① 大窗口能出画面 ≠ 正确：App 在真机上从不直接写显存
+② 正确终点 = 用户态 GPE 层软件绘制（a7c2 的 software_gpe）：
+   GRM_gpermFillrect(314B) / GRM_gpermRectblit(824B) 等 21 个 GRM_* 导出
+③ 下一步：在 shim 里用 CPU 实现 GRM_gperm*，再由 GRM_screenGetOnBitmap 出帧
+```
