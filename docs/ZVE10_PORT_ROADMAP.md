@@ -4304,3 +4304,29 @@ modloads=35、sen.elf 启动 ✅、im.elf 启动 ✅、crash=0、INITCFG_ENTER=1
   2) 或者直接在 viewUnified2.so 的 `initializeViewConfig`(0x67D740) 入口做 **inline hook**
      （函数已导出且是尾调，改动风险可控）
   3) 若确认卡在 initializeViewConfig 内部，再逐层看它等哪个队列/锁
+
+## 2026-10-24 22:10 老菜单：dlopen 入口/出口探针结果 —— **App 不走 libc dlopen**（再次证实手动加载器）
+- 探针（`libdltrace.so`，interpose `dlopen` 的进入/返回 + `openat`，只匹配 viewUnified/CautionConfig/libObj）：
+```
+DLOPEN 日志 = 0 条、OPENAT 日志 = 0 条
+而同一轮里 INITCFG_ENTER=1 / EXIT=0、viewUnified2 与 CautionConfig 仍被读取并 mmap
+⇒ 加载确实发生，但【不经过 libc dlopen】⇒ 是 im.elf 自带 OnDemandLoader 手动加载
+⇒ 对 initializeConfig 的阻塞点，dlopen 探针这条路无效
+```
+- 另一尝试（maps dump 探针 `libgrmlog-c620.so`，在 worker 里读 /proc/self/maps 并打印）：
+```
+MAPS| 标记打印出来了，但内容为空（读返回 0 或 kmsg 单次写入过大被截断）
+⇒ 需要分块/逐行打印，下一轮改进
+```
+- 现状判定（老菜单）：
+```
+· 启动链完整、35 模块、无崩溃
+· initializeConfig 不返回
+· 已确认它加载了 viewUnified2.so + CautionConfig.so 后进入 condvar 等待
+· 阻塞点不在 libc dlopen、不在我们已实现的 backup 队列
+⇒ 最可能：viewUnified2 的 1768 个构造函数之一里做了同步 IPC（对方给出 DT_INIT_ARRAY=1768 项）
+```
+- 下一步（第 47/60 轮）：
+  1) 改进 maps dump（逐行、限长），拿到 im.elf 的地址布局 → 把 ZZFUTEX 的 uaddr/lr 解析成"哪个库的哪个函数"
+  2) 若确认等待点落在 viewUnified2 内部，就针对该处做 shim（例如把它的等待改为直接返回）
+  3) 同时验证对方给的下一卡点：initializeConfig 返回后 osal_wai_sem_tmo(0x83037A,-1)
