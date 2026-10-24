@@ -3767,3 +3767,30 @@ FAKEGLES mmapI va=0x08000000 size=0x10000000 map=0x10000000 ident=0x08000000
   1) interpose `raise`/`gsignal`/`pthread_kill`，直接抓 SIGABRT 的投递点
   2) 检查 mmap 路径告警是否由"256MB 逐页 remap"引起；若是则改成按需映射（惰性/分段）
   3) 若 abort 来自某库内部的致命判定，再按语义补数据
+
+## ★★ 2026-10-24 18:00 新菜单线：加了内核级信号投递追踪（ZZSIG），并改用"一次性 remap"
+- 两处改动：
+```
+① 内核 arch/arm/kernel/signal.c：信号投递时打印
+   [ZZSIG] sig= code= pid= uid= cur= comm= pc= lr= sp=
+② fake_gles wid==4 改为 **一次 remap_pfn_range**（连续保留区不需要逐页循环）
+   preload 侧窗口请求改回 32 MB（与 memmap=32M$0x08000000 对齐）
+```
+- 实测（v31 / h48）：
+```
+FAKEGLES mmapI1 va=0x08000000 size=0x02000000 map=0x2000000   ✓ 一次性映射成功
+[ZZSIG] sig=4(SIGILL) 出现 10 次，pc 集中在 0x0448 3b6x~7e（libc 区）
+[ZZSIG] sig=6(SIGABRT) 出现 0 次（本轮）
+最终崩溃：address=0x0A6000E4 trap 0x0e —— 又是 base+38MB（我们只映射 32MB）
+```
+- 判读：
+```
+① "SIGABRT 无消息"这一现象在不同配置下并不稳定；本轮出现的是 SIGILL×10 + 数据中止
+② 反复出现的 0x0A6000E4 / 0x096000E4 都等于 base + 窗口大小 + ~6MB
+   ⇒ App 需要的 GPU 窗口【大于 32 MB】
+③ 真机 129MB 内存里要留这么大窗口 ⇒ 必须靠 memmap 预留（不占 MemFree）
+```
+- 下一步（第 35/60 轮）：
+  1) 把 memmap 预留提到 **64M$0x08000000**，窗口同步 64MB，看是否越过 +6MB 那道坎
+  2) 若 64MB 仍不够，继续 128MB（memmap 预留不占 MemFree，但要确认内核能正常起来）
+  3) 同时保留 ZZSIG 追踪，确认 SIGILL 是否与"窗口内容非法"相关
