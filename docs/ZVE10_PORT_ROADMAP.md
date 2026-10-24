@@ -3626,3 +3626,28 @@ h28：崩在 libc+0x602E8（写 0x6B509114，DDR 之外），lr 在 libObj.so+0x
      只去掉"返回 0"的 interposer；
   2) fake_gles 的 ioctl 按真驱动语义返回（尤其"分配/取地址/取尺寸"三类），并用 mmap 提供真实可写窗口；
   3) 每修一类，重复跑 3 次看崩溃点是否收敛。
+
+## ★★★ 2026-10-24 16:25 新菜单线：**屏幕第一次出现内容（虽然是噪声）** —— 固定 GPU 窗口 0x08000000 是关键
+- 做法：写了一个 5 行的 preload（`libfixmap.so`，`-nostdlib`），在构造期把 GPU 窗口**固定映射**到 App 假设的地址：
+```c
+int fd = open("/dev/dmpgles2", O_RDWR);
+mmap((void*)0x08000000, 16MB, PROT_READ|PROT_WRITE, MAP_SHARED|MAP_FIXED, fd, 0);
+```
+  配合 fake_gles 把窗口降到 16 MB（64 MB 会 OOM：guest MemTotal 只有 129 MB）。
+- 实测（v14 / h31，170s）：
+```
+FAKEGLES mmapW va=0x08000000 size=0x01000000 off=0x0 map=0x1000000   ★ 固定窗口映射成功
+★ 屏幕：非黑像素 282,732 / 307,200（≈92%）—— 第一次有内容（见 docs/artifacts/2026-10-24_h31_first_nonblack.png）
+   内容是【静态噪声/花屏】，说明扫描输出读到的是未初始化的帧缓存数据
+崩溃：pc/lr 都在 ld-2.11.2.so（off 0x11D70 / 0x4E9F）—— 动态加载器内部
+```
+- 判读：
+```
+① "固定窗口 0x08000000" 这一步是对的：App 确实按 0x08000000 基址使用 GPU 内存
+② 花屏 = 帧缓存被"读"但没被"正确写"（或写的是随机数据）
+③ 崩溃点从 appFw/libc 转移到动态加载器 ⇒ 说明主流程又前进了一段
+```
+- 下一步（第 31/60 轮）：
+  1) 查动态加载器处的崩溃（很可能是 dlopen 一个不存在的库 + 未判空，或我们的 preload 影响了搜索路径）；
+  2) 让帧缓存"先被清成黑色"（在 fake_gles open/mmap 时 memset 窗口），至少把花屏变成黑屏，方便区分是否真有内容；
+  3) 继续追 GPE/GRM 的绘制命令是否真的落到了帧缓存。
