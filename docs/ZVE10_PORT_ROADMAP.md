@@ -4949,3 +4949,28 @@ BKREPLY 命中 12 次（op=3 为主）
   2) 让协作方从 `backup.ko` 的 opcode 处理函数反汇编出**应答结构布局**
      （我们已知：op0=get_datasize / op3=read / op8=未知；请求里 rb[2] 像是 id）
   3) 按真实布局填值，再用 INITCFG_EXIT 判据
+
+## ★★ 2026-10-25 02:40 新 goal 第 13/40 轮：backup 协议关键结构确认（opcode 是 32 位小端，且不在 reply_buf 起始）
+- 从 `backup.ko::backup_osal_call_func`（0x51FC）反汇编确认：
+```
+520c: ldrb r2,[r0,#1] ; 5214: ldrb r3,[r0]      ; 取 msg[0], msg[1]
+521c: orr  r3, r3, r2, lsl #8
+5220: ldrb r2,[r0,#2] ; 5224: orr r3, r3, r2, lsl #16
+5228: ldrb r2,[r0,#3] ; 522c: orr r3, r3, r2, lsl #24
+5230: add r2, r3, #1
+5234: cmp r2, #38          ; opcode+1 <= 38 才查表
+5238: ldrls pc,[pc,r2,lsl #2]   ; 跳转表
+⇒ opcode = 32 位小端，位于【消息起始 msg[0..3]】
+```
+- 而对方早前给过：内核 `__default_cb` 调用回调时 **arg0 = msg + 0xC**
+```
+⇒ 我们回调里的 reply_buf 是 msg+0xC
+⇒ 所以 opcode 在 ((unsigned*)((char*)reply_buf - 12))[0]
+⇒ 我们此前用 rb[0] 当 opcode 是错的（那其实是 msg[0xC]）
+```
+- 这解释了为什么"猜的应答"会让 App 崩：我们连请求字段都读错了位置。
+- 下一步（第 14/40 轮）：
+  1) 回调里打印 `((unsigned*)((char*)rb-12))[0..3]`（真正 opcode/id/len）
+     以及 rb[0..3]（应答区起始内容）
+  2) 按 `Backup_get_datasize`（0x0D20，返回 r0=size）/`Backup_read` 的语义填应答
+  3) 用 INITCFG_EXIT 判据
