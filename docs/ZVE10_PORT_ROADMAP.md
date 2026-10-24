@@ -4125,3 +4125,26 @@ MPROT skip PROT_NONE ×30（guard page 全部放开）
   1) fake_ioctl 未实现命令统一返回 `-EINVAL`（而不是 0），重跑看 dmm 是否还崩
   2) 若仍崩，打印 dmm 崩溃前的 ioctl 序列（我们已有 ioctl 日志），定位是哪个 cmd 传了 0x2FCFD048
   3) 同时保留 mmapad+mprotsh（它们让我们越过了非硬件性障碍，且对真机无害——只在 QEMU 测试用）
+
+## 2026-10-24 21:10 新菜单线：fake ioctl 改 -EINVAL + guard 绕过 → 崩溃点再次前移（现在 address=1）
+- 改动：
+```
+fake_ioctl：所有未实现命令统一返回 -EINVAL（此前返回 0，会把 0 当句柄传下去）
+镜像 v51 = v50 + 新 fake_gles
+```
+- 实测（v51 / h74）：
+```
+crash=1  但【没有内核侧崩溃】（无 PC is at）
+用户态：address=0x1, trap=0x0e
+[ZZINSN] pc=0x040960B4 (libc/pthread 区)  insn=b9816821
+[ZZREG]  r4=1 r5=1 r6=0 r7=0 r8=0x08394D40 r9=0 r10=0
+ZZR7: r7=0（与上一轮"大结构基址"完全不同）
+⇒ dmm_ctrl_Main 的内核崩点消失了（-EINVAL 生效，上层走了错误分支）
+⇒ 现在是新的用户态"把 1 当指针用"的崩溃，位置在 libc/pthread 区
+```
+- 判读：我们已连续越过三类障碍（堆越界 → 内核 dmm 崩溃 → 现在的 libc 区空指针），
+  每一类都更靠后；说明"打通方向"是对的，只是每层各有各的问题。
+- 下一步（第 42/60 轮）：
+  1) 用 ZZMOVMAP 把 pc=0x040960B4 落到具体库/函数（libc? pthread? 还是别的库的 0x4096 段）
+  2) 检查 r4/r5=1 的来源（很可能是某个返回值被当指针，例如我们 fake 返回 -EINVAL 后上层未处理）
+  3) 若确认是"错误分支未处理"，则对那个 cmd 返回一个合法值而不是 -EINVAL
