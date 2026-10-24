@@ -232,3 +232,57 @@ nflasha15 @0x2D800000 ext2   nflasha17 @0x49000000 FAT    nflasha18 @0x4F400000 
 
 ⇒ 它是 init 编译进去的**可选执行项**，两边固件都不带 = 正常。
 日志里看到它被 exec，是 **bootin 退出(255) 后的兜底路径**，不是原因。
+
+---
+
+# 八、v4：换上 ZV-1F 的 im.elf / bootin.elf（+ 回答 QEMU 侧三问）
+
+## 8.1 为什么值得换：两版 im.elf 差 59%
+
+| 项 | 值 |
+|---|---|
+| 大小 | 两版都是 23,240 B |
+| **字节差异** | **13,795 / 23,240 = 59.36%**（同尺寸但代码大改） |
+| 导入符号集 | **完全相同（64 个，差集为空）** |
+| dlopen 目标 | 两版都含 `/usr/lib/libObj.so` + libIMDB/libbackup/libosal_utm/libosal_uipc/libSTMcmdexecute |
+| 字符串差异（实质） | ZV-1F 版多出 **`a_thread APP idx err`**、**`a_thread INFRA_END idx err`**（新的线程索引逻辑）；ZV-E10 版有 `/dev/nflasha18`，ZV-1F 版是 `/dev/NONE` |
+
+⇒ **导入符号相同 ≠ 启动行为相同**。ZV-1F 的 im.elf 与 ZV-1F 的 libObj 是配套构建，
+混用 ZV-E10 的 im.elf 属于跨版本组合，**应当换成 ZV-1F 版**。
+
+## 8.2 v4 产物
+
+| 文件 | 大小 | md5 |
+|---|---:|---|
+| **`zve10_hybrid_full_v4.img`**（boot 区 + 用户区，推荐直接给 QEMU） | 1,983,905,792 B | `0f6245dc2ea825b66efa8de7d4c5deb0` |
+| `zve10_hybrid_emmc_v4.img`（仅用户区） | 1,979,711,488 B | `fc47088aac184b4d37afbbbea92c29ee` |
+| `nflasha15_hybrid_v4.ext2`（v4 的 /usr） | 314,572,800 B | `2ea8c4a10812bdca7e953139ac2ef56b` |
+| `bin_zv1f/im.elf`（单独取用） | 23,240 B | `a48240083e68a58ed2cf0e8870dcd895` |
+| `bin_zv1f/bootin.elf`（单独取用） | 15,336 B | `3545261cc8ec1ebc77d476cde9d0e66a` |
+
+**v4 相对 v3 只改两个文件** `/bin/im.elf` + `/bin/bootin.elf`（换成 ZV-1F 版），
+属主已修正回 **57285:1000**，`e2fsck` 干净（905/76912 files）。
+
+两版布局均已验证：
+- 用户区镜像：`/usr` @ **728 MiB** ext2 ✓
+- full 镜像（前 4 MiB boot 区）：`/usr` @ **732 MiB** ext2 ✓，`/setting` @ 12 MiB FAT ✓，nflasha1 @ 4 MiB FAT ✓
+
+## 8.3 关于 `backup.ko`（QEMU 侧的 upm 卡点）
+
+| 模块 | ZV-E10 | ZV-1F | 关系 |
+|---|---:|---:|---|
+| `backup.ko` | 73,764 | 73,796 | **字节差 27.1%，但字符串集完全相同** ⇒ 同源重编 |
+| `accel.ko` | 8,012 | 8,012 | **字节完全相同** |
+| `mag.ko` | 10,500 | 10,500 | **字节完全相同** |
+| `compass.ko` | 5,412 | 6,592 | 不同 |
+| `grm_ma.ko` | 24,800 | 24,800 | 不同 |
+| `upm.ko` | 137,260 | 146,552 | 不同 |
+
+⇒ **ZV-1F 的 `backup.ko` 与原厂同源，在 QEMU 里同样会卡 upm。**
+⇒ **stub 是 QEMU 环境的必需品，不是移植决策。**
+⇒ **真机上必须用原厂模块**（stub 只用于 QEMU 验证）。
+
+## 8.4 交付约定更新
+
+按 QEMU 侧建议：**默认交付「boot 区(4 MiB) + 用户区」的整份镜像**（`zve10_hybrid_full_v4.img`），
+与 QEMU 侧既有偏移约定（/usr @ 732 MiB）一致；同时保留纯用户区版本以备不同机器模型。
