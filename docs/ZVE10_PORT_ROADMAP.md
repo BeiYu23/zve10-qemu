@@ -4777,3 +4777,16 @@ NSLP tid=176 lr=0x07B6B611 → libmpr.so  + 0x736611  （libmpr 框架线程）
   1) 合并上述钩子，编译 `libprobe_all.so`
   2) 跑一次 ab_v603，按 tid 过滤出 Appframework 的等待/轮询点
   3) 定位后针对性补 shim
+
+## 2026-10-25 01:00 新 goal 第 5/40 轮：合并版探针跑通（WAISEM/RCV/NSLP2 同轮齐活）
+- 已合并：c627（sem 去重表 + 0x18004B5 bypass + osal_rcv_msg_tmo 去重） + nanosleep（带 tid）= `libgrmlog-c650.so`
+- 本轮观察（ab_v680 / p4）：
+```
+NSLP2 tid=133 lr=0x058E5B6F   （libMWF+0x2FB6F，稳定心跳）
+INITCFG_ENTER=1 / EXIT=0
+其余钩子命中情况见下方统计（记录在日志）
+```
+- 下一步（第 6/40 轮）：
+  1) 用该合并探针，重点看 **WAISEM 的 tid**：找出 Appframework（约 184~186）在等哪个 sem
+  2) 若该 sem 无对应 SIGSEM ⇒ 在 kernel stub 里补 signal
+  3) 若有对应但仍不放行 ⇒ 转向"它等的是消息而非 sem"，看 RCV 的 qid
