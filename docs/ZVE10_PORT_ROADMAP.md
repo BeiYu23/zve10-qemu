@@ -4790,3 +4790,23 @@ INITCFG_ENTER=1 / EXIT=0
   1) 用该合并探针，重点看 **WAISEM 的 tid**：找出 Appframework（约 184~186）在等哪个 sem
   2) 若该 sem 无对应 SIGSEM ⇒ 在 kernel stub 里补 signal
   3) 若有对应但仍不放行 ⇒ 转向"它等的是消息而非 sem"，看 RCV 的 qid
+
+## ★★★ 2026-10-25 01:10 新 goal 第 6/40 轮：**同轮解析出 Appframework 的 futex 等待对象（两个匿名堆区）**
+- 用 p3（含 MAPD + 探针）在**同一轮内**解析：
+```
+ZZFUTEX Appframework uaddr 0x08FF6CFC → 匿名映射 0x08DF9000-0x08FF8000（2MB 堆块）+0x1F DCFC
+ZZFUTEX Appframework uaddr 0x072DFF44 → 匿名映射 0x072DC000-0x0731B000（256KB 堆块）+0x3F44
+⇒ 两个等待对象都在【匿名堆区】里 ⇒ 是堆上的 condvar/mutex（不是文件映射、不是库数据段）
+⇒ 与"sem/osal 消息都无命中"一致：它等的是【库内部堆对象上的条件变量】
+```
+- 意义：
+```
+Appframework 线程 = pthread_cond_wait(堆对象)；
+该条件变量由"队列/工作线程在收到事件后 signal" —— 而我们的环境里没有那个事件源
+⇒ 下一步要找出"谁会 signal 这个 condvar"，即它等的是哪一类事件（GPU/VDF/输入/配置）
+```
+- 下一步（第 7/40 轮）：
+  1) 用 uaddr 反查"谁持有它"：把该地址作为参数，在 libObj/viewUnified2 里找 condvar 的创建点
+     （可用"在该地址上打断点式探针"：hook pthread_cond_wait 打印 cond 指针，匹配后再找 signal 方）
+  2) 或者直接 hook `pthread_cond_wait`/`pthread_cond_signal`，按 cond 指针配对，
+     找出"只 wait 不 signal"的那个 condvar，再定位其所属模块
