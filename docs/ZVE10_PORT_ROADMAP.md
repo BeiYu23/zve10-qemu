@@ -4703,3 +4703,21 @@ round=1..12（约 96 秒）每一轮都能看到： [MAPD] pid=121 comm=im.elf.r
      artifacts 截图、ab_v651(L1)/ab_v660(L2)/ab_v603(基线) 镜像
 下一步：interpose libOnDemandLoader 的 odl_* 导出定位加载卡点
 ```
+
+## 2026-10-25 00:35 新 goal 第 1/40 轮：老菜单稳态是"nanosleep 轮询"，不是阻塞等待
+- 统计（ab_v603 / p1，150s）：
+```
+IMNANOSLEEP 334 次、INITCFG_ENTER=1（EXIT 未出现）
+日志尾部除 EMMC 告警外几乎全是 IMNANOSLEEP
+⇒ Appframework 线程停在【nanosleep 轮询循环】里，而不是阻塞在某个锁/队列
+```
+- 意义：
+```
+① 与"futex 等待"的判断并不矛盾：都是"没活干就睡一会再查"的轮询行为
+② 说明 initializeConfig 内部（或其后）有一个"等某个状态变成就绪"的轮询循环
+   —— 它等的状态我们还没让成立
+③ 下一步应找"它在轮询什么标志/文件/共享内存"
+```
+- 下一步（第 2/40 轮）：
+  1) 在探针里 hook nanosleep，打印**调用者 LR**（同一轮内），把轮询点定位到函数
+  2) 顺着该函数看它检查哪个变量/文件/共享内存，缺什么就补
