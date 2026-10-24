@@ -5262,3 +5262,24 @@ A) 继续协议逆向：确定 op=30 读的资源实体（可能是 /setting 下
 B) 客户端补丁：viewUnified2 0x42C1A0 的大小校验分支改为恒真，绕过配置读取
    （快，但后续可能用未初始化配置在更远处崩）
 ```
+
+## 2026-10-25 05:20 新 goal 第 36/40 轮：nread 语义继续探索（部分成功，但字段含义仍不确切）
+### 关键实测
+```
+· 客户端 op=30(nread) 请求字段（msg 词偏移）：
+    w[2]=key(=3)   w[6]=a1(0x00BD0002/1/0 等)  w[7]=a2(0x0001B820 或 0x5EFFFC77)  w[8]=a3(len)
+· 直接把 w[7] 当用户指针 copy_to_user ⇒ 触发 __copy_to_user_std 崩溃（当前上下文无用户 mm）
+· 改用 use_mm(app->mm)+copy_to_user ⇒ 写入成功（日志 BA dst=5efffc77 len=1 n=1）
+  但随后用户态崩溃（PC=0x422617C）⇒ 说明该字段不是"目标缓冲"，写它反而破坏客户端内存
+· 结论：op=30 的 a2 不是简单缓冲区指针；我们仍未掌握 nread 的真实契约
+```
+### 已消耗的路线（不要重复）
+```
+全0应答 / rb[1] 取值 / rb[4..19] / 返回值式 / 原厂 backup.ko(+Backup.bin) /
+nread 返回 len·0 / 拷贝 Backup.bin 顺序数据 / __va(dst) / 直接 copy_to_user / use_mm
+```
+### 剩余可选路线
+```
+A) 继续逆向 nread（需要解 libObj 里 16 个 Backup_nread 调用点之一的上层契约）
+B) 客户端补丁：把 viewUnified2 0x42C1A0 及上游的重试判定改成"首次即通过"
+C) 换目标：先让另一条不依赖 backup 的路径出图（例如直接构造 GRM 绘制调用）
