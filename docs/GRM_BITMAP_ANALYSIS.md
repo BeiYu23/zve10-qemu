@@ -555,3 +555,91 @@ QEMU 线最新结论是"崩点模式更像某个 **size 查询返回 0** 导致�
 
 **验证方法**：在 QEMU 侧 interpose `GRM_bitmapGetRowPixelCount`，
 打印调用者的 LR 与返回值。若确实有调用且返回 0，这条线就接上了。
+
+## 十六、🚨🚨 严重更正：`writeLockBits` 是【3 参数】，且返回值是状态码不是指针
+
+### 16.1 完整签名（`0x11BB68` 实证）
+
+```c
+int writeLockBits(void *bitmap, int timeout /* r1 */, void **out /* r2 */);
+```
+
+**返回 `r9`（即 arg2 被清零后的值）⇒ 成功时返回 0，失败返回错误码。**
+
+### 16.2 `timeout == 0` 分支的实际行为
+
+```asm
+11bb92: cbz r5, 11bbde        ; arg1 == 0 → 11bbde
+11bbde: mov r8, r5            ; r8 = 0
+11bbe0: ldr r3,[r4,#28]       ; [bitmap+0x1C]
+11bbe4: subs r3,#1
+11bbe6: str r3,[r4,#28]       ; ★ refcount 回退（净零，不保留引用）
+11bbe8: bl  0x11BAF4          ; 查询状态
+11bbec: cbz r0, 11bc06        ; 失败 → 错误路径
+11bbee: ldr r3,[r4,#32]
+11bbf0: adds r3,#1
+11bbf2: str r3,[r4,#32]       ; [bitmap+0x20]++（另一个计数）
+11bbf4: cmp r9,#0
+11bbf8: beq 11bc1e            ; ★ arg2 == 0 → 直接收尾（拿不到指针！）
+11bbfa: ldr r3,[r4,#8]        ; ★ 像素指针
+11bbfc: str r3,[r9]           ; ★★ 写到 *arg2（输出参数）
+11bc00: mov r9,#0
+11bc04: b   11bc1e
+
+11bc1e: pthread_mutex_unlock(bitmap+0x24)
+11bc24: mov r0, r9            ; ★★★ 返回值 = r9 = 0
+11bc26: ... pop
+```
+
+### 16.3 🚨 两条致命后果
+
+**① 返回值是指针的话会拿到 0**
+
+```c
+void *pix = ((void *(*)(void *, int))BMP_WriteLockBits)(bmp, 0);
+/* pix == 0（这是"成功"状态码），代码会误判为"没有像素"而 return */
+```
+
+**② `BMP_WriteLockBits` 不设置 `r2` ⇒ `*arg2` 写到【垃圾地址】**
+
+```asm
+119494 BMP_WriteLockBits:
+  1194ae: ldr r3,[r0,#0]      ; vtable
+  1194b0: ldr r3,[r3,#76]     ; +0x4C
+  1194b2: blx r3              ; r1、r2 均未设置！
+```
+库里的 `BMP_WriteLockBits` 只传 1 个参数，**`r2` 是调用者的残留值**。
+如果恰好非 0，`str r3,[r9]` 会**写到一个随机地址 ⇒ 内存破坏或崩溃**。
+
+### 16.4 ✅ 正确写法（两选一）
+
+**方案 A（推荐，最简单）—— 直接读字段，不调锁**
+
+```c
+void *pix = *(void **)((char *)bmp + 0x08);
+```
+
+**方案 B —— 按真实 3 参数调用虚函数**
+
+```c
+void *pix = NULL;
+int rc = ((int (*)(void *, int, void **))VFN(bmp, 0x4C))(bmp, 0, &pix);
+if (rc != 0) return;        /* 失败 */
+```
+
+**方案 C —— 若一定要用库里的 `BMP_WriteLockBits`（不推荐）**
+
+```c
+register void *r2 asm("r2") = &pix;      /* 手工把 r2 设成输出指针 */
+int rc = ((int (*)(void *, int))BMP_WriteLockBits)(bmp, 0);
+```
+**⇒ 脆弱，不建议。**
+
+### 16.5 refcount 的额外结论
+
+`timeout == 0` 路径里 `[bitmap+0x1C]` **先 ++ 后 --（净零）**，所以：
+
+**⇒ 用方案 A 直接读字段，不会造成引用计数失衡（因为根本没进锁路径）。**
+**⇒ 之前"必须配对 WriteUnlockBits"的担心，在方案 A 下不成立。**
+
+但 `[bitmap+0x20]` 会 ++（未被回退），**方案 B 需要配对解锁**。
