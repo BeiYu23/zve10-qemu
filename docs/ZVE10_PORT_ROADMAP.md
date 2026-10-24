@@ -3491,3 +3491,29 @@ int dmp_allocator_mmap_init(void){ return 0; }
   1) 在 guest 里查 `/proc/osal/uipc`，确认 0x61 子系统/队列是否存在；
   2) 若不存在 ⇒ 需要在 backup 替代模块里**同时注册一个 0x61xxxx 的同步服务**并回合法应答；
   3) 若存在但无人应答 ⇒ 找出谁该应答（很可能就是被我们 stub 掉的 dmm/grm_ma 一类模块）。
+
+## ★★★ 2026-10-24 15:20 新菜单线：**恢复真 backup.ko + 真 grm_ma/dmm，只 stub upm/gles/传感器 —— 启动首次走通监视器并进入 GLES 初始化**
+- 按对方结论做单变量对照：
+```
+① 全部原厂 kmod（只 stub upm）：
+   modloads=35
+   Physical Addr : 200EB400 / Mon Buf Size : 00008000   ★ MonDrv::Init 成功（mmap 通了！）
+   但内核崩：PC is at sugilite_open+0x28/0x1f8 [grm_gles]（真 grm_gles 访问硬件寄存器）
+② 再把 grm_gles 换成我们的 fake_gles（真 backup + 真 grm_ma + 真 dmm + stub upm/accel/mag/compass）：
+   modloads=35
+   FAKEGLES init major=248 minor=29
+   Physical Addr : 200EB400                            ★ 监视器成功
+   FAKEGLES open(1) / ioctl 序列正常出现（0x80048206 / 0xc0048202 / 0x80048263 / 0xc0048211 / 0xc0048212 …）
+   新内核崩：PC is at fake_ioctl+0x368/0x8ac [fake_gles]，"Illeagle Instruction at 0x5f3db5b0"
+```
+- 结论：
+```
+① 我们之前"把 backup/grm_ma 也 stub 掉"是错的 —— MonDrv 的物理地址来自真 backup 数据，
+   stub 给假值 ⇒ mmap 失败 ⇒ 监视器 NULL ⇒ 后续崩溃（整条链的起点）
+② 真 grm_gles 在 QEMU 里必然崩（访问 GPU 寄存器），必须用 fake_gles
+③ fake_ioctl 缺 0xc004820e 等命令的处理，且某条未处理路径导致模块内非法指令
+```
+- 下一步（第 29/60 轮）：
+  1) 给 fake_ioctl 补 0xc004820e（以及日志里出现的其余未处理命令），一律按语义返回 0/写回默认值；
+  2) 复现后确认是否还有新的内核崩点；
+  3) 若 GLES 序列能走完，预计会进入 dmp_allocator / DMP 服务断言（上一轮那条 0x61003C）。
