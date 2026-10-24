@@ -4100,3 +4100,28 @@ App 写到 r7+0xE36xx ⇒ 比余量多 ~0x170（368 字节）
   1) 请离线反汇编侧解 appFw 里 0x1FBFBxx 所在函数：它遍历的是哪张表、元素大小多少、个数从哪读
   2) 我方并行：用内核 `ZZR7` 增强版（同时打印 r6/r8/r9）观察那次写入循环的步长，
      反推元素大小，再对照混合镜像里资源文件的条目数
+
+## ★★★ 2026-10-24 21:00 新菜单线：**绕过 jemalloc guard page 成功 → App 越过那 368 字节越界，进入 DMM 分配路径**（又一个硬件模块崩点）
+- 手法（两条 preload，均 `-nostdlib`）：
+```
+libmmapad.so : 匿名 mmap 长度额外 +0x2000（给越界留余量）
+libmprotsh.so: interpose mprotect，忽略 PROT_NONE（jemalloc 的 guard page 不再生效）
+```
+- 实测（v50 / h73）：
+```
+MPROT skip PROT_NONE ×30（guard page 全部放开）
+崩溃从"appFw 里 164 字节记录拷贝越界"消失
+★ 新崩点：PC is at dmm_ctrl_Main+0x140/0x278 [dmm]
+   insn=e5943008 (ldr r3,[r4,#8])，r4=0x2FCFD048 ⇒ 内核模块 dmm 拿到的指针非法
+```
+- 判读：
+```
+① 我们的"越界 368 字节"确实只是**症状**：放开 guard page 后 App 继续走了
+② 现在卡在**真的 dmm.ko**（我们一直保留真模块）—— 它收到非法指针
+③ 最可能来源：fake_gles 的 ioctl 对未实现命令返回 0，上层拿 0 当句柄/地址传给 dmm
+   ⇒ 应改为"未实现命令返回 -ENOSYS/-EINVAL"，让上层走错误分支而不是带着 0 继续
+```
+- 下一步（第 41/60 轮）：
+  1) fake_ioctl 未实现命令统一返回 `-EINVAL`（而不是 0），重跑看 dmm 是否还崩
+  2) 若仍崩，打印 dmm 崩溃前的 ioctl 序列（我们已有 ioctl 日志），定位是哪个 cmd 传了 0x2FCFD048
+  3) 同时保留 mmapad+mprotsh（它们让我们越过了非硬件性障碍，且对真机无害——只在 QEMU 测试用）
