@@ -150,3 +150,85 @@ cp /root/fw/zve10_delivery/ZVE10_EMMC_FULL.img <out>/zve10_hybrid_emmc.img
 dd if=<out>/nflasha15_hybrid.ext2 of=<out>/zve10_hybrid_emmc.img bs=1M seek=$((0x2D800000/1048576)) conv=notrunc
 dd if=<out>/nflasha7_hybrid.img  of=<out>/zve10_hybrid_emmc.img bs=1M seek=$((0x0A400000/1048576)) conv=notrunc
 ```
+
+---
+
+# 七、v3 修正（2026-10-24 晚）：镜像分区错位，已修
+
+> QEMU 侧实测反馈 `/setting` 挂载失败（`errno(2)`），bootin 读不到 dmode 后走异常分支退出。
+> **根因在我这边的镜像构造，与 /usr 内容无关。**
+
+## 7.1 根因：`ZVE10_EMMC_FULL.img` 是「boot 分区 + 用户区」拼接
+
+排查结果：
+
+```
+偏移 0x00000000 : "EXBL" ← eMMC **boot 分区**的引导块（4 MiB）
+偏移 0x400018   : 分区描述符 magic 0x04100548   ← 用户区的表头（+0x18）
+偏移 0x4010000  : nflasha1 (FAT)
+偏移 0x4080000  : nflasha2 /setting (FAT)
+偏移 0x2DC00000 : nflasha15 /usr (ext2)
+```
+
+⇒ 该 dump = **4 MiB boot 区 + 用户区**，用户区内各分区相对分区表**整体 +4 MiB**。
+我此前直接 cp 整个 dump 再按**分区表偏移**写 hybrid 分区，
+于是 `/usr` 因为我覆盖了表偏移处而"看起来对"，**其余分区全部错位 4 MiB** ⇒ `/setting` 读到垃圾。
+
+**为什么之前没发现**：分区表在 `0x18` 处读 magic 得到 0（真实值在 `0x400018`），而我先做了 md5 局部比对、没有逐分区验证类型。
+
+## 7.2 修正：跳 4 MiB 取用户区
+
+```sh
+# boot 区单独留档（QEMU 若需要 boot partition 可用这个）
+dd if=ZVE10_EMMC_FULL.img of=zve10_boot_area.img bs=1M count=4
+
+# 用户区镜像 = 跳过 4 MiB
+dd if=ZVE10_EMMC_FULL.img of=zve10_hybrid_emmc.img bs=1M skip=4
+
+# 按分区表偏移写入 hybrid 分区
+dd if=nflasha15_hybrid.ext2 of=zve10_hybrid_emmc.img bs=1M seek=$((0x2D800000/1048576)) conv=notrunc
+dd if=nflasha7_hybrid.img  of=zve10_hybrid_emmc.img bs=1M seek=$((0x0A400000/1048576)) conv=notrunc
+```
+
+修正后**逐项验证（16/16 符合分区表）**：
+
+```
+nflasha1  @0x00010000 FAT    nflasha2  @0x00800000 FAT    nflasha3  @0x01C00000 FAT
+nflasha7  @0x0A400000 ext2   nflasha10 @0x0AC00000 FAT    nflasha13 @0x2D400000 FAT
+nflasha15 @0x2D800000 ext2   nflasha17 @0x49000000 FAT    nflasha18 @0x4F400000 FAT
+（4/5/11/16/23 为非 FAT/ext2 的原始格式，符合预期）
+描述符 magic @0x18 = 0x04100548 ✓
+```
+
+## 7.3 附带：写入显式 `dmode=3`
+
+`/setting/mode/` 在 dump 里是**空目录**（无 dmode 文件）。虽然既有结论是"缺失不影响、启动已在默认档位"，
+但为消除不确定性，已在 `/setting/mode/dmode` 写入 `3`：
+
+| 依据 | 内容 |
+|---|---|
+| `change_mode.sh` 自带说明 | **dmode=3 = "kernel boot → global infra → LIRO boot → appFw boot（默认）"** |
+| 结论 | **新菜单同样用 3，不需要改值** |
+
+## 7.4 最终产物（v3）
+
+| 文件 | 大小 | md5 |
+|---|---:|---|
+| **`zve10_hybrid_emmc.img`**（用户区，给 QEMU） | 1,979,711,488 B | `7bba051455b08958ddad9f120f1f5b45` |
+| `zve10_boot_area.img`（boot 分区 4 MiB） | 4,194,304 B | `360beb1378b2a33552c1ba551b8b3b19` |
+| `nflasha15_hybrid.ext2` | 314,572,800 B | `f11328198bb6668dce44f6fdbdb32c3e` |
+| `nflasha7_hybrid.img` | 8,388,608 B | `875bce24a910cb223cc861a89812dd87` |
+
+**未改动分区核对（13/13 逐分区 md5 一致）**：
+`nflasha1 / 3 / 4 / 5 / 6 / 10 / 11 / 12 / 13 / 16 / 17 / 18 / 23` 全部与原 dump 相同。
+
+## 7.5 关于 `net_cmdd.elf`（QEMU 日志里那条）
+
+| 事实 | 说明 |
+|---|---|
+| ZV-E10 `/usr/bin` | **不存在** |
+| ZV-1F `/usr/bin` | **不存在** |
+| initrd 的 `/sbin/init` | **表里有这一项**（与 `bootin.elf` / `sen.elf` 并列） |
+
+⇒ 它是 init 编译进去的**可选执行项**，两边固件都不带 = 正常。
+日志里看到它被 exec，是 **bootin 退出(255) 后的兜底路径**，不是原因。
