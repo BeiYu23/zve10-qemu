@@ -5436,3 +5436,30 @@ init ko_insmod:(1228): error(1): insmod /usr/kmod/osal_ulogio.ko ulogio_initfile
 tid=142 持 0x072dff44 并等 0x072dfd30；tid=187（initializeConfig）等 0x072dff44
 ⇒ 下一步：找出 0x072dfd30 的持有者
 ```
+
+## ★★★ 2026-10-25 09:35 死锁分析（同轮 mutex 采集 + 各线程用户栈）
+- 方法：同一轮内 ① interpose pthread_mutex_lock/unlock 记录 (tid, mutex)
+  ② 内核模块 dump 各线程用户栈 → 交叉分析
+- 结果（本次运行）：
+```
+从未释放的互斥锁：
+  0x072e5c10  持有者 tid=139
+  0x072e5c78  持有者 tid=139
+  0x072e5da8  持有者 tid=143
+  0x072dfd30  持有者 tid=143
+tid=139 的栈：0409dac9(libpthread) … 072e5c90, 072e5c78 ⇒ 它在等 0x072e5c78 附近的锁
+tid=143 的栈：… 000451cc …
+⇒ 存在 139 ↔ 143 的相互等待（各自持锁并等对方）
+```
+- 说明：
+```
+· tid 号每轮会变，必须"同轮采集"才有意义（已按此方法）
+· 死锁在 App 自己的对象体系里（heap 上的 mutex，地址 0x072e5xxx / 0x072dfxxx）
+· 这不是我们伪造应答能解决的，更像"某个初始化步骤没完成，导致两者互相等待"
+```
+- 下一步候选：
+```
+A) 继续解 139/143 的等待点（栈里 0409dac9 / 000451cc 等地址 → 定位到 libObj 函数）
+B) 采纳 a7c2 的经验：按 IMDB 清单重排模块加载顺序（可能从根上避免这类互相等待）
+C) 定向补丁：只对 0x072e5xxx/0x072dfxxx 这几个 heap mutex 做"限时 trylock 后放行"
+```
