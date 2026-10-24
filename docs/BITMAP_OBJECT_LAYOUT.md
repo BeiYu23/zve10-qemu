@@ -555,3 +555,63 @@ int my_bitmapWriteLockBits(void *bmp, int arg1, void **out)
 2. **"看到调用"不等于"知道它做什么"** —— 从调用图到行为之间还隔着**参数取值**
 
 **⇒ 结论 = f(调用图, 参数取值, 被调函数内部路径)；缺任一项都可能出错。**
+
+---
+
+## 十五、★★★ `WriteLockBits(-1)` 的等待判定：**第一次不等待，第二次起永久挂住**
+
+### 15.1 判定函数 `0x11BAF4`（逐行验证）
+
+```asm
+11baf4:  ldr  r3, [r0, #32]        ; r3 = bitmap->[0x20]
+11bafa:  cbnz r3, 11bb08           ; [+0x20] != 0 → 返回 0
+11bafc:  ldr  r0, [r0, #24]        ; r0 = bitmap->[0x18]
+11bafe:  rsbs r0, r0, #1           ; r0 = 1 - [+0x18]
+11bb02:  it cc → movcc r0, #0      ; 若负（[+0x18] > 1）→ 0
+11bb06:  pop  {r7, pc}
+11bb08:  movs r0, #0
+```
+
+**⇒ 跳过 `cond_wait` 的条件：`[+0x20] == 0` 且 `[+0x18] <= 1`。**
+
+### 15.2 调用分支
+
+```asm
+11bb9a:  bl 0x11BAF4
+11bba0:  cbnz r0, 11bbe0        ; 非 0 → 收尾路径（不等待）
+11bba8:  pthread_cond_wait      ; 0 → ★ 等待
+
+11bbe0:  ldr r3,[r4,#28]; subs; str   ; [+0x1C]--（引用计数回退）
+11bbe8:  bl 0x11BAF4                  ; 再查一次
+11bbec:  cbz r0, 11bc06               ; 返回 0 → 错误路径
+11bbee:  ldr r3,[r4,#32]; adds; str   ; ★★ [+0x20]++
+11bbfa:  ldr r3,[r4,#8] ; str r3,[r9] ; 像素指针写到 *out
+```
+
+### 15.3 ⇒ 行为模型（**这是本项目最重要的时序结论**）
+
+```
+第 1 次 WriteLockBits(bmp, -1, &out):
+    [+0x20]==0 → check 返回 1 → 不等待
+    → [+0x20]++ 变 1
+    → *out = [bmp+0x08]（若为 0，后续写像素即崩在 address 0）
+    → 返回成功
+
+第 2 次 WriteLockBits(bmp, -1, &out):
+    [+0x20]==1 → check 返回 0
+    → pthread_cond_wait(bitmap+0x40, bitmap+0x24)   ★ 永久挂住
+```
+
+**`[+0x20]` 只增不减**（除了 GPU 完成信号，而纯软件环境里不存在）。
+
+### 15.4 ⇒ 实现要求（升级为"必须与①同时做"）
+
+**只修空指针、不中性化 `WriteLockBits` 的后果：**
+
+```
+第一帧正常显示 → 第二帧整个进程静默卡死
+```
+
+**⇒ 这比"直接崩"更难排查**（无输出、无崩溃、无日志）。
+
+**⇒ `WriteLockBits` 中性化必须与空指针修复同时上线，不能分两次试。**
