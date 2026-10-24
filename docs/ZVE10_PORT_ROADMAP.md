@@ -5173,3 +5173,29 @@ fc0: strb r4 -> msg[12] ; qid
 1) 对 op=3 返回"请求长度"（例如 msg[8] 或 payload 里的长度字段）
 2) 若仍不行，读 Backup_read 的调用者（viewUnified2 侧）看它如何判断成功
 ```
+
+## 2026-10-25 04:35 新 goal 第 31/40 轮：两个决定性排查结果
+### ① 用【原厂 backup.ko】替换我们的 stub ⇒ 直接内核崩溃
+```
+crash=1, address=00000000 trap=0x06, EN=0
+⇒ 证实"必须用 stub"（真模块依赖我们没有的硬件/初始化），不是我们多此一举
+```
+### ② 客户端上层是 libObj 里的 `BackupManager`
+```
+libObj 中 Backup_read@plt 调用点 = 306 处
+可见符号：BackupManager::Bkup_GetDataSize / Bkup_Read / Bkup_ReadMulti ...
+⇒ 真正的重试/校验逻辑在 BackupManager，而不是 libbackup
+⇒ 下一步应直接看 BackupManager::Bkup_Read 的返回值处理与重试条件
+```
+### 已确认的协议事实（供下一轮直接用）
+```
+· 客户端封包：op→msg[0..3]、key→msg[9..11]、qid→msg[12]
+· 客户端读结果：msg[4..7]（= 我们回调的 reply_buf - 8）
+· 已试：*res = 0 / 4 / 0x100 都不放行
+⇒ 说明"成功条件"不是简单数值，需要看 BackupManager 的判定
+```
+- 下一步（第 32/40 轮）：
+```
+反汇编 BackupManager::Bkup_Read（以及 initializeViewConfig 里对它的调用处），
+找出"什么返回值会让它不重试" —— 这是最后一块拼图
+```
