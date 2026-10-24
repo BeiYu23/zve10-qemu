@@ -215,3 +215,57 @@ obj->[0x08] = 像素缓冲指针
 既避免死锁、又不需要 interpose 锁函数。**
 
 （仍建议 shim 里把 `WriteUnlockBits` interpose 成空操作，防止 App 其他路径真去加锁。）
+
+---
+
+## 九、★★ bpp 的来源已确定：它是缓冲区大小公式的第三个因子
+
+`0x11B774` 初始化函数的完整算术（实证）：
+
+```asm
+11b7c2: ldrsh r0,[r5,#8]        ; r0 = geo+0x08  （宽）
+11b7c6: bl    0x119D04          ; align_up(宽, max(arg,8))
+11b7d4: strh  r0,[r5,#24]       ; ★ geo+0x18 = 对齐后宽  (int16)
+11b7d8: ldrsh r0,[r5,#10]       ; r0 = geo+0x0A  （高）
+11b7dc: bl    0x119D20          ; align_up(高, max(arg,8))
+11b7e4: strh  r0,[r5,#26]       ; ★ geo+0x1A = 对齐后高  (int16)
+
+11b802: ldrh  r2,[r3,#24]       ; r2 = 对齐后宽
+11b804: ldrh  r5,[r3,#26]       ; r5 = 对齐后高
+11b806: ldrsh r3,[r7,#6]        ; ★ r3 = 栈参数（= 每像素字节数 bpp）
+11b80a: smulbb r5, r5, r2       ; r5 = 高 × 宽
+11b80e: muls  r5, r5, r3        ; ★ r5 = 宽 × 高 × bpp  = 缓冲区字节数
+```
+
+### 结论
+
+| 项 | 值 | 位置 |
+|---|---|---|
+| **对齐后宽（= 像素计 stride）** | `align_up(width, max(a,8))` | **`geo+0x18`**（int16） |
+| **对齐后高** | `align_up(height, max(a,8))` | **`geo+0x1A`**（int16） |
+| **缓冲区字节数** | `geo+0x18 × geo+0x1A × bpp` | 计算式 |
+| **bpp** | **调用方传入的参数**（`BMP_Create` → `0x11B774` 的第 7 个栈参数 `[r7+6]`） | 不是常量 |
+
+**⇒ 全路径没有"格式值 → 常量"的映射表；bpp 由 `GRM_bitmapCreate` 的调用参数决定。**
+（这一条验证了 `session-6d5bc1eb` §10.3 的判断。）
+
+### ★ 由此得到一个**确定**的 bpp 求法（不再需要反推像素）
+
+```
+bpp = 像素缓冲字节数 / (geo+0x18 × geo+0x1A)
+```
+
+像素缓冲的分配大小可以从两处取得：
+- `BMP_Create` 里分配像素缓冲那次调用的 size 参数
+- 或运行时：`WriteLockBits` 返回的指针 + 已知 buffer 大小
+
+**⇒ 这是"确定性"求法，比"画纯色看重复单元"更可靠。**
+
+### ⚠️ 需要修正我之前的一处说法
+
+我先前说 `getRowPixelCount` 返回 `geo+0x14` 就是 stride。
+但实测 **对齐后宽写的是 `geo+0x18`**，而 `geo+0x14` 在初始化时被置 0
+（可能由后续调用 `0x119DD0` / `0x11A5D8` 填）。
+
+**⇒ 实现时请优先读 `geo+0x18` 作为 stride；`geo+0x14` 作为交叉验证。**
+两者应当相等（若 `geo+0x14` 最终=filled），不等时以 `geo+0x18` 为准。
