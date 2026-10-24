@@ -3558,3 +3558,28 @@ FAKEGLES mmap  va=0x09C6C000 size=0x20000   （App 只映射了 128 KB）
   1) 让 fake_gles 支持**大窗口映射**（按页用 `vmalloc_to_pfn` 逐页 `remap_pfn_range`，
      或在 init 里预留一段 DDR 作为 GPU 窗口并在 mmap 时整段映射）；
   2) 同时搞清楚 App 期望的窗口基址从哪来（下一轮 dump 它在这之前调用的 ioctl 返回值和 appFw 那段的上下文）。
+
+## 2026-10-24 15:45 新菜单线：大窗口映射已实现（逐页 remap），但崩溃地址其实落在 **jemalloc arena 的 guard page**
+- fake_gles v10 改进（`/root/fw/fake_gles/fake_gles.c`）：
+```
+· fake_open 改成 vmalloc(64 MB) 大窗口（非连续也可，因为 mmap 逐页映射）
+· fake_mmap 改为逐页 vmalloc_to_pfn + remap_pfn_range（支持大窗口 + vm_pgoff 偏移）
+实测：FAKEGLES mmapW va=0x0AB6D000 size=0x20000 off=0x0 map=0x20000  ✓ 映射成功
+```
+- 但崩溃依旧，且这一次拿到了"地址的邻居"（maps dump）：
+```
+崩溃写地址 r0=r4=0x085360E4（本次），或 0x083360E4（上次）
+map 里：
+   08137000-08336000 r-w ?      ← 一块 2 MB 匿名区
+   08336000-08337000 --- ?      ← guard page
+   08337000-08536000 r-w ?      ← 另一块 2 MB 匿名区
+   08536000-08537000 --- ?      ← guard page
+⇒ 崩溃地址正好是"某块 2 MB 匿名区末尾 + 0xE4"，即【写进了 guard page】
+⇒ 这不是 GPU 物理窗口，而是进程内某块缓冲越界（很像"尺寸拿到的比实际映射的大"）
+```
+- 判断：App 拿到的"缓冲区大小"很可能来自我们 fake 的某个 ioctl（我们大量返回 0）。
+  写 160 字节（r2=0xA0）落到 guard，符合"分配大小 = 0 或偏小"的形态。
+- 下一步（第 29/60 轮）：
+  1) 给 fake_ioctl 加**返回值日志**（cmd + 返回给用户的值），定位是哪个 cmd 的返回值被当作尺寸/地址；
+  2) 用该 cmd 反查 appFw 里对应逻辑（pc 附近即 `0x1F26B96` 的调用者）；
+  3) 按真实语义返回合理尺寸（例如 2 MB/4 MB）再验证。
