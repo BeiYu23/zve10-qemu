@@ -5583,3 +5583,41 @@ kicks=0 说明 grm_init 在【发出任何 GPU 命令之前】就阻塞了
 2) 找出写入该标志的代码路径（大概率是另一个"初始化完成"的回调）
 3) 定向让该标志置位，观察 initializeConfig 是否返回
 ```
+
+## ★★★ 2026-10-25 12:00 第 40/40 轮（goal 轮次用尽）：把等待机制彻底解出来
+### 0x7D7D30 的真实形态 = 「一次性启动 worker + 等它完成」
+```
+0x7D7CD0：把请求参数打包进栈上结构（r2/r1/… → [r0+0]/[r0+4]/[r0+8]…）
+0x7D7D30：
+  pthread_mutex_lock
+  if ([r4] != 0) goto 返回        ← [r4] 是"worker 已启动"标志
+  else:
+    0x7D7780 → pthread_mutex_init / pthread_cond_init（两次）
+              pthread_attr_init / setdetachstate / setstacksize
+              pthread_create(worker)
+    然后 pthread_cond_wait(...)     ← 等 worker 完成本次请求
+  pthread_cond_signal / pthread_mutex_unlock
+```
+- ⇒ 结论（最终版）：
+```
+grm_init 依赖的 is a 【worker 线程完成一次请求】；
+该 worker 线程被创建了，但请求永远不完成 ⇒ 主线程在 cond_wait 上无期限等待
+【worker 内部卡在哪，是最后剩下的未知点】
+```
+- 下一步（给接手者）：
+```
+1) 在 pthread_create(0x7D77E8) 处记录 worker 的 tid（可 interpose pthread_create 比对）
+2) dump 该 worker 的栈（我们已有 [STK] 能力，按 tid 过滤即可）
+3) 从它的栈定位到它卡住的调用（大概率是 osal 同步/GPIO/驱动 ioctl）
+```
+
+## 📌 该 goal 轮次已用尽（40/40）时的总状态
+```
+✅ 显示链路：/dev/mem → 0x20312000 → streamfb，满屏彩条验证（ab_v651）
+✅ 绘制层：libgrm2.so（bitmap→VDF 缓冲 + CPU gpermFillrect/Rectblit）ab_v660
+✅ backup：真实 BK4 查询（页表/槽表/数据区；key/size/data 全真实）ab_v1040
+✅ 日志控制队列 0x8F0139：已由我们应答（ULOGIOREG rc=0）
+✅ 工具：内核 MAPD/THR/STK、用户态锁/cond/信号量/ioctl 追踪、BK4 解析器
+🟡 卡点：grm_init 等待它自己启动的 worker 完成请求（worker 卡在哪未定位）
+❌ 目标（App 菜单显示）未达成
+```
