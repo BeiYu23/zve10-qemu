@@ -3179,3 +3179,31 @@ DL2 tid=138/139/140 /usr/lib/libObj.so r=0x39B08   ×N（同一路径反复成�
   1) 只记录 **r==0（失败）** 的 dlopen，以及路径含 `view`/`Config` 的 dlopen；
   2) 同时记录 `initializeViewConfig` / `getViewConfig`（能用 dlsym 从 viewUnified2 句柄取到符号就 hook，取不到就只记录 dlsym 调用）；
   3) 若确认配置模块初始化卡住，则回到"它的构造函数里向哪个队列要数据"（对方已给出 ViewConfig 构造链）。
+
+## 新 goal 第 25/60 轮（2026-10-24 12:45）：还原原厂 backup 的队列注册方式 —— **它注册两条队列：0x3E014D（sync）+ 0x3E0150（async）**
+- 反汇编 `backup.ko::backup_osal_init`（0x50C0）得到原厂注册序列：
+```asm
+50d0: r0 = [0x514c] = 0x3E014D
+50d4: r1 = [0x5150] = .bss 内某对象
+50d8: r2 = [0x5154] = 0
+50dc: r3 = r0
+50e0: bl osal_reg_sync_msg_queue_cb      ; ★ 先注册【同步】队列 0x3E014D
+...
+5108: r0 = [0x515c] = 0x3E0150
+510c: r1 = [0x5160] = .bss 内某对象
+5114: r2 = [0x5164] = 0
+5118: bl osal_reg_msg_queue_cb           ; 再注册【异步】队列 0x3E0150
+```
+  ⇒ **App 用的 `0x3E014D` 是"同步请求/应答"队列**，由 `osal_reg_sync_msg_queue_cb` 注册。
+    这解释了我们之前只注册 async 队列 `0x3E014D` 收不到回调的现象（类型不对）。
+- 本轮按原厂序列改写我们的替代模块：先 `osal_reg_sync_msg_queue_cb(0x3E014D, cb, 0, 0x3E014D)`，
+  再 `osal_reg_msg_queue_cb(0x3E0150, cb, 0)`：
+```
+BKREGSYNC rc=-1024     ← 同步注册被拒
+BKREGASYNC rc=-1024    ← 异步注册也被拒（此前同参数曾 rc=0，说明 0x3E014D 这次已被占/参数不符）
+INITCFG_ENTER=1 EXIT=0
+```
+  ⇒ 参数形态仍需按 sync API 的真实签名校正（下次直接对照 `osal_reg_sync_msg_queue_cb` 的反汇编）。
+- 下一步（第 26/60 轮）：
+  1) 反汇编 `osal_reg_sync_msg_queue_cb`（内核模块内），确定其参数与 -1024 条件；
+  2) 按正确签名重新注册，并在回调里 dump 请求内容（App 的同步请求会直接送到该回调）。
