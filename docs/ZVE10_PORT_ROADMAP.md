@@ -4502,3 +4502,33 @@ preload 构造函数（libtestpat.so，-nostdlib）：
   2) L2：按协作会话的建议，interpose `GRM_bitmapCreate`，把 `[bmp+0x08]` 指向 0x20312000 的映射
      + 用 swgpe 的 CPU 实现 gpermFillrect/Rectblit
   3) 判据：屏幕出现"由 App 的绘制调用产生"的色块/内容
+
+## 🎉🎉🎉 2026-10-24 23:20 老菜单 **满屏彩条成功：显示链路 100% 打通**（几何也对齐了）
+- 关键：给 streamfb 模型显式指定几何与格式
+```
+-global driver=bionz-streamfb,property=width,value=640
+-global driver=bionz-streamfb,property=height,value=480
+-global driver=bionz-streamfb,property=stride,value=1280      ← 640×2B（RGB565）
+-global driver=bionz-streamfb,property=format,value=1
+```
+- 实测（ab_v651 / o19）：
+```
+TESTPAT 写入 0x20312000（/dev/mem mmap，VA 0x474e000）
+屏幕统计：8 种纯色各 38400 像素，合计 307200 = 640×480 ⇒ 【满屏彩条，无噪声】
+截图：docs/artifacts/2026-10-24_oldmenu_fullscreen_bars.png
+```
+- 意义：
+```
+① 显示链路（/dev/mem → VDF 缓冲 0x20312000 → bionz-streamfb → 屏幕）完全验证
+② 几何/格式已验证：640×480、stride 1280B、RGB565
+③ 我们可以在屏幕任意位置画任意像素 ⇒ L1 完成，且是"可重复、可复现"的
+```
+- 下一步（第 51/60 轮）—— L2：让 App 的绘制落到这块缓冲
+```
+1) interpose `GRM_bitmapCreate`（老菜单有，120B）：
+   让返回的 bitmap 的 [bmp+0x08] = 我们 /dev/mem 映射出来的 VA（指向 0x20312000）
+   并把 geo+0x18（stride=640）/ geo+0x1C（format=1）写成与显示一致
+2) interpose `GRM_gpermFillrect` / `GRM_gpermRectblit` → 用 CPU 实现（swgpe 规格两版通用）
+3) 难点：App 目前仍卡在 initializeConfig（未画）——
+   这两步先做成"随时可用"，等 App 能走到绘制就能立刻出内容
+```
