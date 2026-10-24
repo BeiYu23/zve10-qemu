@@ -3729,3 +3729,28 @@ App 只 mmap 了 16 MB（size=0x1000000），但崩溃地址 0x096000E4 / 0x0940
   1) 找到决定"设备内存大小"的那个 ioctl（看 mmap 之前最后几个 cmd 的返回值）
   2) 按真实语义返回（例如 32/64 MB），让 App 的地址计算落在自己映射范围内
   3) 一旦地址自洽，再看屏幕内容是否变成真正的界面
+
+## ★★★ 2026-10-24 17:30 新菜单线：**地址空间问题彻底解决** —— 256 MB VA（前 32 MB 恒等 + 其余别名）后，数据中止消失
+- fake_gles wid==4 升级：mmap 覆盖 256 MB VA
+```
+前 IDENT_BYTES(32MB)  ：pfn = (0x08000000 + off) >> PAGE  → 恒等映射（保留区，streamfb 扫这里）
+其后                  ：pfn = 同一个别名页，循环映射（几乎不耗内存）
+preload 侧 mmap 请求 256 MB（FIXMAP mmap ret=8000000 ✓）
+```
+- 实测（v26 / h43）：
+```
+FAKEGLES mmapI va=0x08000000 size=0x10000000 map=0x10000000 ident=0x08000000
+★ 数据中止（trap 0x0e）彻底消失 —— 之前 0x094/0x096/0x0C4 那一串地址都在映射内了
+● 新崩溃变成 SIGABRT（trap 6，address=0），且日志里【没有 Assertion 文本】
+屏幕：54,321 非黑像素，稳定色块（(194,247,1)/(0,189,194)）
+```
+- 判读：
+```
+① "窗口覆盖"问题已闭环：现在 App 在任何 0x08000000+offset(≤256MB) 处读写都不会缺页
+② 剩下的 abort 没有断言文本 ⇒ 可能来自 abort()/__stack_chk_fail/pthread_create 失败/内部致命路径
+③ 下一步就是"抓 abort 的调用者"
+```
+- 下一步（第 34/60 轮）：
+  1) preload 里 interpose `abort`、`__assert_fail`、`__stack_chk_fail`，打印 return_address
+  2) 结合 maps 把该地址定位到库/偏移
+  3) 若是栈保护/堆破坏 ⇒ 说明我们伪造的显存内容让某个解析越界，需要按语义填窗口
