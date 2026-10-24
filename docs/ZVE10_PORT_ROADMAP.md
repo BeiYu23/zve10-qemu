@@ -3979,3 +3979,24 @@ h60（v41，含 libswgpe）跑完：SWGPE 日志 = 0
   1) 停止 gperm 相关实现（保留已经正确的三项：CheckUpdateFinished→0、CreateFromPhys 的 phys 映射、bpp/stride 结论）
   2) 研究真正的入口：`ux::gfxeng::GraphicsEngine::drawFramebuffer`（libObj 0x0E565A, 250B）
   3) 优先解决"任何图形调用之前就 SIGABRT"的问题 —— 这是当前唯一的主阻塞
+
+## 2026-10-24 19:20 新菜单线：CPU 模型穷举结果（只有 cortex-a5/a9 能起内核）
+- 测试（同一镜像 v41，只改 `-cpu`）：
+```
+cortex-a5（默认） : 内核启动 → 35 模块 → 主崩溃（trap 6）
+cortex-a9        : 内核启动 → 35 模块 → 主崩溃（trap 6），SIGILL 探测仍 10 次
+cortex-a15       : 内核卡在 "booting the kernel"，起不来
+cortex-a7        : 同样卡在 "booting the kernel"
+⇒ 能起内核的只有 a5/a9；换 CPU 不能解决主崩溃
+⇒ 说明"非法指令/abort"不是缺 NEON/crypto 特性那么简单（a9 有 NEON 也一样崩）
+```
+- 当前结论（三方一致 + 我方实测）：
+```
+① 主阻塞 = "App 在任何图形 API（gperm/bitmap/fbrm）调用之前就 trap 6"
+② 该 trap 6 不走 signal 投递路径（ZZSIG 里没有 sig=6），是 CPU 直接执行非法指令后被异常钩子接住
+③ 与 OpenSSL 的 CPU 探测是两回事（探测的那 10 次 sig=4 都被正常捕获）
+```
+- 下一步（第 38/60 轮）：
+  1) 在异常钩子里把**非法指令的原始 32 位编码**打出来（`*(u32*)pc`），直接看是哪条指令
+  2) 同时打印该 pc 所属区间名（ZZMOVMAP 已有）
+  3) 依据指令类型判断：是 ARMv8 crypto / NEON / 还是"跳到了数据区"
