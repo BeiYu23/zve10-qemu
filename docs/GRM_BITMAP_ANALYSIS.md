@@ -153,3 +153,70 @@ void *pixels = ((void *(*)(void *))bmp_vfn(bmp, 0x4C))(bmp);
 bitmap 是**抽象基类 + 虚表**，所以除了拦截 `GRM_gperm*`，
 还可以**把自己的 CPU 实现挂成一个兼容虚表的 bitmap 对象**（填满 26 槽，至少 `+0x4C`/`+0x50`/`+0x18`/`+0x30`）。
 后者更"贴近真机结构"，但工作量更大；**建议先用拦截 `gperm*` 的路线**。
+
+## 六、`GRM_fbrmSetScreenPreference` 与 `CheckUpdateFinished`（移植侧点名要的）
+
+### 6.1 `GRM_fbrmSetScreenPreference(int pref)` @ `0x115304`
+
+```asm
+115306: subs r1, r0, #1
+115310: cmp  r1, #3
+115312: bhi  115328            ; pref-1 > 3 即 pref ∉ {1,2,3,4} → 默认/错误路径
+115314: tbb  [pc, r1]          ; 4 项跳转表
+```
+
+| pref | 命令码 |
+|---:|---|
+| 1 | `0xE800` |
+| 2 | `0xE802` |
+| 3 | `0xE803` |
+| 4 | `0xE801` |
+
+然后 `bl 0x11F0F8(cmd)`。其它值走 `0x115328` 的日志/错误路径。
+
+**⇒ 语义：屏幕输出偏好 → 4 个 fbrm 命令之一。软件 shim 可直接返回成功（或按需实现）。**
+
+### 6.2 `GRM_fbrmCheckUpdateFinished()` @ `0x115370`
+
+```asm
+115374: bl   0x11F4BE           ; 查 VDF 显示状态
+115378: ldr  r3, [0x115384]     ; = 0xFFFFD8F1 = -9999
+11537a: cmp  r0, #1
+11537c: movne r0, r3            ; 状态 != 1 → 返回 -9999
+115380: moveq r0, #0            ; 状态 == 1 → 返回 0
+```
+
+而 `0x11F4BE`（`vdf_if_port_init` 区域，即**显示端口层**）：
+```asm
+11f4c4: r0 = sub_11F438()
+11f4ca: sub_1251E4(r0, &out)    ; VDF 接口查询
+11f4ce: r0 = out
+11f4d0: rsbs r0, r0, #1         ; r0 = 1 - out
+11f4d4: it cc → r0 = 0          ; out > 1 时归 0
+```
+**⇒ 返回 1 当且仅当 `out == 0`；否则 0。**
+
+**⇒ 合起来：`CheckUpdateFinished()` 只在 VDF 状态为 0 时返回 0，其余返回 `-9999`。**
+
+**⇒ shim 建议：直接 `return 0`**（表示"更新已完成"），不必接 VDF。
+
+## 七、★ 屏幕位图从哪来 —— 答案
+
+**关键事实：`appFw.so` 直接导入 `GRM_bitmapCreate` / `GRM_bitmapCreateFromPhys`（UND 引用）。**
+
+**⇒ App 自己创建位图，不从 `GRM_screenGetOnBitmap` 取。**
+（后者的桩也就不构成问题 —— 真机同样返回 0。）
+
+**⇒ 因此软件绘制的"目标缓冲"来源是 `GRM_bitmapCreate*`，而它在本文档覆盖的这一半里。**
+
+### 由此得到的实现链
+
+```
+App 调 GRM_bitmapCreate(...) → BMP_Create 分配 0x80 对象 + 像素缓冲
+App 调 GRM_gpermFillrect(bmp, ...) → shim 用 BMP_WriteLockBits(bmp) 拿像素，CPU 填充
+App 调 GRM_gpermRectblit(dst, ..., src) → shim 用两边 WriteLockBits 做块拷贝
+App 调 GRM_fbrmCheckUpdateFinished() → shim 返回 0
+```
+
+**⇒ 即：`GRM_bitmapCreate` 应让真实 `BMP_Create` 正常跑**（它自己 malloc，内存是真实的），
+**只有在 `gperm*` 里才换成 CPU 实现**。这样位图对象、像素缓冲、物理地址全部由真实代码提供。
