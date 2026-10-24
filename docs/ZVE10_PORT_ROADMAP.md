@@ -4828,3 +4828,27 @@ CWAIT 7 次、CSIG 1 次
   1) 用**合并版探针**（含 INITCFG + CWAIT/CSIG + WAISEM/RCV）一次跑，按时间顺序看：
      initializeConfig 进入后，哪个线程在哪个 cond 上等待且之后没有 signal
   2) 找到后，用"对该 cond 主动 signal 一次"的实验验证它是否是卡点
+
+## 2026-10-25 01:30 新 goal 第 8/40 轮：合并探针（INITCFG + cond）跑通，列出全部 wait/signal 配对
+- 实测（ab_v700 / p6）：INITCFG_ENTER=1 / EXIT=0；CW=6、CS=7
+```
+WAIT：
+  tid=137 c=0x072E5C90
+  tid=155/156/157 c=0x0739B650   ← 三个线程等同一个 cond
+  tid=158 c=0x00054AA0
+  tid=162 c=0x00056090
+  tid=170 c=0x0005CB90          ← 有对应 signal（tid=138 → 同一 cond）
+  tid=175 c=0x08118300
+  tid=176 c=0x000721F0
+SIGNAL：
+  tid=138 c=0x0005CB90
+  tid=170 c=0x0005C5E8
+⇒ 无人 signal 的 cond：0x0739B650（3 个等待者）、0x072E5C90、0x08118300 等
+```
+- 下一步（第 9/40 轮，明确实验）：
+```
+做"主动唤醒"实验：探针里起一个线程，每 2 秒对下面三个 cond 各 signal 一次：
+  0x0739B650 / 0x08118300 / 0x000721F0（地址每轮会变，需在探针里动态收集未配对的 cond）
+⇒ 若 initializeConfig 因此返回 ⇒ 找到卡点；若无反应 ⇒ 排除，转向别处
+（实现：探针维护"wait 过但未 signal"的 cond 集合，运行 10 秒后统一 signal 一轮）
+```
