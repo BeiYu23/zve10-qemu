@@ -4870,3 +4870,30 @@ crash=0
   · 若 initializeConfig 所在线程阻塞在 read(fd)/poll 上 ⇒ 拿到 fd 即可判断是哪个设备/管道
   · 结合 /proc/<pid>/fd 解析该 fd 指向（我们已有 dump_fds 能力）
 ```
+
+## ★★★★ 2026-10-25 02:05 新 goal 第 11/40 轮：**突破 —— initializeConfig 卡在 UIPC 重试循环（15138 次 ioctl）**
+- 方法：探针在 `INITCFG_ENTER` 时记录**当前线程 tid**（app_tid），之后所有钩子只打印该 tid 的事件
+```
+INITCFG_ENTER app_tid=187
+之后 120 秒内：tid=187 的 read/poll 事件 = 0（说明它不做文件 I/O）
+⇒ 转向内核侧追踪该 pid 的 syscall
+```
+- 内核侧（ZZIOCTL/UIPC）对 pid=187 的捕获：
+```
+ZZIOCTL Appframework pid=187 fd=3 cmd=0x8000000A arg=0xEC67680 dev=uipc   ← 发送准备
+ZZIOCTL Appframework pid=187 fd=3 cmd=0x80000005 arg=0xEC67630 dev=uipc   ← 接收
+ZZIOCTL Appframework pid=187 fd=3 cmd=0x8000000B arg=0xEC67680 dev=uipc   ← 发送提交
+（循环重复）
+★ 统计：ZZIOCTL Appframework pid=187 共 **15,138 次**
+```
+- 判读：
+```
+① initializeConfig 并不是"死等某个锁/cond/设备"，而是在做【UIPC 同步请求-应答】，
+   且每次都没拿到期望的应答 ⇒ 立即重试（与早期 bootin 的问题同一类）
+② 与我们早先修好的 backup 同步队列（0x3E014D）是同一机制 —— 但这次的 qid 不同
+③ 一旦确定 qid 并让内核侧服务回一条合法应答，initializeConfig 就应该能返回
+```
+- 下一步（第 12/40 轮）：
+  1) 用 ioctl 参数探针（过滤 app_tid）打印 `a0`（qid）/`a1`/`a2`，确定是哪个队列
+  2) 按 backup 同款方式在内核模块里注册该 qid 并回最小合法应答
+  3) 回到 INITCFG_EXIT 判据；若返回，立刻接 L2 shim 出图
