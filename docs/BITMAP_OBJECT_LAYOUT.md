@@ -269,3 +269,73 @@ bpp = 像素缓冲字节数 / (geo+0x18 × geo+0x1A)
 
 **⇒ 实现时请优先读 `geo+0x18` 作为 stride；`geo+0x14` 作为交叉验证。**
 两者应当相等（若 `geo+0x14` 最终=filled），不等时以 `geo+0x18` 为准。
+
+---
+
+## 十、★★★ 最终答案：`format → bpp` 是**查找表**，ZV-1F 的完整映射已解出
+
+> 本节**推翻我在 §7.3 用 `geo+0x16` 推断 bpp 的猜测**（该字段恒为 0，不能承载格式信息）。
+> bpp 由 `geo+0x1C` 的格式值经查找表得出。
+
+### 10.1 调用链
+
+`0x11B774` 初始化函数里：
+
+```asm
+11b7e6: ldr  r0,[r3,#28]       ; r0 = geo+0x1C  ← ★ 格式值
+11b7e2: adds r1, r7, #6        ; &local
+11b7e8: bl   0x119654          ; bpp = f(format, &out16)
+...
+11b806: ldrsh r3,[r7,#6]       ; r3 = bpp（上面算出的局部值）
+11b80e: muls r5, r5, r3        ; 缓冲区字节数 = 对齐宽 × 对齐高 × bpp
+```
+
+### 10.2 `0x119654`：断言 + 查表
+
+```asm
+119654: cmp  r0,#0
+11965a: bgt  11966e            ; assert(format > 0)   行 0x170
+11966e: cmp  r0,#9
+119670: ble  119686            ; assert(format <= 9)  行 0x171
+119686: ldr  r3,[pc,#36]       ; 表地址（GOT/PC 相对）
+11968a: ldrh r3,[r3, r0, lsl #1]   ; ★ table[format]，16 位元素
+119690: strh r3,[r1,#0]        ; *out = table[format]
+```
+
+**⇒ 格式合法范围是 `1..9`，超出会 `__assert_fail`。**
+
+### 10.3 ★★ ZV-1F 的完整映射表（`.rodata` @ `0x29D88E`）
+
+| format | bpp | 说明 |
+|---:|---:|---|
+| **1** | **2** | 16bpp（565 / 5551 / 4444 之一） |
+| **2** | **4** | 32bpp（RGBA8888 类） |
+| **3** | 2 | 16bpp |
+| 4 | **1** | 8bpp（调色板） |
+| 5 | 2 | 16bpp |
+| 6 | 2 | 16bpp |
+| 7 | 2 | 16bpp |
+| 8 | 4 | 32bpp |
+| 9 | 4 | 32bpp |
+
+> 表后紧跟 `0x4D42`（= `'B','M'`，BMP 文件魔数），旁证取表位置正确、且表长恰为 10 项。
+
+### 10.4 ⇒ 实现时这样取 bpp（不需要再猜）
+
+```c
+static const uint8_t bmp_bpp_by_format[10] = {0, 2, 4, 2, 1, 2, 2, 2, 4, 4};
+
+int format = *(int32_t *)((char *)geo + 0x1C);    /* ★ 格式值 1..9 */
+if (format < 1 || format > 9) return;             /* 真机会 assert */
+int bpp = bmp_bpp_by_format[format];
+int stride = *(int16_t *)((char *)geo + 0x18);    /* 像素计 */
+int ah     = *(int16_t *)((char *)geo + 0x1A);
+/* 缓冲区字节数应为 stride * ah * bpp，可据此自检 */
+```
+
+### 10.5 仍需实测的只有"通道位序"
+
+bpp 已确定，但 16bpp 具体是 RGB565 / RGBA5551 / RGBA4444，
+以及 32bpp 是 RGBA / BGRA，仍需一次实测确认（画已知纯色后看字节）。
+
+**⇒ 但 bpp 本身不再是未知项 —— 它会直接由 `geo+0x1C` 的格式值决定。**
