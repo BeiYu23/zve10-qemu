@@ -1,3 +1,40 @@
+
+## 〇、2026-10-24 最新状态（本段为最新，覆盖下面的历史内容）
+
+### 最可用的两个组合（都可复现）
+
+| 组合 | 镜像 | 状态 |
+|---|---|---|
+| **老菜单**（ZV-E10 原 /usr） | `/mnt/build/ab_v603.img` | 启动链稳定、bootin→sen.elf→im.elf；backup 同步队列已注册并应答（无崩、无分配风暴）；initializeConfig 仍未返回 |
+| **新菜单**（ZV-1F 混合 /usr） | `/mnt/build/tmp/hb/v11.img` | 35~36 模块、MonDrv 成功、fake_gles 大窗口映射、进入 App 线程；但崩溃非确定性（分配器/映射语义不对） |
+
+### 内核（必须是这一颗）
+```
+/mnt/build/src/a7c-kernel/linux/arch/arm/boot/zImage
+= 3.0.27_nl-rt106+  + 调试钩子：
+  ZZREG（寄存器） / ZZMOVMAP（600 段用户映射） / ZZMWF（libMWF mp_mon）
+  ZZTGKILL（信号投递） / ZZEXCSTACK（96 字用户栈，不过滤）
+```
+
+### 关键结论（本轮新增）
+```
+1) 原厂 backup.ko 必须用真的（stub 会让 MonDrv 的 /dev/mem mmap 失败 → MonQueue NULL → 崩）
+2) 原厂 grm_gles.ko 在 QEMU 必崩（sugilite_open 访问硬件）⇒ 必须用 fake_gles
+3) 原厂 grm_ma.ko 是 0x61003C 服务端（DMP 显存分配应答）⇒ 必须是真的
+4) 只有 upm / accel / mag / compass 需要 stub
+5) fake_gles 必须实现"恒等/大窗口"mmap 才能让 App 拿到的地址可用
+6) 崩溃点会随轮次变化（appFw guard page / libc / 稳态）⇒ 缺的是分配器语义
+```
+
+### 常用命令
+```sh
+# 运行（注意 pkill 用 -x，避免杀掉自己的 shell）
+EXTRA='-global driver=bionz-streamfb,property=blank-pattern,value=off' \
+INITRD=/root/fw/handoff_p0/initrd_q4.img OUT=/mnt/build/tmp/runX \
+/mnt/build/run_quiet.sh /mnt/build/tmp/hb/v11.img 170
+pkill -x qemu-system-arm
+```
+
 # ZV-E10 QEMU 当前状态速查（2026-10-23 22:30）
 
 > 目的：**上下文丢失也能在 5 分钟内接手**。只写"现在成立的事实"和"下一步做什么"。
