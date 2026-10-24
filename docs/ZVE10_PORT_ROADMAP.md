@@ -4576,3 +4576,25 @@ GRM2 init fb=0x476F000 ✅
 应用层：❌ initializeConfig 不返回 ⇒ App 从未进入绘制
 ⇒ 唯一剩余瓶颈 = App 初始化（libObj 里的配置初始化链）
 ```
+
+## 2026-10-24 23:45 老菜单：新增"全线程 PC dump"能力（内核侧），已完成首轮采样
+- fake_gles 的 maps_thread 扩展：对 im.elf 进程的每个线程打印
+```
+[THR] pid= comm= st=（state） pc=（task_pt_regs->ARM_pc）
+```
+  实测（ab_v662 / o22）：THR 输出 288 行
+```
+pid=121 comm=im.elf.real st=1 pc=0x040A2146   ← 该地址落在 libpthread-2.11.2.so(0x425A000..0x4347000 之外的另一段)
+pid=135 comm=im.elf.real st=1 pc=0x040232FC
+（其余线程 pc 多为 0x042F517C / 0x042F7E50，属 libpthread/libc 的 futex/sleep 返回点）
+```
+- 说明与限制：
+```
+① 该内核线程名沿用进程名（comm = im.elf.real），暂时分不清哪个是 Appframework 线程
+② 但有 pid 可用：Appframework 之前记录过 pid 185/186，可据此过滤
+③ 下一步把 pc 与 MAPD 的库区间做自动匹配，就能得到"每个线程卡在哪个库的哪个偏移"
+```
+- 下一步（第 53/60 轮）：
+  1) 在探针里打印**每个线程的 tid**（gettid），与内核 THR 的 pid 对齐 ⇒ 精确找到 Appframework 线程
+  2) 把该线程 pc 解析到库+偏移 ⇒ 得到 initializeConfig 的真正阻塞点
+  3) 针对该点做 shim（而不是继续猜信号量/消息）
