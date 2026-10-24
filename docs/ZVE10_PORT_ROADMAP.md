@@ -4721,3 +4721,22 @@ IMNANOSLEEP 334 次、INITCFG_ENTER=1（EXIT 未出现）
 - 下一步（第 2/40 轮）：
   1) 在探针里 hook nanosleep，打印**调用者 LR**（同一轮内），把轮询点定位到函数
   2) 顺着该函数看它检查哪个变量/文件/共享内存，缺什么就补
+
+## 2026-10-25 00:45 新 goal 第 2/40 轮：轮询点定位到 libMWF 附近（待用同轮基址确认）
+- 做法：探针 interpose `nanosleep`，打印调用者 LR（同轮采集）
+- 结果（ab_v670 / p2）：
+```
+NSLP tid=133 lr=0x058E5B6F   ← 连续多次，稳定
+（本轮 MAPD 未输出，因为该镜像的 grm_gles 不是我们带 maps_thread 的 fake_gles 版本）
+对照历史同布局的 MAPD：0x058B6000-0x058F1000 是 libMWF.so
+⇒ 该轮询点大概率在 libMWF.so 内（偏移约 0x2FB6F）
+```
+- 判读：
+```
+① 轮询线程（tid 133）很可能是 libMWF 自己的内部线程，不是 Appframework
+② 需要"同轮内" MAPD 才能确认基址与归属 —— 下一轮把 maps_thread 镜像与 nanosleep 探针合并
+```
+- 下一步（第 3/40 轮）：
+  1) 用带 maps_thread 的 fake_gles 镜像 + nanosleep 探针，同轮拿 base 与 lr
+  2) 只关心 comm/线程为 Appframework 的那条 NSLP
+  3) 定位后看它轮询的条件（libObj 或 libMWF 内的标志）
