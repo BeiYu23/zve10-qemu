@@ -339,3 +339,49 @@ bpp 已确定，但 16bpp 具体是 RGB565 / RGBA5551 / RGBA4444，
 以及 32bpp 是 RGBA / BGRA，仍需一次实测确认（画已知纯色后看字节）。
 
 **⇒ 但 bpp 本身不再是未知项 —— 它会直接由 `geo+0x1C` 的格式值决定。**
+
+---
+
+## 十一、★★★ 重大更正：App 用的是 `GRM_bitmapCreateFromPhys`，位图内存由 **App 提供**
+
+### 11.1 导入符号实证
+
+| 符号 | `appFw.so` 是否导入 |
+|---|---|
+| **`GRM_bitmapCreateFromPhys`** | **✅ 是（UND）** |
+| `GRM_bitmapCreate` | ❌ 否 |
+| `GRM_bitmapGetPhysicalAddress` | ❌ 否 |
+| `GRM_bitmapGetRowPixelCount` | ❌ 否 |
+| `GRM_bitmapGetSubRectangle` | ❌ 否 |
+| `GRM_bitmapWriteLockBits` | ❌ 否 |
+
+**⇒ App 只用 `CreateFromPhys` 一个入口创建位图，其余全是库内部使用。**
+
+### 11.2 含意（推翻了"库自己 malloc 像素缓冲"的假设）
+
+```
+GRM_bitmapCreateFromPhys(...)  @0x114AF0
+    → 5 次 no-op 转换调用（0x11498E / 0x114982 / 0x1149B2 / 0x11499A / 0x1149A6）
+    → 重排 9~15 个参数到栈，调用真正的实现
+```
+
+**⇒ 像素缓冲的物理地址由 App 传入，不是 `BMP_Create` 分配的。**
+
+**⇒ 所以 `[bmp+0x08]`（VA）必须由"把那个物理地址映射进本进程"建立；
+`info+0x24` = App 传入的物理地址。**
+
+### 11.3 对 QEMU 线（`session-41b33827`）的直接价值
+
+之前"fake 一个 0x08000000 大窗口"方向虽被否，
+但**"需要能访问 App 指定的物理缓冲"这件事本身是对的** —— 只是机制应该是：
+
+> **在 `GRM_bitmapCreateFromPhys` 里读出 App 传入的物理地址，
+> 把它（或它所在的物理段）映射进本进程，再把映射后的 VA 填回 `[bmp+0x08]`。**
+
+⇒ 这能解释 App 为什么会写到 `0x085360E4` 这类地址 —— 那是它自己申请的物理缓冲。
+
+### 11.4 同时否掉一条假设
+
+`appFw` **不导入** `GRM_bitmapGetRowPixelCount`（也不导入 `GetSubRectangle` / `GetPhysicalAddress`）。
+⇒ **"死 getter 返回 0 导致 size 查询得 0"这条因果链不成立** —— App 根本没调它。
+⇒ stride 只能从 `geo+0x18` 取（内部使用），或 App 自己按 `align_up(宽,8)` 算。
