@@ -83,18 +83,14 @@ int GRM_bitmapWriteUnlockBits(void *bmp)
     return 0;
 }
 
-/* ---------- 3) CreateFromPhys：探针（验证 shim 生效 + 像素指针） ---------- */
-void *GRM_bitmapCreateFromPhys(void *a0, void *a1, void *a2, void *a3,
-                               void *a4, void *a5, void *a6, void *a7)
-{
-    /* 参数语义未完全确定 ⇒ 先只做探针，真实创建仍由后续路径完成。
-       若 App 依赖返回值，需要回退到调用原函数（见 README）。 */
-    log_x("CREATEPHYS a0", (u32)a0);
-    log_x("CREATEPHYS a1", (u32)a1);
-    log_x("CREATEPHYS a2", (u32)a2);
-    log_x("CREATEPHYS a3", (u32)a3);
-    return 0;
-}
+/* ---------- 3) CreateFromPhys：❌ 不 interpose ----------
+ *
+ * 原因（自查后修正）：
+ *   · 它的签名未确定（至少 10 参数，可能更多），错误的 passthrough 会破坏调用
+ *   · 若我们返回 0，App 拿到 NULL 位图 ⇒ **正好制造我们要诊断的那个空指针**
+ *
+ * ⇒ 探针改到 gpermFillrect 入口做（安全，且同样能验证 shim 生效 + 读 [bmp+0x08]）。
+ */
 
 /* ---------- 4) CheckUpdateFinished：唯一完成信号，立即视为完成 ---------- */
 int GRM_fbrmCheckUpdateFinished(void) { return 0; }
@@ -138,8 +134,30 @@ static void fill_rect(void *bmp, const u8 *col, int x0, int y0, int x1, int y1)
     }
 }
 
+static int g_fill_logged = 0;
+
 int GRM_gpermFillrect(void *a, void *b, const u8 *p, u64 c)
 {
+    /* ★ 探针：证明 shim 生效 + 进程走到绘制 + 像素指针状态
+       只打前 3 次，避免刷屏 */
+    if (g_fill_logged < 3) {
+        g_fill_logged++;
+        log_s("GPERM_FILL hit");
+        if (p) {
+            void *bmp_dbg = *(void **)(p + 0x00);
+            log_x("  bitmap", (u32)bmp_dbg);
+            log_x("  mode  ", *(u32 *)(p + 0x10));
+            if (bmp_dbg) {
+                log_x("  pix   ", (u32)BMP_PIX(bmp_dbg));   /* ★ 空指针假设的直接判据 */
+                log_x("  geo   ", (u32)BMP_GEO(bmp_dbg));
+                void *g = BMP_GEO(bmp_dbg);
+                if (g) {
+                    log_x("  stride", GEO_STRIDE(g));
+                    log_x("  format", GEO_FORMAT(g));
+                }
+            }
+        }
+    }
     if (!p) return -1;
     u32 mode = *(u32 *)(p + 0x10);
     if (mode != 1 && mode != 2) return 0;        /* 真机行为：不绘制 */
@@ -172,5 +190,5 @@ int GRM_gpermRectblit(void *a, void *b, const u8 *p, u64 c)
 static int g_first = 1;
 __attribute__((constructor)) static void swgpe_init(void)
 {
-    log_s("SWGPE loaded");
+    log_s("SWGPE loaded (v2)");
 }

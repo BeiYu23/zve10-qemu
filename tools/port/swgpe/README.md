@@ -45,8 +45,8 @@ chmod 755 /usr/bin/im.elf
 | 阶段 | 现象 | 说明 |
 |---|---|---|
 | 1 | 串口出现 `SWGPE loaded` | shim 加载成功 |
-| 2 | 出现 `CREATEPHYS ...` | App 走到位图创建 ⇒ **shim 机制生效** |
-| 3 | 出现 `GPERM_FILL`（若加日志） | 走到绘制 |
+| 2 | 出现 `GPERM_FILL hit` | **shim 机制生效 + 进程走到绘制** |
+| 2b | `bitmap=0x...` / `pix=0x...` | **pix=0 ⇒ 空指针假设成立** |
 | 4 | 屏幕出现规则色块 | **成功** |
 | 5 | 色块颜色不对 | 位域/通道序需调（用纯绿测） |
 | 6 | 花屏/斜条 | stride 或 bpp 错 |
@@ -54,9 +54,9 @@ chmod 755 /usr/bin/im.elf
 
 ## 已知未完成项（代码里已标注）
 
-1. **`GRM_bitmapCreateFromPhys` 只做探针，返回 0**
-   —— 参数语义未完全确定。若 App 依赖返回值，需要改成
-   `dlsym` 拿原函数再调（见下方"回退方案"）
+1. **`GRM_bitmapCreateFromPhys` 故意【不 interpose】**
+   —— 签名未确定（≥10 参数），且若返回 0 会**正好制造要诊断的空指针**。
+   探针已改到 `gpermFillrect` 入口（同样能验证 shim 生效 + 读像素指针）。
 2. **`GRM_gpermRectblit` 只记录不绘制** —— `RectBlitParam` 的 `+0x04/+0x08` 待实测
 3. **16bpp 位域按 RGBA4444 假设** —— 需纯绿测试确认是 565 / 5551 / 4444
 4. `+0x14` 计数只打印不维护（`Release` 会减它）
