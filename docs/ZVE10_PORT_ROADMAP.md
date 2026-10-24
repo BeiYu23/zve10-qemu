@@ -5501,3 +5501,30 @@ pid=143 comm=THREAD_INFRA0  pc=04023384            stack 含 libObj+0x767BC7
 B) 按 IMDB 199 条清单重排模块/库加载顺序（a7c2 记录过顺序错会造成这类怪卡）
 C) 定向给 THREAD_INFRA 池的 mutex 加"限时 trylock 后让路"，看是否能自愈
 ```
+
+## ★★★ 2026-10-25 10:40 backup 应答已"完全正确"，但循环依旧 —— 证实卡点不在数据
+- 采用协作方的字段顺序（key = req+24 = w[6]）+ 我们已实现的真实 BK4 查询：
+```
+MB key=00bd0002 size=1 a=0001b820
+MB key=00bd0001 size=1 a=0001b820
+MB key=00bd0000 size=1 a=0001b820
+⇒ 返回值=真实 size（1），数据=真实字节（0x04/0xC2/0x08），写入成功
+```
+- 但：
+```
+INITCFG_ENTER=1 / EXIT=0
+ZZIOCTL Appframework 仍 15138 次（UIPC 轮询循环继续，pid=187）
+⇒ 循环不是"数据不对"驱动的，而是"在等某个状态"
+⇒ 与该轮 mutex/栈分析吻合：卡在 Infra 线程池（THREAD_INFRA0/1/2）互相持锁
+```
+- 结论：
+```
+backup 这条线可以收工（真实数据、真实 size、真实字段顺序，全部对齐）
+剩下的唯一问题是 App 内部的 Infra 线程池死锁/饥饿
+```
+### 下一步（待执行）
+```
+B) 加载顺序：IMDB 199 条清单（顺序错曾导致 a7c2 类似症状），需要改 IMDB 数据或加载器
+C) 定向 trylock：只对 THREAD_INFRA 池用到的 mutex 加超时让路（全局做过，崩过一次）
+D) 用固件自带 mwf_monio.elf / app_monio.elf 观测线程池任务队列（可能直接看到卡住的 job）
+```
