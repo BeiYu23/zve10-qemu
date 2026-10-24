@@ -3411,3 +3411,31 @@ Physical Addr / Mon Buf Size 打印          = 0 次
   2) 或退一步：让 mmap 请求落在 QEMU 已映射的 RAM 区间（`0x00000000-0x40000000` / `0x80000000-0xC0000000`）；
   3) 或最小侵入：把 `Monitor::Init()` 里的打印调用全部 NOP 掉（本次试了 0x32652 一处仍未消除，
      说明还有第二处打印点，需逐个定位）。
+
+## ★★★ 2026-10-24 14:50 新菜单线：**MonQueue interposer 生效，监视器崩溃被绕过**；新崩溃落在 libc
+- 按对方给的 a7c2 做法，编了 `libmonconsole.so`（`-nostdlib -shared -fPIC`，无 NEEDED 依赖）：
+```c
+int _ZN8MonQueue6IsFullEv(void*)        { return 1; }
+int _ZN8MonQueue12IsNearlyFullEv(void*) { return 1; }
+int _ZN8MonQueue7IsEmptyEv(void*)       { return 1; }
+unsigned long _ZN8MonQueue14GetQueueRemainEv(void*) { return 0x40; }
+int _ZN8MonQueue7EnQueueEh(void*, unsigned char)    { return -1; }
+```
+  注入方式：`/usr/bin/im.elf` → `#!/bin/sh` 包壳（LD_PRELOAD=/usr/lib/libmonconsole.so + exec im.elf.real），
+  原 im.elf → im.elf.real；库放 `/usr/lib/libmonconsole.so`。
+- 结果（ab: h18）：
+```
+包壳成功（不再有 ld-linux-armhf.so.3 报错 —— 因为 -nostdlib 的 .so 没有 NEEDED）
+modloads=33（+1）
+EXECVE /usr/bin/im.elf → im.elf.real
+★ 监视器崩溃消失（没有 "Failed to mmap"→MonQueue NULL 崩溃路径）
+新崩溃：program=im.elf.real(THREAD_INFRA0, pid 134) address=0x0 trap_no=6(非法指令)
+[ZZREG] r0=0 r1=0x86 r2=6 r3=0x86 r4=6 ...
+[ZZEXCSTACK] pc=0x04265796 lr=0x04274D8F
+  pc → libc-2.11.2.so +0x15796 ; lr → libc-2.11.2.so +0x24D8F
+```
+  ⇒ **启动链第一次越过 MWF 监视器层，进入 App 线程（THREAD_INFRA0）**，崩点转移到 libc。
+- 下一步（第 26/60 轮）：
+  1) 反汇编 `libc-2.11.2.so +0x15796` 看是哪条指令（trap 6 = 未定义指令，常见于跳转到 0 或执行数据）；
+  2) 同步 dump 崩溃前该线程的调用链（栈上 0x04xxxxxx 的返回地址）；
+  3) 若仍是"某个函数指针为 0"，继续按"缺哪个初始化"补。
