@@ -5331,3 +5331,19 @@ BI dst=0001b820 len=4800 hdr: 00 00 00 0d 4f ...
 1) 按 a1 的低 16 位作为段号，尝试 offset = 段号 * 固定大小（如 0x200/0x1200）多种组合
 2) 或直接 dump Backup.bin 的结构（"BK4" 头 + 表项 28 字节，backup.ko 里 table+idx*28）
    看 1200/512/4800 三段对应文件里的哪些区域
+
+## 2026-10-25 06:25 新 goal 第 39/40 轮：按协作方"nread 正确契约"实测 —— 地址仍写不进去
+- 协作方结论：`Backup_nread(key, addr, limit)`；size 由句柄高 8 位给出（1/2/4）；
+  addr<0x5F000000 走 copy_to_user；返回值=size；limit<size 会走阻塞警告路径
+- 我方按此实现（写 0x00BD0000+key 4 字节、返回 4）：
+```
+BS key=2 n=0   ← bk_write_user 失败（use_mm+copy_to_user 仍是 0）
+随后 crash
+⇒ 0x00BD0000 在该进程 mm 里也不可写（或 use_mm 切 mm 的方式不对）
+```
+- 现状：
+```
+· 数据通路：能确认"客户端缓冲在低地址区"，但我们两种写法（直接 copy_to_user / use_mm）
+  都写不进去 ⇒ 需要确认"回调运行在哪个上下文、目标 mm 是哪个"
+· 可尝试的最后一招：用 set_fs(KERNEL_DS)+直接 memcpy 到该地址（若它在内核直接映射区）
+```
