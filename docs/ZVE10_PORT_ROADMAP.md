@@ -4033,3 +4033,27 @@ cortex-a7        : 同样卡在 "booting the kernel"
      已定位调用者 lr = appFw+0x1FBFBA1
   2) 用 preload interpose malloc/free，记录分配尺寸，看是否"分配 N 但写 N+0xA4"
   3) 或用 `GRM_bitmapCreateFromPhys` 的 phys 值反推（若该 phys 落在 0x08xxxxxx，说明就是 GPU 缓冲）
+
+## ★★ 2026-10-24 20:35 新菜单线：崩溃写入点 = "大结构基址 + 固定偏移"，malloc 拦截无效（jemalloc 内部绑定）
+- 静态分析（appFw.so，.text vaddr == file offset）：
+```
+崩溃函数 0x1F26B8A：push / mov r4,r0 / ldr r3,[r1] / movs r2,#0xA0 / str.w r3,[r0],#4 / blx memcpy
+调用点   0x1FBFB62 / 0x1FBFB70：bl 0x1F26BA2
+调用者算目标的方式： r0 = r7 + 常量
+  常量取值：0x0E3310 / 0x0E33B4 / 0x02DF464 / 0x0E3644
+⇒ 崩溃写入地址 = r7（某个大结构/资源基址）+ 0xE3310 附近
+⇒ 反推 r7 ≈ 0x083570E4 - 0x0E3310 ≈ 0x07493DD4
+⇒ 即"基址 + 约 930KB 的偏移"落到了未映射页 ⇒ 该基址所指向的分配/映射比预期小
+```
+- 运行时探针（preload interpose `malloc/calloc/realloc`，记录前 400 次）：
+```
+MALLOC 日志 = 0 条
+⇒ im.elf 用的是 jemalloc（libjemalloc_ds.so.1），内部直接绑定，LD_PRELOAD 拦不到
+⇒ 改用「读 /proc/self/maps 找 r7 所在区间的大小」或「hook mmap」来确认分配尺寸
+```
+- 下一步（第 38/60 轮）：
+  1) 在崩溃异常钩子里，用 r7（或反推值）在 ZZMOVMAP 输出里定位所属区间，打印其 **start-end 大小**
+     ⇒ 若大小 < 0xE3310+0xA4，即可确认"结构基址分配过小"
+  2) 追这个基址从哪来：大概率是"资源文件 mmap"（view*.uxc / .bin），
+     需比对 ZV-1F 资源文件的实际大小与 appFw 期望的偏移表
+  3) 若确认是资源尺寸不符，优先修正混合镜像里的资源文件版本
