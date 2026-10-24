@@ -3357,3 +3357,30 @@ lr 0x5B4F407 -> 同区间 libMWF.so
 ```
 - 下一步：把 `libMWF+0x323BE` 交给对方反汇编（ZV-1F 版 libMWF），看它是哪个函数、解引用谁；
   我这边可同时 dump 崩溃前的 dlopen/open 序列与几个关键全局。
+
+## ★★★ 2026-10-24 14:25 新菜单线：崩溃调用链完整解出 —— **Monitor::Init 打印横幅时，MonDrv 的队列还是 NULL**
+- 用内核 `ZZMOVMAP` 定位到 `libMWF+0x323BE`，随后用栈上返回地址还原调用链（全部在 libMWF 内）：
+```
+pc 0x323BE  MonQueue::GetQueueRemain() +0x0     ← ldr r3,[r0] 且 r0 == NULL ⇒ 崩在地址 0
+lr 0x32407  MonQueue::IsNearlyFull()  +0xB      ← 调 GetQueueRemain(this)
+    0x31419  MonDrv::PutcharSub(int)  +0x15
+    0x314AB  MonDrv::PutsNoCR(char const*) +0x13
+    0x32657  Monitor::Init()          +0x57     ← 这里在打印初始化横幅
+```
+- 反汇编 `Monitor::Init()`（0x32600）确认：
+```
+32606: blx MonLib::Init()
+3260a: blx MonFil::Init()
+3260e: blx MonFlt::Init()
+...
+32652: blx MonLib::MsgNewLine()
+32656: ldr r0,[pc] / add r0,pc
+3265a: blx MonLib::ConPutStr(str)      ← ★ 打印横幅，走 MonDrv → MonQueue
+```
+  ⇒ **`MonDrv` 没被初始化（其队列指针为 NULL）**，所以一打印就空指针崩。
+  `MonDrv::Init()` 本身是导出符号（`libMWF+0x311F0`），但**在这条路径上没有被调用/没有成功**。
+- 关键结论：**这个崩溃是"诊断输出炸了"，不是业务逻辑本身**——但它挡住了整个启动。
+- 下一步（第 25/60 轮）：
+  1) 用 `-nostdlib`（纯裸 syscall）编一个探针，构造期从 `/proc/self/maps` 解析 libMWF 基址，
+     主动调用 `libMWF+0x311F0`（`MonDrv::Init()`），看崩溃是否消失；
+  2) 若 `MonDrv::Init()` 自身依赖设备（UART/monitor 节点），再补那个设备/节点。
