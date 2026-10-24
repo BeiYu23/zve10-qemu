@@ -4852,3 +4852,21 @@ SIGNAL：
 ⇒ 若 initializeConfig 因此返回 ⇒ 找到卡点；若无反应 ⇒ 排除，转向别处
 （实现：探针维护"wait 过但未 signal"的 cond 集合，运行 10 秒后统一 signal 一轮）
 ```
+
+## ★★ 2026-10-25 01:45 新 goal 第 9/40 轮：**"主动唤醒未配对 condvar"实验 —— 无效，cond 方向基本排除**
+- 改动：探针维护"wait 过但未 signal"的 cond 集合；worker 里起看门狗线程，
+  12 秒后每 2 秒对这些 cond 各 signal 一次（共 20 轮）
+- 实测（ab_v710 / p7）：
+```
+WATCHDOG 正常启动，WAKE round=0 n=10、round=1 n=9、round=2 n=9（共三轮以上）
+crash=0
+但 INITCFG_ENTER=1 / EXIT=0 —— initializeConfig 仍未返回
+⇒ 强行 signal 那些"没人通知"的 condvar【不能】让 App 走出初始化
+⇒ "卡在某个 condvar 上"这个方向基本排除（或者它 signal 后又回到同一处等待）
+```
+- 下一步（第 10/40 轮）：
+```
+转向"等 I/O"假设：给 read / select / poll / recv 加带 tid 的钩子
+  · 若 initializeConfig 所在线程阻塞在 read(fd)/poll 上 ⇒ 拿到 fd 即可判断是哪个设备/管道
+  · 结合 /proc/<pid>/fd 解析该 fd 指向（我们已有 dump_fds 能力）
+```
