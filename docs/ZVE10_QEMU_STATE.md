@@ -1,3 +1,39 @@
+## 〇、2026-10-25 00:00 最新（老菜单冲刺阶段）
+
+### ✅ 已达成：显示层完全打通（L1）
+```
+镜像 /mnt/build/ab_v651.img（L1 验证版）
+preload libtestpat.so：open("/dev/mem") + mmap(0x20312000,0x1E0000) 写 8 条彩条
+QEMU 必须显式指定几何：
+  -global driver=bionz-streamfb,property=width,value=640
+  -global driver=bionz-streamfb,property=height,value=480
+  -global driver=bionz-streamfb,property=stride,value=1280
+  -global driver=bionz-streamfb,property=format,value=1
+⇒ 满屏 8 色各 38400 px（合计 307200 = 640×480），截图 docs/artifacts/2026-10-24_oldmenu_fullscreen_bars.png
+```
+
+### ✅ 已就绪：绘制层 shim（L2）
+```
+libgrm2.so：GRM_bitmapCreate 后把 [bmp+0x08] 指向 VDF 帧缓冲
+            geo+0x18=640(stride) / +0x1A=480 / +0x1C=1(format) / +0x24=0x20312000
+            GRM_bitmapWriteLockBits 直接返回 fb
+            GRM_gpermFillrect 用 CPU 实现（bpp_tab 查表）
+镜像 /mnt/build/ab_v660.img
+```
+
+### ❌ 剩余唯一瓶颈
+```
+App 的 initializeConfig 不返回（INITCFG_ENTER=1 / EXIT=0）
+全线程 PC 采样显示：所有线程停在 libc/libpthread 等待点 ⇒ 在等事件，不是死锁
+```
+
+### 诊断工具（内核，fake_gles 里）
+```
+ZZREG / ZZMOVMAP / ZZR7 / ZZSIG / ZZTGKILL / ZZINSN / [MAPD] 映射 / [THR] 全线程 PC
+```
+
+---
+
 ## 〇、2026-10-24 21:40 最新（覆盖下方历史内容）
 
 ### 当前最稳定组合（新菜单）
