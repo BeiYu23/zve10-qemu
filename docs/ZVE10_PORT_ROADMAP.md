@@ -4180,3 +4180,22 @@ ZZFUTEX ×44 / IMNANOSLEEP ×7  ⇒ App 主循环在跑、在等待
 ③ 下一轮先看：/dev/stream 的 open/ioctl/read 行为（probe 已有能力），
    以及 streamfb 模型是否有 vblank/中断可配
 ```
+
+## 2026-10-24 21:25 新菜单线：零崩溃状态下 App 的等待点（futex 在 im.elf 自身数据段）
+- 解析 h75 的 ZZFUTEX：
+```
+uaddr=0x0002A3A0 / 0x0002A374  ← 都落在 im.elf 自己的 data/bss（0x16000-0x37000 区）
+lr = 0x040B3D8D / 0x040B4D0D   ← libpthread 区（推断 pthread_cond_wait / mutex）
+⇒ App 的线程在等【自己内部的 condvar/mutex】，不是等我们某个设备
+```
+- 结合 GLESKICK 只有 4 次 ⇒ App 主循环跑完初始化后就进入"事件等待"，
+  典型 UI 框架在"无输入/无重绘请求"时的状态。
+- 判读与下一步（第 44/60 轮）：
+```
+① 现在缺的是"触发一次绘制"的事件源（触摸/按键/定时器/VSYNC）
+② 可行路径：
+   a) 注入输入事件（libObj 的 InputService::pushFilterEvent）—— 目标里就要求"尽量可交互"
+   b) 让 /dev/stream 侧产生 VSYNC（streamfb 模型目前是纯被动镜像，不发中断）
+   c) 检查 App 是否有定时器线程（nanosleep ×7 说明有，可能只是低频心跳）
+③ 优先试 a：注入一次触摸事件，看是否触发一帧绘制（GPUSHIM/UXIMG 日志会出现）
+```
