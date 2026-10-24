@@ -4000,3 +4000,36 @@ cortex-a7        : 同样卡在 "booting the kernel"
   1) 在异常钩子里把**非法指令的原始 32 位编码**打出来（`*(u32*)pc`），直接看是哪条指令
   2) 同时打印该 pc 所属区间名（ZZMOVMAP 已有）
   3) 依据指令类型判断：是 ARMv8 crypto / NEON / 还是"跳到了数据区"
+
+## ★★★ 2026-10-24 19:45 新菜单线：修掉 fake_gles 内核越界 + 定位到"160 字节结构拷贝写飞"
+- **修复 1（内核侧 OOB，这是真 bug）**：
+```
+崩溃现场：PC is at fake_ioctl+0x2d0/0x520 [fake_gles]
+          r8=0xB22AB000（我们的 128KB 环）r6=0x8000 insn=e7982106 (ldr r2,[r8,r6,lsl#2])
+根因：cmd 0xc0048212 的调试扫描写成 `for (o=0; o<0x40000/4; o++) b[o]`
+      ⇒ 扫描 256KB，而环只有 128KB ⇒ 读到环外 0x20000 处 ⇒ 内核数据中止
+修复：上限改为 WIN_BYTES/4，并降低打印条数
+```
+  ⇒ 修好后内核侧不再崩（`PC is at fake_*` 归零）。
+- **修复后的现象（稳定可复现）**：
+```
+用户态数据中止：address=0x083570E4 / 0x085570E4 / 0x0A6000E4（每次都 0x…E4 结尾）
+[ZZINSN] pc=appFw+0x1F26B96  insn=3b04f840 = str.w r3,[r0],#4
+        该函数体：push{...} / ldr r3,[r1] / mov r1,r2 / movs r2,#0xA0 / str.w r3,[r0],#4 / blx memcpy / pop
+⇒ 是"把 164 字节结构拷到 r0"的例程，r0 指向未映射页
+```
+- **并行做的静态/运行时探针（QEMU 在后台跑，同时做分析）**：
+```
+① objdump 复核 gperm 调用点：libObj 内 blx GRM_gpermRectblit@plt ×5 + GRM_gpermFillrect@plt ×1（确凿）
+   GRM_bitmapCreateFromPhys@plt 调用点 1 处（0x229DA6）
+② preload 探针记录 open/mmap：
+   /dev/mem 打开成功（fd=5），mmap off=0x20098000 len=0x7C000 成功 ⇒ libObj 的物理映射通路是好的
+   本轮没有打开 /dev/dmpgles2（说明这次没走到 GPU 设备打开）
+③ 我们的 GPU shim（lock/unlock 中性化 + gperm CPU 填充）一次都没被调用
+   ⇒ 崩溃发生在**任何图形 API 之前**
+```
+- 下一步（第 39/60 轮）：
+  1) 追"那个 164 字节结构写入的目标 r0 从哪来"：
+     已定位调用者 lr = appFw+0x1FBFBA1
+  2) 用 preload interpose malloc/free，记录分配尺寸，看是否"分配 N 但写 N+0xA4"
+  3) 或用 `GRM_bitmapCreateFromPhys` 的 phys 值反推（若该 phys 落在 0x08xxxxxx，说明就是 GPU 缓冲）
