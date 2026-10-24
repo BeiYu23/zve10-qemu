@@ -3465,3 +3465,29 @@ appFw.so 的动态符号里没有 dmp/MA 导入（717 个未定义符号里都�
   1) 在 appFw.so 里定位 `dmp_allocator_lib_init`（用断言字符串 xref / 找 `__assert_fail` 调用点）；
   2) 看它初始化时依赖什么（设备节点 / ioctl / dlsym / 物理内存），决定是 shim 还是补设备；
   3) 若它走 `dlsym` 或某个导出 API，就直接按 a7c2 做法软件实现。
+
+## ★★ 2026-10-24 15:10 新菜单线：又一个断言被突破，新断言指向 **DMP 服务应答（源 id 校验）**
+- 在 `libmonconsole.so` 里追加两个 shim（`-nostdlib`，无依赖）：
+```c
+int dmp_allocator_lib_init(void){ return 0; }   /* 原断言 e==MA_ErrNone */
+int dmp_allocator_mmap_init(void){ return 0; }
+```
+  （两者都是 **libObj.so 导出的符号**：`dmp_allocator_lib_init @0x11BFE4`、`dmp_allocator_mmap_init @0x11C59C`；
+   `dmp_allocator_lib_init` 第一步是 `osal_wai_sem_tmo(sem,-1)`，失败即断言 —— 我们直接返回 0 绕开）
+- 结果（ab: h19）：
+```
+✅ 原断言（dmp_allocator.c:108 e==MA_ErrNone）消失
+❌ 新断言：
+   im.elf.real: int_cmd.cpp:169: void dmpNative::InternalCmd::alloc_sync():
+     Assertion `((0x00000000) | (0x0061 << 16) | (0x003C)) == osal_get_msg_src(handle)' failed.
+   → SIGABRT（ZZTGKILL sig=6）
+```
+- 归位：`int_cmd.cpp` / `alloc_sync` 字符串都在 **`/lib/libObj.so`（ZV-1F，inode 274）**里
+  （ZV-1F 把 DMP 相关代码并进了 libObj）；`dmpNative::InternalCmd::alloc_sync` **没有导出**，不能 interpose。
+- 含义：**DMP 显存请求的应答必须来自源 id `0x61003C`（子系统 0x61、本地 0x3C）**，
+  而我们的环境里没有这个服务 ⇒ 客户端收到的消息 src 不匹配 ⇒ 断言。
+  ⇒ 这正是 a7c2 里的 **`dmp_service_reply()`**（显存服务应答）要干的事。
+- 下一步（第 28/60 轮）：
+  1) 在 guest 里查 `/proc/osal/uipc`，确认 0x61 子系统/队列是否存在；
+  2) 若不存在 ⇒ 需要在 backup 替代模块里**同时注册一个 0x61xxxx 的同步服务**并回合法应答；
+  3) 若存在但无人应答 ⇒ 找出谁该应答（很可能就是被我们 stub 掉的 dmm/grm_ma 一类模块）。
