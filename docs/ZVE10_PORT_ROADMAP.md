@@ -3268,3 +3268,39 @@ IMOPEN FAIL //etc/ld.so.cache, libjemalloc_ds.so.1 …（正常缺失）
 ② im.elf 早期 NULL 崩溃 → 需要看它是 ZV-E10 版还是 ZV-1F 版、以及它启动时依赖什么
    （可以注入探针拦 dlopen/main，或直接用 gdb 看崩溃点）
 ```
+
+## ★★ 新 goal 第 27/60 轮（2026-10-24 13:25）：按 ABI 实现 backup 同步应答 —— **崩没崩、风暴也没了**
+- 对方给出同步回调 ABI（内核 `__default_cb` @ 0x2434 实证）：
+```asm
+2440: r6 = cb
+2454: r3 = [r6, #0x14]     ; 回调函数
+2458: r0 = r4 + 12         ; ★ arg0 = msg + 0xC（应答缓冲）
+245c: r1 = [r6, #0x18]     ; ★ arg1 = ctx
+2460: blx r3               ; cb(reply_buf, ctx)
+```
+  ⇒ 注册签名 `osal_reg_sync_msg_queue_cb(qid, &cb_out, cb_fn, ctx)`；r2==0 返回 -1024（已核实）。
+- 按此实现 backup 替代模块：
+```c
+static void backup_sync_cb(void *reply_buf, void *ctx) {
+    memset(reply_buf, 0, 200);        // 应答长度 = 注册时的 size
+}
+osal_reg_sync_msg_queue_cb(0x3E014D, &g_cb_out, backup_sync_cb, (void*)0x3E014D);
+```
+- 实测（ab_v602/603）：
+```
+BKREGSYNC rc=0 cb=0x60B9C920
+BKCBN rb=0x60BFFFAC ctx=0x003E014D msg[f7f7f7f7 00018103 a5a5a5a5] rb[00000003 00000000 00000002]   ×N
+  → 回调被真正调用！请求内容可见（rb 进入时 rb[0]=3 / rb[2]=2 等，是被请求的操作码与参数）
+bootin 不再崩（trap=0），启动链完整走到：bootin → sen.elf → launch_shell.elf → net_cmdd.elf → im.elf
+且 c24（24 字节分配风暴）= 9（此前 938）——风暴消失
+但 initializeConfig 仍 ENTER=1 / EXIT=0（还没返回）
+```
+- 现状：
+```
+✅ bootin 崩溃（address=0）已解决 —— 原因就是"注册了同步队列却不回包"
+✅ 24 字节分配风暴消失（此前 938 次）
+❌ initializeConfig 仍未返回（现在它在等【另一件事】）
+```
+- 下一步（第 28/60 轮）：
+  1) 用 BKCBN 记录的 `rb[0]/rb[2]` 操作码做应答字段试探（把"成功码"写进应答，看 EXIT 是否出现）；
+  2) 同时看 initializeConfig 现在是否又卡在别的队列（用之前的 ioctl/stat 组合观察）。
