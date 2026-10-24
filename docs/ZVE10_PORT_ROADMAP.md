@@ -4759,3 +4759,21 @@ NSLP tid=176 lr=0x07B6B611 → libmpr.so  + 0x736611  （libmpr 框架线程）
   1) 探针里给所有等待类 hook 加 tid 过滤（只打 Appframework 那个 tid）
   2) 首次出现该 tid 的等待就打印 uaddr/qid/lr（同轮）
   3) 据此直接指到 initializeConfig 内部的等待对象
+
+## 2026-10-25 00:55 新 goal 第 4/40 轮：探针能力盘点 + 下一步最小改动
+- 现状：当前探针（c640，基于 c528）只有 `INITCFG_EN/EX`、`NSLP`、`INV` 等钩子，
+  **没有** WAISEM/RCV/SIGSEM 钩子（那些在 c62x 系列里，两套探针尚未合并）
+- 因此本轮结论：
+```
+要"只看 Appframework 线程的等待点"，必须先做**合并版探针**：
+  c528 基础（INITCFG/INV/Y9）
++ c625 的 osal_wai_sem_tmo / osal_sig_sem（带 tid）
++ c627 的 osal_rcv_msg_tmo（带 tid）
++ c640 的 nanosleep（带 tid）
++ c626 的 sem 0x18004B5 bypass
+⇒ 一个探针同时给出"谁在等、等什么、卡在哪一步"
+```
+- 下一步（第 5/40 轮）：
+  1) 合并上述钩子，编译 `libprobe_all.so`
+  2) 跑一次 ab_v603，按 tid 过滤出 Appframework 的等待/轮询点
+  3) 定位后针对性补 shim
