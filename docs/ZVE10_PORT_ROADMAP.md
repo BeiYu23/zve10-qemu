@@ -4475,3 +4475,30 @@ INITCFG_ENTER=1 / EXIT=0（initializeConfig 仍未返回）  crash=0
      ⇒ 继续沿"让更多初始化返回成功"推进（initializeConfig / ViewManager）
   3) 同时做 L1 里程碑实验：preload 直接 mmap /dev/mem(0x20312000) 写测试图案，
      证明"我们能主动让屏幕显示任意内容"（与 App 无关的硬证据）
+
+## 🎉🎉 2026-10-24 23:10 老菜单 **L1 达成：屏幕出现我们写入的彩条**（显示链路完全打通）
+- 做法（最小闭环）：
+```
+preload 构造函数（libtestpat.so，-nostdlib）：
+  fd = open("/dev/mem", O_RDWR)
+  p  = mmap(NULL, 0x1E0000, PROT_READ|WRITE, MAP_SHARED, fd, 0x20312000)   ← VDF 帧缓冲物理地址
+  以 16bpp 写 8 条彩条（640×480）
+实测：TESTPAT bars written to 0x20312000 va=0x474e000 ⇒ 成功
+```
+- 屏幕效果（见 docs/artifacts/2026-10-24_oldmenu_L1_colorbars.png）：
+```
+上半部分出现清晰的 8 色彩条（白/品红/绿/黑…），下半部分仍是未初始化噪声
+⇒ ★ 我们已经能把任意像素显示到屏幕上（与 App 无关的硬证据）
+```
+- 说明与遗留：
+```
+① 彩条只覆盖上半部 ⇒ 我们对 streamfb 的 stride/format/height 假设与实际模型不完全一致
+   （模型默认 width/height/stride/format 可用 qdev 属性显式指定，下一轮先对齐）
+② 这条路径同时确认：0x20312000 就是显示扫出的缓冲、且在 QEMU 里可写
+   ⇒ 为 L2（让 App 的 GRM 绘制落到同一缓冲）建立了基础事实
+```
+- 下一步（第 50/60 轮）：
+  1) 用 `-global driver=bionz-streamfb,property=width/height/stride/format` 对齐模型与我们的写入布局
+  2) L2：按协作会话的建议，interpose `GRM_bitmapCreate`，把 `[bmp+0x08]` 指向 0x20312000 的映射
+     + 用 swgpe 的 CPU 实现 gpermFillrect/Rectblit
+  3) 判据：屏幕出现"由 App 的绘制调用产生"的色块/内容
