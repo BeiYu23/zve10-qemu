@@ -3339,3 +3339,21 @@ bootin → im.elf → 仍然 address=0x0 崩溃（trap 0x0e）
   1) 换注入方式：把探针放到 rootfs 侧并用 `LD_PRELOAD=/lib/...`（与 im.elf 原本的 loader 搜索路径一致），
      或改用**内核异常钩子**（我们已有 ZZEXCSTACK）在崩溃时额外 dump `/proc/<pid>/maps`；
   2) 一旦拿到 pc 对应的映射（0x05B4F3BE 属哪个库），就能定位真正的 NULL 解引用点。
+
+## ★★ 2026-10-24 14:15 新菜单线：**崩溃点精确定位到 `libMWF.so+0x323BE`**（内核 maps dump 方案生效）
+- 按对方建议走"方案 3"：给内核异常钩子加 **用户映射 dump**（`ZZMOVMAP`），
+  在 `em_show_syndrome()` 里遍历 `current->mm->mmap`（上限 220 段）打印 `start-end 权限 文件名`。重建 zImage 后实测（v5 镜像 + stubs）：
+```
+[ZZEXCSTACK] sp=5EFFFB58 pc=05B4F3BE lr=05B4F407
+pc 0x5B4F3BE -> 0x5B1D000-0x5B58000 rx- libMWF.so
+lr 0x5B4F407 -> 同区间 libMWF.so
+⇒ 崩溃在 libMWF.so 内：pc = libMWF+0x323BE，lr = libMWF+0x32407
+```
+- 同时确认两条：
+```
+① v5（IMDB mask 补丁）没有解决该崩溃（v5 与 v4 行为一致）
+② 老菜单镜像（zve10_oldmenu_full.img + stubs）同样崩在同一处（libMWF NULL 解引用）
+   ⇒ IMDB 的 10 处 mask 补丁不是这个崩溃的原因
+```
+- 下一步：把 `libMWF+0x323BE` 交给对方反汇编（ZV-1F 版 libMWF），看它是哪个函数、解引用谁；
+  我这边可同时 dump 崩溃前的 dlopen/open 序列与几个关键全局。
