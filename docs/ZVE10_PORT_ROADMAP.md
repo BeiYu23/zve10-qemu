@@ -4669,3 +4669,23 @@ libexitprobe 已加载（日志可见）、INITCFG_ENTER=1（App 确实跑到该
 - 下一步（第 57/60 轮，剩 4 轮）：
   1) 内核侧 hook `exit_group`/`exit` 系统调用并打印 comm+pid（一定能看到）
   2) 或者在 0x14BD58 的失败出口地址（0x14BE02~0x14BE08）下断点式探针（patch 成跳转到我们的日志+继续）
+
+## ★★★ 2026-10-25 00:25 老菜单：**决定性判据 —— im.elf 进程一直活着 ⇒ 没有走 exit(0) 失败路径**
+- 用内核 MAPD 的"按轮次采样"直接判断进程是否存活（ab_v664 / o24）：
+```
+round=1..12（约 96 秒）每一轮都能看到： [MAPD] pid=121 comm=im.elf.real
+⇒ im.elf 进程全程存活，从未退出
+⇒ 协作方反汇编出的"4 次 load 失败 ⇒ exit(0)"这条路径【没有被走到】
+```
+- 推论：
+```
+① 4 次 load 大概率都成功了（或至少没有触发失败清理+exit）
+② 那么 initializeConfig 是【卡在某个 load 内部或其后】，不是失败退出
+③ 结合"全线程 PC 都在 libc/libpthread 等待点"⇒ 它在等某个事件/锁
+④ 而我们的 exit/dlsym interpose 都没命中，也印证"没走 exit、也没走 libc dlopen/dlsym"
+   ⇒ 这些 load 很可能是走 im.elf 自带的 OnDemandLoader（手动加载）
+```
+- 下一步（第 58/60 轮，剩 3 轮）：
+  1) 对 `libOnDemandLoader.so` 的导出（`OnDemandLoaderInitialize`/`odl_init`/`odl_res`）
+     做 interpose，打印每次"加载模块 + 解析符号"的入/出口 ⇒ 定位卡在哪一次加载
+  2) 若 `odl_*` 也要走 osal 同步，则在对应队列补应答
