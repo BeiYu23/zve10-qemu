@@ -3539,3 +3539,22 @@ fake_ioctl 不再崩
   1) 把 pc/lr 解析到具体库（这次 maps dump 未覆盖到 0x13xxxxxx 段，需要放大 dump 上限或只打 r-xp 段）；
   2) 判断 0x083360E4 是"应用自己分配的缓冲（合法但未映射）"还是"坏指针"；
   3) 若是 GPU/外设地址空间，按 GRM/DMM shim 路线补映射。
+
+## 2026-10-24 15:40 新菜单线：崩溃性质明确 —— **App 写的是 GPU 物理窗口地址，而 fake_gles 只映射了 128 KB**
+- 给 fake_gles 加了 mmap 日志后实测（v9 / h24）：
+```
+Physical Addr : 200EB400                     ★ MonDrv 正常
+FAKEGLES open(1) ctx=0 buf=0xFFDC0000 phys=0x980000 bytes=262144   （我们只给 256 KB 缓冲）
+FAKEGLES mmap  va=0x09C6C000 size=0x20000   （App 只映射了 128 KB）
+崩溃：address=0x085360E4, trap_no=0x0e      ← 地址在 131 MB 处，远在我们的映射之外
+```
+- 结合上一轮 pc/lr 解析（都落在 **appFw.so**：`off=0x1F26B96` / `0x1FBFBA1`）：
+  pc 处指令是 `str.w r3,[r0],#4`（典型的批量拷贝），`r0 == r4 == 0x085360E4`
+  ⇒ **App 在往一个 GPU 物理窗口地址拷贝数据，但该地址在进程页表里没有映射**。
+- 根因：**fake_gles 的地址映射语义与真驱动不等价** —— 真 `grm_gles.ko` 用
+  `vmalloc + vmalloc_to_page/vmalloc_to_pfn + remap_pfn_range` 把一整块 GPU 缓冲映射进调用进程，
+  我们的 fake 只映射了 128 KB，而 App 按"大窗口"（≥131 MB 处）去访问。
+- 下一步（第 31/60 轮）：
+  1) 让 fake_gles 支持**大窗口映射**（按页用 `vmalloc_to_pfn` 逐页 `remap_pfn_range`，
+     或在 init 里预留一段 DDR 作为 GPU 窗口并在 mmap 时整段映射）；
+  2) 同时搞清楚 App 期望的窗口基址从哪来（下一轮 dump 它在这之前调用的 ioctl 返回值和 appFw 那段的上下文）。
