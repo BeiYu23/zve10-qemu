@@ -3236,3 +3236,35 @@ INITCFG_ENTER=0  ← 根本没走到 App 初始化
   1) 确认同步回调的 ABI（形参顺序、如何写回应答/长度/返回码），必须由内核侧观察者给出；
   2) 按 ABI 回一个"最小合法应答"（至少让 requester 拿到非空/长度合法的缓冲），
      先让 bootin 不崩，再逐步补内容。
+
+## 2026-10-24 13:10 新菜单线（与「新菜单」会话协作）：混合镜像已能过 bootin，卡在 im.elf 早期崩溃
+- 对方修正：`ZVE10_EMMC_FULL.img` = **eMMC boot 分区(4 MiB) + 用户区**，
+  用户区内所有分区相对分区表 **+4 MiB**；此前按表偏移写 hybrid ⇒ 除 /usr 外全错位，`/setting` 读到垃圾。
+- 我方实测（本地修正）：把原 dump 前 4 MiB（boot area）拼回新 hybrid 镜像后，
+  `/usr` 出现在 **732 MiB**（与我们既有镜像约定一致），appFw.so = 53,189,440 B ✓
+- 直接跑新镜像（未拼 boot area）：
+```
+mounting1 /dev/nflasha2 -> /setting as vfat failed. errno(2)
+main: mounting /setting failed(-1)   → bootin 走错分支 exec net_cmdd.elf（不存在）→ 退出 255
+```
+- 拼回 boot area（`/mnt/build/tmp/hb/fixed.img`）后：**卡在 upm**
+```
+末条 MODLOAD read ok len=137260（upm）
+```
+  ⇒ 这正是我们老菜单线的老问题：**/usr/kmod/backup.ko 原厂模块会让 upm 卡住**。
+    新镜像的 /usr 是 ZV-1F 的，但 kmod 里 backup.ko 仍是原厂 ⇒ 同样中招。
+- 换上我们的 stub（backup_stub3 / accel / mag / compass / grm_ma / upm）后（`h4.img`）：
+```
+modloads=32（越过 upm）
+EXECVE /usr/bin/bootin.elf → EXIT code=0   ★ bootin 这次成功
+EXECVE /usr/bin/im.elf
+IMOPEN FAIL //etc/ld.so.cache, libjemalloc_ds.so.1 …（正常缺失）
+崩溃：program=/usr/bin/im.elf(pid 118) address=0x0 trap=0x0e
+（没有 IMOPEN OK libObj.so，也没有 appFw ⇒ im.elf 在 dlopen 之前就崩了）
+```
+- 结论与下一步：
+```
+① 启动链已推进到"bootin 成功 + im.elf 启动"（新菜单最大进展）
+② im.elf 早期 NULL 崩溃 → 需要看它是 ZV-E10 版还是 ZV-1F 版、以及它启动时依赖什么
+   （可以注入探针拦 dlopen/main，或直接用 gdb 看崩溃点）
+```
