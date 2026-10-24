@@ -4925,3 +4925,27 @@ op=8 : 未知（需查）
   1) 在 backup 回调里按 op 填**合法应答**（例如 op0 返回 size=4，op3 返回 4 字节数据）
   2) 用 INITCFG_EXIT 作判据；若返回 ⇒ App 走出初始化 ⇒ 接 L2 shim 出图
   3) 若仍循环，则用 BKCBN 记录更多字段（rb[3..7] 的入参）反推协议
+
+## ★★★ 2026-10-25 02:30 新 goal 第 13/40 轮：backup 应答换"合法值"实验 —— **猜的格式让 App 直接崩（说明格式很重要）**
+- 改动：backup 回调不再 memset 全 0，改为填 `status=0 / size=4 / size=4 / value=0x12345678`
+- 实测（ab_v760 / p12）：
+```
+BKREPLY 命中 12 次（op=3 为主）
+但：
+  INITCFG_ENTER = 0        ← App 已到不了 initializeConfig
+  ZZIOCTL Appframework = 0
+  modloads=33（比基线少 2）
+  崩溃：address=0xFFFFFFFF, trap=0x0E（数据中止）
+⇒ 我们猜的应答格式是错的，App 拿它当指针/长度用 ⇒ 立即崩
+```
+- 结论：
+```
+① 零应答 ⇒ App 重试不崩（基线可用：ab_v603）
+② 乱填应答 ⇒ App 直接崩
+⇒ 【应答字段布局必须精确】——这是现在唯一的拦路石
+```
+- 下一步（第 14/40 轮）：
+  1) 回退到零应答基线（ab_v603）保持可复现
+  2) 让协作方从 `backup.ko` 的 opcode 处理函数反汇编出**应答结构布局**
+     （我们已知：op0=get_datasize / op3=read / op8=未知；请求里 rb[2] 像是 id）
+  3) 按真实布局填值，再用 INITCFG_EXIT 判据
