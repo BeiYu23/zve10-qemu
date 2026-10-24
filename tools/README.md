@@ -1,50 +1,46 @@
-# 工具：移植与实验脚本
+# tools/
 
-本目录放的是**为「给 ZV-E10 移植新菜单」这个最终目标**服务的原创脚本，
-以及做 A/B 对照实验用的包装器。
+## exidx_which.py — 地址 → 所属函数（权威）
 
-> 所有脚本都**只读**你自备的固件输入；本仓库不含任何 Sony 固件或资源。
+用 `.ARM.exidx` 回答"某地址属于哪个函数"。**不需要符号表**，由编译器生成，
+是 ARM EHABI 规定的函数范围来源。
 
----
+### 为什么需要它
 
-## `port/` —— 移植可行性分析工具链
+反汇编时判断函数边界，常见两种方法都不可靠：
 
-目标：判断"把别的机型（如 ZV-1F / ZV-E10 II）的 UI 资源或库搬到本机"在
-**二进制兼容性**上是否可行，以及缺口在哪里。
+| 方法 | 问题 |
+|---|---|
+| `dynsym` 的 `st_size` | 可能被截断（如 `clear` 声称 16 字节，实际是纯尾调用，确实 16 但很多函数不是） |
+| "下一个命名符号" 当边界 | 中间夹着**无符号 static 函数**时严重高估（实测把 826 字节高估成 5434） |
 
-| 脚本 | 作用 |
-|------|------|
-| `abi_closure.py` | 计算目标库的 **ABI 闭包**：它需要哪些符号、由谁提供、是否全部可解析 |
-| `check_reverse_closure.py` | 反向检查：本机提供的库能否满足对方的符号需求 |
-| `build_hybrid.py` | 构造"混合"库/资源集（本机底座 + 对方 UI 层）用于试验 |
-| `parse_imdb.py` | 解析 **IMDB** 表（App 会 dlopen 哪些库、需要哪些符号） |
-| `parse_uxac.py` | 解析 UXAC 资源容器（UI 资源打包格式） |
-| `scan_pngs.py` | 在固件里扫描 PNG 签名，定位图像资源 |
-| `parse2.py` / `freespace.py` | 分区/容器解析与空闲空间计算（决定能否塞进新资源） |
-| `xrefs.py` / `xrefs2.py` / `resolve.py` | 符号交叉引用与地址解析 |
-| `abi_closure_report.md` | ★ 已跑出的 ABI 闭包结论 |
-| `reverse_closure_report.md` | ★ 反向闭包结论（缺口清单） |
+`.ARM.exidx` 的规则：**每个函数由下一条目的起点界定**。
 
-**为什么先做 ABI 闭包**：跨机型搬 UI，第一个硬墙不是"格式对不对"，而是
-**符号/ABI 对不对**。先把闭包算清楚，能立刻判断"这条路是几小时还是几周"。
+### 用法
 
-```sh
-python3 abi_closure.py <固件解包后的目录>
-python3 check_reverse_closure.py ...
+```bash
+export PATH=<toolchain>/bin:$PATH
+
+# 查若干地址
+python3 tools/exidx_which.py /path/to/libObj.so 0x117DF6 0x108E1E
+
+# 列出某范围内的所有函数起点
+python3 tools/exidx_which.py /path/to/libObj.so --list 0x117000 0x118500
 ```
 
-> 具体参数以脚本内的 usage 为准；输出中的 `abi_closure.json`（较大）默认不入库，
-> 需要时由脚本重新生成。
+### 实测输出（ZV-1F libObj）
 
----
+```
+地址         函数起始       函数结束       长度      符号
+0x108E1E  0x108C84  0x108E4C  456     （无名）
+0x108C52  0x108C52  0x108C62  16      GraphicsImage::clear
+0x1178A4  0x1178A4  0x1179DE  314     GRM_gpermFillrect
+0x1179DE  0x1179DE  0x117D18  826     GRM_gpermRectblit
+0x117DF6  0x117D18  0x117E34  284     （无名）
+0x117F0A  0x117E34  0x117F3C  264     （无名）
+```
 
-## `abtest/` —— A/B 对照实验
+### ★ 附带结论
 
-| 脚本 | 作用 |
-|------|------|
-| `run_ab.sh` | 跑一组对照实验（改前/改后）并收集日志 |
-| `ab_wrapper.sh` | 单次运行的包装器（统一日志、退出码、产物目录） |
-| `bsa_server_wrapper.sh` | BSA（服务）相关运行的包装器 |
-
-**方法论**：本项目的每处改动都要求"能对比出真实收益"，
-尤其是那些"为了消错而加的兜底" —— 它们经常只是把问题挪了个位置。
+`GRM_gpermFillrect` 两版固件都是 **314 字节**，`GRM_gpermRectblit` 都是 **826 字节**
+（ZV-1F 与 ZV-E10 一致）⇒ **GPE 层代码相同 ⇒ 一个 shim 可同时服务两条线。**
