@@ -5133,3 +5133,43 @@ rb[7]=0x5EFFFA9C 等（栈地址，疑似目标缓冲）
    （很可能是 memcpy(reply+off, buf, len)）⇒ 得到数据偏移与长度语义
 2) 据此在 stub 里把数据放到正确偏移
 ```
+
+## ★★★★ 2026-10-25 04:20 新 goal 第 27~30/40 轮：**解出客户端侧 backup 协议（libbackup.so 反汇编）**
+### backup_sync_msg（libbackup+0xF64）—— 客户端封包/解包
+```asm
+f88: bl osal_valloc_msg_wait(qid, &msg, 0x40, 1)
+f94: strb r6,[msg]      ; msg[0..3] = op（32 位小端）
+f9a: strb r0,[msg+4]    ; msg[4]=0
+fa4..: strb r5 -> msg[9..11]   ; key 写进 msg[9..11]
+fc0: strb r4 -> msg[12] ; qid
+...
+100c: bl osal_snd_sync_msg(qid, msg)
+1010: ldr r3,[r7,#4]    ; 取回 msg 指针
+1012: cbnz r0, <error>  ; ★ 发送返回 0 才算成功
+1014: ldrb r1,[r3,#5]   ; ★ 结果从 msg[4..7] 读取（32 位小端）
+1016: ldrb r2,[r3,#4]
+1018: orr r2, r2, r1, lsl #8
+101c: ldrb r1,[r3,#6]
+```
+- Backup_get_datasize：op 参数=1、长度=0、payload=key → 返回 `*(msg+4)`
+- Backup_read：op=2、长度=3、payload=(key, offset) → 返回 `*(msg+4)`
+- Backup_read_4Byte：op=1、长度=5、payload=key
+
+### ⇒ 我们回调拿到的 reply_buf = msg+0xC
+```
+所以客户端读的结果字段 msg[4..7] == reply_buf - 8
+（此前我们一直在 rb[0..] 里改，全都改错了地方）
+```
+
+### 实测
+```
+在回调里把 *(unsigned*)(reply_buf-8) 按 op 写成 0x100 / 0（读出 before=0x00018103）
+结果：EN=1 EX=0 —— 仍未放行
+⇒ 结果字段位置已确认，但【语义】还需确定：
+   对 op=3(read)，msg[4] 可能是"读到的字节数"（0 表示没读到 ⇒ 重试）
+```
+- 下一步（第 31/40 轮）：
+```
+1) 对 op=3 返回"请求长度"（例如 msg[8] 或 payload 里的长度字段）
+2) 若仍不行，读 Backup_read 的调用者（viewUnified2 侧）看它如何判断成功
+```
