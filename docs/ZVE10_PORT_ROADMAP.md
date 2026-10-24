@@ -5383,3 +5383,27 @@ header: "BK4"@0x0C, count=819@0x10, 0x81AB@0x14, 0x1E40@0x18, 0xFBD3C@0x1C,
 ① 等协作方给出权威的 BK4 解析（key→偏移/长度/内容）
 ② 若仍不通，转向"客户端上层校验"：解 libObj 中 nread 调用者的比较逻辑
 ```
+
+## ★★★★ 2026-10-25 08:10 里程碑：**backup 服务用真实 BK4 数据实现 + 发现 App 内部锁顺序死锁**
+### ① backup stub 现已实现完整 BK4 查询（内核模块内解析 /usr/lib/Backup.bin）
+```
+布局：页表 0x10C(819×6: u16 count, u32 cum_base)；槽表 0x143E(33195×6: u16, u32 v)；数据区 0x31E40
+v: type=v>>24, off=v&0xFFFFFF；type∈{0,0xFF} ⇒ size=u16@off, data@off+2；否则 size=type, data@off
+key: page=key>>16, sub=key&0xFFFF, slot=cum_base[page]+sub
+实测：MB key=00000002 size=4 a=5efffa9c  ← key=2 返回 4 字节 0（与真值一致）
+```
+### ② 但仍卡住 —— 这次抓到了真正形态：**锁顺序死锁**
+```
+pthread_mutex_lock/unlock 追踪（0x072df000-0x072e0000 区间）：
+  tid=142: LK 0x072dff44 → LK 0x072dfd30   （持 A 等 B）
+  tid=187: LK 0x072dff44                    （等 A，即 initializeConfig 所在线程）
+  tid=187 的 futex uaddr = 0x072dff44，与内核 ZZFUTEX 记录一致
+⇒ initializeConfig 不是"等事件"，而是【等一把被 142 持有的互斥锁】
+⇒ 142 又卡在 0x072dfd30 上 ⇒ 需要找出 0x072dfd30 的持有者
+```
+### ③ 下一步
+```
+1) 扩大锁追踪范围，找出 0x072dfd30 的持有线程与它当时的等待点
+2) 若是我们缺失的外部服务（sensor/stream 等）导致 142 卡住 ⇒ 补该服务
+3) 若纯粹是 App 内部顺序问题 ⇒ 用"限时 trylock + 让路"的定向补丁（只针对 0x072dff44）
+```
