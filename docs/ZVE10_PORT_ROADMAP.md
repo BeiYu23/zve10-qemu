@@ -4199,3 +4199,27 @@ lr = 0x040B3D8D / 0x040B4D0D   ← libpthread 区（推断 pthread_cond_wait / m
    c) 检查 App 是否有定时器线程（nanosleep ×7 说明有，可能只是低频心跳）
 ③ 优先试 a：注入一次触摸事件，看是否触发一帧绘制（GPUSHIM/UXIMG 日志会出现）
 ```
+
+## 2026-10-24 21:35 新菜单线：输入注入路径未触达；v53 组合出现新的内核侧故障（时序相关）
+- 本轮尝试：interpose `InfraInput::SetCallback`（appFw 确实导入它）→ 捕获回调 → 8 秒后合成触摸事件
+```
+实测（v53 = v52 + libinputinj + libgpushim）：
+  INPUTINJ 日志 = 0 条 ⇒ SetCallback 从未被调用
+  GPUSHIM  日志 = 0 条
+  modloads=34（比 v52 少 2）
+  ★ 出现内核侧故障 2 条：
+     "Unable to handle kernel NULL pointer dereference at virtual address 00000630"
+     "Unable to handle kernel paging request at virtual address 53C972A8"
+```
+- 判读：
+```
+① App 还没走到"注册输入回调"这一步 ⇒ 输入注入现在做也没用，必须先把 App 推进到 UI 事件循环
+② v53 与 v52 只差两个 preload，但内核侧出现故障 ⇒ 说明当前"零崩溃"对时序/组合敏感，
+   不是完全稳定（v52 的 190 秒零崩溃可能是窗口性的）
+③ 那两条 "Unable to handle" 没带完整 oops（em console 吞了），
+   下一轮需要把 oops 全文捞出来（PC is at / Modules linked in）
+```
+- 下一步（第 45/60 轮）：
+  1) 复跑 v52 与 v53 各一次，确认"零崩溃"是否可复现（排除偶然）
+  2) 捞完整 oops（改内核 em 输出或看 /proc/kmsg）
+  3) 在确认稳定的配置上，找出 App 卡在 UI 初始化哪一步（IMOPEN 序列 + 线程状态）
