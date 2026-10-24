@@ -385,3 +385,62 @@ GRM_bitmapCreateFromPhys(...)  @0x114AF0
 `appFw` **不导入** `GRM_bitmapGetRowPixelCount`（也不导入 `GetSubRectangle` / `GetPhysicalAddress`）。
 ⇒ **"死 getter 返回 0 导致 size 查询得 0"这条因果链不成立** —— App 根本没调它。
 ⇒ stride 只能从 `geo+0x18` 取（内部使用），或 App 自己按 `align_up(宽,8)` 算。
+
+---
+
+## 十二、🚨 更正：`BMP_WriteLockBits` 是 **3 参数外围内调用**，返回值是状态码不是指针
+
+> 我此前给出的 `void *pix = BMP_WriteLockBits(bmp, 0);` **是错误且危险的**。
+
+### 12.1 真实签名
+
+```c
+int writeLockBits(void *bitmap /*r0*/, int timeout /*r1*/, void **out /*r2*/);
+```
+
+### 12.2 `timeout == 0` 分支实证（`0x11BBDE`）
+
+```asm
+11bbe0: ldr  r3,[r4,#28]; subs r3,#1; str r3,[r4,#28]   ; refcount 回退（净零）
+11bbe8: bl   0x11BAF4                                   ; 状态查询
+11bbec: cbz  r0, 错误路径
+11bbee: ldr  r3,[r4,#32]; adds r3,#1; str r3,[r4,#32]   ; [bmp+0x20]++
+11bbf4: cmp.w r9,#0
+11bbf8: beq  11bc1e                                     ; ★ out==NULL ⇒ 跳过
+11bbfa: ldr  r3,[r4,#8]                                 ; 像素 VA
+11bbfc: str.w r3,[r9]                                   ; ★★ 写入 *out（输出参数）
+11bc00: mov.w r9,#0                                     ; r9 = 0
+11bc1e: bl   pthread_mutex_unlock
+11bc24: mov  r0,r9                                      ; ★ 返回值 = 0（状态码）
+```
+
+**⇒ 返回值是状态码（成功 = 0），像素指针经 `*out` 输出。**
+
+### 12.3 `BMP_WriteLockBits` 外壳**不设置 r1/r2**
+
+```asm
+119494 <BMP_WriteLockBits>:
+  1194ae: ldr  r3,[r0,#0]
+  1194b0: ldr  r3,[r3,#76]      ; vtable + 0x4C
+  1194b2: blx  r3               ; ★ r1、r2 均未设置
+```
+
+**⇒ 若调用者 `r2` 残留非 0，`str r3,[r9]` 会写到随机地址 ⇒ 内存破坏 / 崩溃。**
+
+### 12.4 ✅ 正确写法
+
+**方案 A（推荐，零风险）**
+```c
+void *pix = *(void **)((char *)bmp + 0x08);   /* 不进锁，refcount 不动 */
+```
+
+**方案 B（要真正拿到锁保护的指针时）**
+```c
+void *pix = NULL;
+int rc = ((int (*)(void *, int, void **))VFN(bmp, 0x4C))(bmp, 0, &pix);
+if (rc != 0) return;
+/* ... 绘制 ... */
+((void (*)(void *))VFN(bmp, 0x50))(bmp);      /* ★ 必须配对：上方 [bmp+0x20]++ 不回退 */
+```
+
+**❌ 禁止**：`BMP_WriteLockBits(bmp, 0)` —— 参数不完整，`r2` 未初始化。
