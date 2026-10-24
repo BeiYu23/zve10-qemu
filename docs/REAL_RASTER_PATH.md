@@ -128,3 +128,78 @@ copy(dst, dx,dy,dw,dh, src, sx,sy,sw,sh, bool, bool, bool)
 - bitmap 对象/geo 块布局、`geo+0x18` stride、`table[geo+0x1C]` bpp、`[bmp+0x08]` 像素
 - `GRM_bitmapCreateFromPhys`：像素物理地址由 App 传入
 - `GRM_bitmapWriteLockBits` 的 3 参数 / `arg1==-1` 阻塞语义（**若新路径仍会走到**）
+
+---
+
+## 七、⚠️ 重大更正：本文 §一 的"gperm 是死代码"结论【错误】
+
+**我的扫描命令有 bug，给出了一个假的零。实际情况是 gperm 有 6 个真实调用点。**
+
+### 7.1 直接事实（`objdump | grep`，可复现）
+
+```bash
+objdump -d -M force-thumb --section=.text libObj.so | grep -E "blx\s+3(a7e0|b0ac)\s*<GRM_gperm"
+```
+
+```
+108e1e:  blx 3a7e0 <GRM_gpermRectblit@plt>
+1125d0:  blx 3b0ac <GRM_gpermFillrect@plt>      ← fillrect 确实被调用
+117df6:  blx 3a7e0 <GRM_gpermRectblit@plt>
+117f0a:  blx 3a7e0 <GRM_gpermRectblit@plt>
+126b6e:  blx 3a7e0 <GRM_gpermRectblit@plt>
+22a134:  blx 3a7e0 <GRM_gpermRectblit@plt>
+```
+
+**fillrect 1 次、rectblit 5 次 ⇒ 不是死代码。**
+
+### 7.2 我的错误根因
+
+```bash
+plt=$(objdump -d --section=.plt ... | grep -oE "^[0-9a-f]+ <...@plt>:" | awk '{print $1}')
+objdump -d --section=.text ... | grep -cE "blx?\s+$plt "    # ← 坏命令
+```
+
+两个 bug 叠加：
+1. `$plt` 该是 `3b0ac`，实际含前导零 `0003b0ac`（objdump 操作数没有前导零）
+2. 更糟：`$plt` 实际是**空值**（grep 模式没匹配上）⇒ 模式退化成 `blx?\s+ ` ⇒ **恒返回 0**
+
+**⇒ 一个坏掉的命令，产出了一个看起来非常确定的零。**
+
+### 7.3 ★ 两条路径其实收敛于同一点
+
+```
+GraphicsImage::clear(img, col)          @0x108C52
+  → 0x108BFC: bitmap = img->[0x18]，GetSubRectangle 取 rect
+  → 0x108B90 构造 FillRectParam 风格参数
+  → 0x112550(bitmap, &color, &rect, flag)
+       ↑ 此函数在 0x1125D0 处 blx GRM_gpermFillrect@plt
+```
+
+**⇒ `GraphicsImage::clear` 最终调用 `gpermFillrect`。**
+
+**完整真实链路：**
+```
+ux::gfxeng::*  →  ux::core::GraphicsImage::clear / copy
+               →  GRM_gpermFillrect / GRM_gpermRectblit
+               →  0x1156C0 构造 GPU 命令（同步，会等 WriteLockBits(-1) 的 condvar）
+```
+
+### 7.4 结论修正
+
+| 曾经说 | 实际 |
+|---|---|
+| gperm 完全不被调用 | ❌ **6 次调用** |
+| gperm 是死代码 | ❌ |
+| a7c2 的 software_gpe 方案不适用 | ❌ **仍然适用**（同层接口） |
+| 应改到 GraphicsImage 层 | ⚠️ 可作补充，但 **gperm 是主路径** |
+
+**⇒ 实现应在 `gperm` 层做（覆盖全），`FillRectParam` 结构全部有效。**
+
+### 7.5 ★ 方法论教训（最重要的一条）
+
+> **"用一个返回零的检查去证明某物不存在"时，必须先用已知存在的东西验证这个检查。**
+
+**零值是最危险的输出 —— 它看起来像确定的结论，但可能只是工具坏了。**
+
+**正确顺序**：先用一个**已知有命中**的样本（如 `WriteLockBits` 的 4 个调用点）验证工具能给出非零，
+再用它去测未知项。**工具自检是最便宜的一步，而我跳过了它。**
