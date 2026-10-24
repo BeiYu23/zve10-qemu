@@ -4223,3 +4223,31 @@ lr = 0x040B3D8D / 0x040B4D0D   ← libpthread 区（推断 pthread_cond_wait / m
   1) 复跑 v52 与 v53 各一次，确认"零崩溃"是否可复现（排除偶然）
   2) 捞完整 oops（改内核 em 输出或看 /proc/kmsg）
   3) 在确认稳定的配置上，找出 App 卡在 UI 初始化哪一步（IMOPEN 序列 + 线程状态）
+
+## ★★★ 2026-10-24 21:45 新菜单线：找到"App 为什么空转"的结构性原因 —— **混合镜像里 bootin.elf 失败退出，sen.elf 从未启动**
+- 对比两边的启动链（EXECVE 序列）：
+```
+老菜单基线（ab_v603，E10 /usr）：
+  bootin.elf → sen.elf → launch_shell.elf → net_cmdd.elf → ash → im.elf
+新菜单混合镜像（v52/v53/v54，ZV-1F /usr）：
+  bootin.elf → (无 sen.elf) → launch_shell.elf → net_cmdd.elf → ash → im.elf
+  且日志里 bootin 之后紧跟 "EXIT init pid=... code=65280"（=255，失败）
+```
+- 已验证不是"文件缺失"：
+```
+/bin/sen.elf 存在（19,208 B）
+/lib/libbackup.so 存在（9,384 B，与 E10 原厂一致）
+/bin/bootin.elf 换成 E10 原版后【仍然】不启动 sen.elf（排除版本问题）
+```
+- 判读：
+```
+① 混合镜像里 bootin 静默失败（退出 255），sen.elf 从未运行
+② 于是 im.elf 是由 ash 兜底启动的（缺 sen.elf 提供的环境/参数/服务）
+   ⇒ 这很可能正是 App"起来了但不进 UI 初始化、不打开 /dev/stream、不绘制"的根因
+③ 之前所有"App 空转"的观察，都可能只是这个兜底启动路径的后果
+```
+- 下一步（第 47/60 轮）：
+  1) 用 ltrace 式探针（preload 拦 open/openat/access/stat）记录 bootin 在失败前最后访问的路径
+     —— 直接看它卡在/缺什么（比猜快）
+  2) 若确认某个 /setting 或 /system 资源缺失，补进镜像
+  3) 一旦 sen.elf 能跑起来，再评估 App 是否进入正常 UI 初始化
