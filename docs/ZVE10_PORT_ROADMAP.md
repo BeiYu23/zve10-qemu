@@ -3207,3 +3207,32 @@ INITCFG_ENTER=1 EXIT=0
 - 下一步（第 26/60 轮）：
   1) 反汇编 `osal_reg_sync_msg_queue_cb`（内核模块内），确定其参数与 -1024 条件；
   2) 按正确签名重新注册，并在回调里 dump 请求内容（App 的同步请求会直接送到该回调）。
+
+## 新 goal 第 26/60 轮（2026-10-24 12:55）：**同步队列注册成功了**（rc=0），但没人填应答 → bootin 直接崩
+- 反汇编 `osal_reg_sync_msg_queue_cb`（内核 0x3068）得到真实签名：
+```asm
+tst r0,#0x8000        ; qid 不能带 bit15
+cmp r2,#0             ; ★ r2 必须非 0
+bl alloc_cb           ; 分配 cb 结构
+str r6,[r5,#0x14]     ; r2 → cb+0x14（上下文）
+str r8,[r5,#0x18]     ; r3 → cb+0x18
+str r5,[r4,#0]        ; ★ r1 是【输出指针】，把 cb 结构地址写回给调用者
+```
+  ⇒ `osal_reg_sync_msg_queue_cb(qid, void **cb_out, void *ctx, void *ctx2)`
+    （与我们之前当成"函数指针"完全不同）
+- 按正确签名改写后：
+```
+BKREGSYNC rc=0 slot=0x60B9C920     ← ★ 注册成功（0x3E014D 同步队列）
+BKREGASYNC rc=-1024                ← 另一条异步队列参数仍不对，先不影响
+```
+- 但本轮出现**新问题**：
+```
+bootin.elf 用户态崩溃 address=0x0（trap 0），系统落到 "Exception>" 交互提示
+INITCFG_ENTER=0  ← 根本没走到 App 初始化
+（我们的 bk_sync_cb 一条日志都没有 ⇒ 回调没被调用，但 bootin 已经认为同步请求"成功"并解引用了空应答）
+```
+  ⇒ **说明这条同步队列在 bootin 阶段就被用到**，只注册不实现应答会让它拿到无效数据而崩。
+- 下一步（第 27/60 轮）：
+  1) 确认同步回调的 ABI（形参顺序、如何写回应答/长度/返回码），必须由内核侧观察者给出；
+  2) 按 ABI 回一个"最小合法应答"（至少让 requester 拿到非空/长度合法的缓冲），
+     先让 bootin 不崩，再逐步补内容。
