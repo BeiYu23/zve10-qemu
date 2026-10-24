@@ -5347,3 +5347,39 @@ BS key=2 n=0   ← bk_write_user 失败（use_mm+copy_to_user 仍是 0）
   都写不进去 ⇒ 需要确认"回调运行在哪个上下文、目标 mm 是哪个"
 · 可尝试的最后一招：用 set_fs(KERNEL_DS)+直接 memcpy 到该地址（若它在内核直接映射区）
 ```
+
+## ★★★ 2026-10-25 07:10 新 goal 第 40/40 轮：backup 契约基本吃透，但 im.elf 的 nread 循环依旧（内容校验层）
+### 本轮实证（内核 stub 直接日志）
+```
+M1 pid=110 comm=bootin.elf op=3 key=2 a=5efffa9c      ← 引导阶段
+M1 pid=111 comm=sen.elf    op=3 key=2 a=00016efc
+MW pid=121 comm=im.elf.real op=30: 1e 0 3 3e014d 0 0 00bd0002 0001b820 000004b0
+MR pid=121 key=00bd0002 a=0001b820 l=1200 n=1200 val=1200
+MR pid=121 key=00bd0001 a=0001b820 l=512  ...
+MR pid=121 key=00bd0000 a=0001b820 l=4800 ...
+MR pid=121 key=00bd0003 a=0001b820 l=64   ...
+⇒ 每组四步循环，每 ~15ms 一轮
+```
+### 已确认（可以写进结论）
+```
+· op30 = Backup_nread(key, addr, limit)；addr 是用户 VA（current->mm + copy_to_user 可用）
+· 返回值 = 该 key 的数据大小（1/2/4 等，取决于句柄类型）
+· 我们已能：写入正确长度、返回正确 size —— 循环仍继续 ⇒ 卡在【内容校验】
+```
+### Backup.bin（1,235,836 B）自家解析尝试
+```
+header: "BK4"@0x0C, count=819@0x10, 0x81AB@0x14, 0x1E40@0x18, 0xFBD3C@0x1C,
+        版本串 "30110_06.2026060501"@0x3C
+页表假设在 0x40（6 字节/项：u16 start + u32 base）；槽表在 0x1372
+页 0xBD: start=0 base=0x46F3
+  key 0xBD0000 → v=0x0108EB90 (type=1, off=0x8EB90) → 字节 0x0F
+  key 0xBD0001 → 0x0108EB91 → 0x12
+  key 0xBD0002 → 0x0108EB92 → 0x12
+  key 0xBD0003 → 0x0108EB93 → 0x12
+⇒ 按此投喂（size=1、值 0x0F/0x12）仍然循环 ⇒ 解析假设或 key 语义仍有偏差
+```
+### 下一步
+```
+① 等协作方给出权威的 BK4 解析（key→偏移/长度/内容）
+② 若仍不通，转向"客户端上层校验"：解 libObj 中 nread 调用者的比较逻辑
+```
