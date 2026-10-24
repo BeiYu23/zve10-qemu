@@ -3517,3 +3517,25 @@ int dmp_allocator_mmap_init(void){ return 0; }
   1) 给 fake_ioctl 补 0xc004820e（以及日志里出现的其余未处理命令），一律按语义返回 0/写回默认值；
   2) 复现后确认是否还有新的内核崩点；
   3) 若 GLES 序列能走完，预计会进入 dmp_allocator / DMP 服务断言（上一轮那条 0x61003C）。
+
+## 2026-10-24 15:30 新菜单线：修好 fake_gles 后 —— **崩溃线程从 THREAD_INFRA0 前移到 THREAD_APP**
+- 对 fake_gles 做了两处改动（`/root/fw/fake_gles/fake_gles.c`）：
+```
+① 关掉早期加的 K3 调试块（cmd==0xc0048212 时对 GPE 参数做 ioremap 探测 + 大量 printk）
+   —— 这段是历史诊断代码，噪声大且会碰非 RAM 地址
+② 补处理 cmd 0xc004820e（此前落到 fallback，日志里正是它之后崩的）
+```
+- 实测（v8 = v5 原镜像 + 真 backup/grm_ma/dmm + 我们 fake_gles + stub upm/accel/mag/compass）：
+```
+modloads=36            （+1）
+Physical Addr : 200EB400   ★ MonDrv 正常
+fake_ioctl 不再崩
+★ 崩溃线程变成 THREAD_APP（之前是 THREAD_INFRA0）—— 启动链又向前推进一个线程
+崩溃：address=0x083360E4, trap_no=0x0e（数据中止/翻译错误）
+      [ZZREG] r0=083360E4 r4=083360E4（两者相同 → 很可能是对同一指针的读写）
+      pc=0x13674B96 lr=0x1370DBA1（0x13xxxxxx 库区）
+```
+- 下一步（第 30/60 轮）：
+  1) 把 pc/lr 解析到具体库（这次 maps dump 未覆盖到 0x13xxxxxx 段，需要放大 dump 上限或只打 r-xp 段）；
+  2) 判断 0x083360E4 是"应用自己分配的缓冲（合法但未映射）"还是"坏指针"；
+  3) 若是 GPU/外设地址空间，按 GRM/DMM shim 路线补映射。
