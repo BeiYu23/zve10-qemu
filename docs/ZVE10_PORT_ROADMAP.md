@@ -4350,3 +4350,27 @@ v56（v43 + 新 fake，未实现→return 0，其余同 v55）→ appFw=0、cras
 · 当前用户指定主攻老菜单，新菜单保留 v43 作为"appFw 可加载"的基线
 ```
 - 老菜单线不受影响，继续推进（卡点：initializeConfig 不返回，疑在 viewUnified2 构造函数/内部等待）
+
+## 2026-10-24 22:20 老菜单：maps dump 探针仍读不到内容（两次尝试都失败），改用内核侧方案
+- 两次用户态探针结果：
+```
+c620（整块读 8KB 打印）      → 只打印出 MAPS| 标记，内容空
+c621（读后按行过滤 r-xp）    → 输出 "MAPSX empty"（read 返回 <=0）
+```
+- 判读：在 Appframework 线程里通过我们的 op/gd 包装读 /proc/self/maps 拿不到数据
+  （可能是包装函数/缓冲/时序问题），继续在这条路上花时间不划算。
+- 改用内核侧方案（下一轮）：
+```
+在 arch/arm/kernel/exception.c 里已有的 ZZMOVMAP 代码基础上，
+加一个可由 /proc/sysrq-trigger 或 proc 文件触发的"dump 指定进程 maps"入口，
+或干脆定时（每 30s）对 comm=="im.elf.real" 的进程 dump 一次 r-xp 段。
+—— 内核态遍历 mm->mmap 是可靠的，前面已经验证过（ZZMOVMAP 输出 456 段成功）。
+```
+- 老菜单当前结论汇总（写清楚供下一轮直接用）：
+```
+· 启动链完整、35 模块、无崩溃；initializeConfig 不返回
+· initializeConfig 已加载 viewUnified2.so + CautionConfig.so，随后进入 condvar 等待
+· 不走 libc dlopen（探针 0 命中）⇒ 手动加载器
+· backup 同步队列已实现且 bootin 阶段正常
+· 待验证：等待点是否在 viewUnified2 的构造函数里（对方建议查 1768 个 DT_INIT_ARRAY）
+```
