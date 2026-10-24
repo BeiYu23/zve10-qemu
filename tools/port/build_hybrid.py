@@ -274,11 +274,41 @@ def materialize(rows, e10_root, f_root, out_root):
             try:
                 os.link(src, dst)
             except OSError:
-                shutil.copy2(src, dst)   # 跨设备时的回退
+                # 跨设备时的回退。copy2 只保留权限与时间戳，不含属主，
+                # 必须显式 chown，否则镜像里会变成 0:0（原厂是 57285:1000）。
+                shutil.copy2(src, dst)
+                st = os.lstat(src)
+                try:
+                    os.chown(dst, st.st_uid, st.st_gid)
+                except OSError:
+                    pass
             n += 1
         tot += os.path.getsize(dst) if not os.path.islink(dst) else 0
+
+    # 空目录也要保留：inventory 只跟踪文件与符号链接，/usr/local/lib 这类
+    # 纯空目录会整条丢失，这里按两侧目录集合补建。
+    made = 0
+    for root in (e10_root, f_root):
+        for dirpath, dirnames, filenames in os.walk(root):
+            rel = os.path.relpath(dirpath, root)
+            if rel == '.':
+                rel = ''
+            dst = os.path.join(out_root, rel) if rel else out_root
+            if os.path.isdir(dst):
+                continue
+            os.makedirs(dst, exist_ok=True)
+            st = os.stat(dirpath)
+            try:
+                os.chmod(dst, st.st_mode & 0o7777)
+                os.chown(dst, st.st_uid, st.st_gid)
+            except OSError:
+                pass
+            made += 1
+
     with open(os.path.join(os.path.dirname(out_root), 'symlinks.json'), 'w') as fh:
         json.dump(links, fh, indent=1)
+    if made:
+        print(f'    补建空目录 {made} 个')
     return n, ln, tot
 
 
@@ -423,9 +453,11 @@ def main():
 
     lib_take_f = set()
     if args.lib_take_f and os.path.exists(args.lib_take_f):
-        lib_take_f = {f'lib/{x}' if not x.startswith('lib/') else x
+        # 条目既可以写相对 /usr 的完整路径（如 share/avsystemsound/beeplist.txt），
+        # 也可以只写库名（如 libObj.so，会被补成 lib/libObj.so）。
+        lib_take_f = {x if '/' in x else f'lib/{x}'
                       for x in json.load(open(args.lib_take_f))}
-        print(f'    载入 ABI 闭包库清单：{len(lib_take_f)} 项')
+        print(f'    载入强制 TAKE_F 清单：{len(lib_take_f)} 项')
 
     rows = decide(e10, f, with_screenreader=args.with_screenreader,
                   conservative=args.conservative, aggressive=args.aggressive,

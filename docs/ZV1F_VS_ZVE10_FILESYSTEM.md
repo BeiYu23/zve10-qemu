@@ -65,11 +65,19 @@ ZV-1F  /rootfs: 172 条
 | `tmp_cloud/` | 目录 |
 | `tmp_remote/` | 目录 |
 | `tmp_wbshd/` | 目录（init 会把 tmpfs 挂上去） |
-| **`lib/libSTMcmdexecute.so`** | **4,688 B**，导出 `stm_system` / `stm_popen` / `stm_pclose`（STM 命令执行库） |
+| ~~`lib/libSTMcmdexecute.so`~~ | **此条已撤回，见下方更正** |
 
-> ⚠️ **移植方案此前只列了 3 个目录，漏了 `lib/libSTMcmdexecute.so`。**
-> 它在 `appFw.so` / `libObj.so` 里**没有直接引用**（可能是被某个诊断 ELF 依赖），
-> 但为完整性应一并补入 —— 成本 4.7 KB。
+> ### ⚠️ 更正（2026-10-24 复核）
+> 本文初版声称 `lib/libSTMcmdexecute.so` 只有 ZV-1F 才有、移植方案漏了它 —— **这是错的**。
+>
+> 实测：**ZV-E10 的 `/rootfs` 本来就有该文件**，两侧 **md5 完全相同**
+> （`66a9271377e8017ef8679a0b02a861ee`，4,688 B，属主 57285:1000）。
+>
+> 误报原因：初版用 `comm` 比较两份清单，而 `comm` 对输入排序敏感（当时出现
+> "file is not in sorted order" 警告），产生了假差异。改用 Python 集合比较后，
+> **仅 ZV-1F 独有的就是 3 个目录**：`tmp_cloud/`、`tmp_remote/`、`tmp_wbshd/`。
+>
+> ⇒ **移植方案的原始表述（只补 3 个目录）是正确的，无需额外补文件。**
 
 ### 仅 ZV-E10 有的 455 条 = 快照假差异
 
@@ -141,9 +149,9 @@ scenario/MPR_SCN_EXEC_FACTORY_MODE.so    6,192 → 5,633
 | 项 | 原方案 | 本次核对 |
 |---|---|---|
 | 重建 `/usr`（nflasha15） | ✅ | ✅ 成立 |
-| `/rootfs` 补 3 个空目录 | ✅ | ✅ 成立，**但要再加 `lib/libSTMcmdexecute.so`** |
+| `/rootfs` 补 3 个空目录 | ✅ | ✅ **成立且完整**（复核确认无需其它文件） |
 | `/system` 保留 ZV-E10 | ✅ | ✅ 成立（全硬件绑定） |
 | `/usr/kmod` 保留 ZV-E10 | ✅ | ✅ 成立（1:1 对称，只差 USB 电源芯片驱动） |
 | 启动链不动 | ✅ | ✅ **强化**：initrd 409 条目全同，仅 init 差 112 B，且差异是可选模块 + tmpfs 挂载 |
 
-⇒ **整体风险比之前评估的更低**：唯一新增动作是复制一个 4.7 KB 的小库。
+⇒ **整体风险比之前评估的更低**：`/rootfs` 只需补 3 个空目录，无其它文件改动。

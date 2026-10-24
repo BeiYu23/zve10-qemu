@@ -1,0 +1,152 @@
+# 新菜单移植：v2 镜像构建记录（2026-10-24）
+
+> 本轮做了三件事：**复核**（发现并修正 1 处误判）、**修正构建器 2 个保真度缺陷**、
+> **产出可启动的整机镜像**。全部结果可复现。
+
+---
+
+## 一、复核结论：修正 1 处、确认 1 处
+
+### 1.1 ✅ `beeplist.txt` 确实要取 ZV-1F 版（已修）
+
+| 项 | 值 |
+|---|---|
+| 旧决策 | `KEEP_E10_REVIEW`（保留 ZV-E10 的 77 行旧格式） |
+| 新决策 | **`TAKE_F`**（取 ZV-1F 的 72 行新格式，多 `Size`/`FileOffset` 两列） |
+| 依据 | 混合固件里解析该文件的是 **ZV-1F 的 libObj + appFw**（`libObj.so` 已是 TAKE_F） |
+| 体积变化 | 5,239 → 15,586 B（+10,347 B，与总增量精确吻合） |
+
+### 1.2 ⚠️ 撤回：`libSTMcmdexecute.so` **不需要**补（我此前判断错误）
+
+初版对比用 `comm` 比较清单，出现 "file is not in sorted order" 警告并产生**假差异**。
+用 Python 集合重做后：
+
+```
+仅 ZV-1F 独有的 /rootfs 条目 = tmp_cloud/  tmp_remote/  tmp_wbshd/   ← 就这 3 个
+lib/libSTMcmdexecute.so：两侧都有，md5 完全相同 66a9271377e8017e…（4,688 B）
+```
+
+⇒ **移植方案的原始表述（只补 3 个目录）是正确的。**
+
+---
+
+## 二、修正构建器 2 个保真度缺陷
+
+`tools/port/build_hybrid.py`：
+
+### 2.1 空目录被丢弃
+
+`inventory()` 只跟踪文件与符号链接，`/usr/local/lib` 这类**纯空目录**整条丢失。
+⇒ 已在 `materialize()` 末尾按两侧目录集合补建（本轮补建 3 个）。
+
+### 2.2 属主被重置为 0:0
+
+`materialize()` 优先用硬链接保留属主；但 `/mnt/build`（`/dev/sdc`）与源树
+（`/dev/nvme0n1p3`）**跨设备**，回退到 `shutil.copy2()`，而 **copy2 不复制 uid/gid**，
+导致镜像里全部变成 `0:0`（原厂是 **57285:1000**）。
+⇒ 已在回退分支显式 `os.chown()`，并按源目录恢复目录权限/属主。
+
+### 2.3 override 支持完整路径
+
+`--lib-take-f` 原先强制给条目加 `lib/` 前缀，无法覆盖 `share/` 下的文件。
+⇒ 改为：**含 `/` 的按路径原样使用**，否则补 `lib/` 前缀。
+新增 `tools/port/overrides/force_take_f.json`。
+
+---
+
+## 三、最终产物
+
+| 文件 | 大小 | md5 |
+|---|---:|---|
+| `zve10_hybrid_emmc.img` | 1,983,905,792 B | `e5d6bcaad3d59a9ad0f47a96afbfa6d1` |
+| `nflasha15_hybrid.ext2` | 314,572,800 B（300 MiB） | `f11328198bb6668dce44f6fdbdb32c3e` |
+| `nflasha7_hybrid.img` | 8,388,608 B（8 MiB） | `875bce24a910cb223cc861a89812dd87` |
+
+位置：`/mnt/build/fw/port_v2/out/`
+
+### 3.1 整机镜像构成
+
+以 `zve10_delivery/ZVE10_EMMC_FULL.img`（真机 eMMC 全盘 dump）为基底，只替换两个分区：
+
+| 分区 | 偏移 | 操作 |
+|---|---|---|
+| `nflasha15`（`/usr`） | `0x2D800000` | 写入 `nflasha15_hybrid.ext2` |
+| `nflasha7`（`/rootfs`） | `0x0A400000` | 写入 `nflasha7_hybrid.img` |
+| 其余全部分区 | — | **未改动**（已逐个 md5 验证：system / setting / tmp+etc 全部一致） |
+
+---
+
+## 四、自检结果（全部通过）
+
+| 检查项 | 结果 |
+|---|---|
+| `e2fsck -fn`（ext2 镜像） | ✅ 干净：`905/76912 files, 219814/307200 blocks` |
+| `e2fsck -fn`（rootfs） | ✅ 干净：`636/1256 files, 4741/5012 blocks` |
+| **逐文件内容校验**（4,330 条决策） | ✅ **853 个文件/链接内容与源一致；0 缺失、0 不符、0 该删未删** |
+| `lib/appFw.so` | ✅ 53,189,440 B = ZV-1F 版，md5 一致 |
+| `lib/libObj.so` | ✅ 3,929,768 B = ZV-1F 版（非 ZV-E10 的 21 MB），md5 一致 |
+| `share/avsystemsound/beeplist.txt` | ✅ 15,586 B = ZV-1F 版，md5 一致 |
+| 老 UI 残留 `viewUnified*` | ✅ **0 个** |
+| 属主/权限 | ✅ **57285:1000**，与原厂一致 |
+| `/usr/local/lib` 空目录 | ✅ 已保留 |
+| `/rootfs` 新增 | ✅ 恰好 3 个目录，无其它改动 |
+| 剩余空间 | `/usr` 剩 **87,386 块（≈85 MiB）** |
+
+关键文件 md5 抽验（镜像内 vs ZV-1F 源）：
+
+```
+appFw.so      09a3e9e284418ca6…  ✓一致
+libObj.so     7749275ac3051eda…  ✓一致
+beeplist.txt  6d069929ee6bdcae…  ✓一致
+```
+
+---
+
+## 五、给 QEMU 侧的使用说明
+
+启动脚本 `scripts/run_qemu_zve10.sh` 用 `EMMC` 变量指向整盘镜像：
+
+```sh
+EMMC=/mnt/build/fw/port_v2/out/zve10_hybrid_emmc.img \
+ZIMAGE=<你那份打好补丁的 zImage> \
+INITRD=<真机导出 initrd> \
+BACKUP=<修正过的 BACKUP.BIN> \
+./scripts/run_qemu_zve10.sh
+```
+
+### ⚠️ 三条重要提醒
+
+1. **这份镜像里没有你们之前的字节补丁**（`libosal_uipc.so @0x26c0`、`im.elf @0x2f46` 之类）。
+   那些补丁打的是 **ZV-E10 原版 `/usr`**；本轮 `/usr` 已整体换成 ZV-1F 版，
+   原偏移**不再存在**。要跑新菜单，需要针对 **ZV-1F 的二进制**重新定位补丁点。
+
+2. **启动链没变**：`/system`（内核+initrd）、`/setting`、`/rootfs` 的其余部分全部保留 ZV-E10 原样，
+   initrd 与 ZV-1F 的差异仅 `/sbin/init` 112 字节（且差异内容是可选模块与 tmpfs 挂载）。
+
+3. **预期第一个观察点**：新 UI 起来后应加载 `lib/appFw.so`（53 MB）而非 `viewUnified*.so`（已删除）。
+   如果 `/usr` 挂载失败或 `appFw` 起不来，会表现为明显的启动异常，便于二分。
+
+---
+
+## 六、可复现命令
+
+```sh
+# 1) 生成合并树 + ext2 镜像
+cd tools/port
+python3 build_hybrid.py \
+  --e10 /root/fw/ref_e10/usr --zv1f /root/fw/ref_zv1f/usr \
+  --out /mnt/build/fw/port_v2/out \
+  --lib-take-f overrides/force_take_f.json \
+  --hash --materialize --image
+
+# 2) 生成 hybrid rootfs（补 3 个空目录）
+cp /root/fw/zve10_delivery/nflasha7.img <out>/nflasha7_hybrid.img
+for d in tmp_cloud tmp_remote tmp_wbshd; do
+  debugfs -w -R "mkdir /$d" <out>/nflasha7_hybrid.img
+done
+
+# 3) 拼整盘
+cp /root/fw/zve10_delivery/ZVE10_EMMC_FULL.img <out>/zve10_hybrid_emmc.img
+dd if=<out>/nflasha15_hybrid.ext2 of=<out>/zve10_hybrid_emmc.img bs=1M seek=$((0x2D800000/1048576)) conv=notrunc
+dd if=<out>/nflasha7_hybrid.img  of=<out>/zve10_hybrid_emmc.img bs=1M seek=$((0x0A400000/1048576)) conv=notrunc
+```
