@@ -4452,3 +4452,26 @@ DMPINIT_SHIM 命中 = 0
      把前 8 字节改成 `movs r0,#0 ; bx lr`（Thumb），让调用方直接拿到"成功"
   2) 补丁后重跑，观察 INITCFG_EXIT 是否出现、pvm 是否变非 0
   3) 若 initializeConfig 返回 ⇒ 继续推进 0x83037A 信号量 → 管理器分配 → ViewManager ctor
+
+## ★★★ 2026-10-24 23:05 老菜单：**打补丁后屏幕首次出现"整片纯色填充"（灰色 90,90,90）**
+- 改动：把 `libObj.so` 的 `dmp_allocator_lib_init`（vaddr 0x6BCB58）前 4 字节改成 Thumb
+  `movs r0,#0 ; bx lr`（即直接返回成功），写入 nflasha15 分区（注意：**不是 n7**，之前一次打错分区）
+- 实测（ab_v641 / o16）：
+```
+INITCFG_ENTER=1 / EXIT=0（initializeConfig 仍未返回）  crash=0
+★ 屏幕：主色 (90,90,90) 占 262,144 像素（对照无补丁时主色是黑/噪声）
+   ⇒ 第一次出现"整片纯色背景"——说明有线程在往帧缓冲里做 clear/fill
+截图：docs/artifacts/2026-10-24_oldmenu_gray_fill.png
+```
+- 判读：
+```
+① 屏幕不再是纯噪声/纯黑 ⇒ 显示链路 + 帧缓冲已经"有人写入"
+② 但 initializeConfig 仍不返回 ⇒ 灰色背景不是它之后画的，可能是别的线程（VDF/背景层）
+③ 注意：这个灰也可能是我们的探针/其他路径清屏，需要对照确认（下一轮先做对照）
+```
+- 下一步（第 50/60 轮）：
+  1) 对照实验：ab_v603（无补丁）在同一时间点截图，确认灰色是否只在补丁版出现
+  2) 若确认是补丁带来的：说明 dmp_allocator 初始化成功让某个显示线程跑起来了
+     ⇒ 继续沿"让更多初始化返回成功"推进（initializeConfig / ViewManager）
+  3) 同时做 L1 里程碑实验：preload 直接 mmap /dev/mem(0x20312000) 写测试图案，
+     证明"我们能主动让屏幕显示任意内容"（与 App 无关的硬证据）
