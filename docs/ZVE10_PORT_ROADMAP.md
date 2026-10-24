@@ -3947,3 +3947,35 @@ FAKEGLES mmap seq=1 va=0x0C000000 size=0x20000 pgoff=0x0     ★ App 只做了�
      （已排除 abort/assert/stack_chk/raise/gsignal/pthread_kill 等 interpose，说明是 libc 内部路径）
   2) 可用手段：内核里在 `die_kernel`/`__do_user_fault` 与信号投递处打印更完整的 siginfo（修正字段偏移）
   3) 一旦能到绘制阶段，软件 GPE shim 已按最新规格写好（format→bpp 表 / stride geo+0x18 / 不碰锁）
+
+## ★★★ 2026-10-24 19:15 战略级更正（来自协作会话）：**ZV-1F 新菜单不调用 `GRM_gperm*`**，a7c2 路线不适用于新菜单
+- 穷尽验证（五路独立证据）：
+```
+libObj 内 GRM_gpermFillrect@plt / Rectblit@plt 的调用点 = 0
+197 个 /usr/lib/*.so 里当 UND 导入的 = 0
+数据段函数指针 = 0
+其它库 dlsym 字符串 = 0
+im.elf / bootin.elf 引用 = 0
+（对照组：GRM_bitmapWriteLockBits@plt 同样方法数出 4 个调用点 ⇒ 方法有效）
+```
+- 架构差异（关键）：
+```
+a7c2（A7C II）   ：绘制走 mpgpe::GpermFillRect         ← 我们照抄 gpe-raster.c/gpe-sprite.c 的这条路
+ZV-1F 新菜单     ：绘制走 ux::gfxeng / wgtsys（appFw 导入 120 个 ux::gfxeng 符号）
+⇒ GRM_gperm* 在 ZV-1F 里是"导出但不被调用"的死接口
+⇒ 之前那条"软件 GPE"路线对新菜单【不成立】
+```
+- appFw 实际导入的 GRM 符号只有 5 个：
+```
+GRM_bitmapCreateFromPhys / GRM_bitmapRelease / GRM_fbrmCheckUpdateFinished
+GRM_fbrmRegisterTriggerFrameworkCb / GRM_fbrmSetScreenPreference
+```
+- 我方实测印证：
+```
+h60（v41，含 libswgpe）跑完：SWGPE 日志 = 0
+⇒ gperm/bitmap 系列一次都没被调用，App 在更早处就崩了
+```
+- 下一步（第 38/60 轮）：
+  1) 停止 gperm 相关实现（保留已经正确的三项：CheckUpdateFinished→0、CreateFromPhys 的 phys 映射、bpp/stride 结论）
+  2) 研究真正的入口：`ux::gfxeng::GraphicsEngine::drawFramebuffer`（libObj 0x0E565A, 250B）
+  3) 优先解决"任何图形调用之前就 SIGABRT"的问题 —— 这是当前唯一的主阻塞
