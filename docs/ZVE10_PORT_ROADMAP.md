@@ -4810,3 +4810,21 @@ Appframework 线程 = pthread_cond_wait(堆对象)；
      （可用"在该地址上打断点式探针"：hook pthread_cond_wait 打印 cond 指针，匹配后再找 signal 方）
   2) 或者直接 hook `pthread_cond_wait`/`pthread_cond_signal`，按 cond 指针配对，
      找出"只 wait 不 signal"的那个 condvar，再定位其所属模块
+
+## 2026-10-25 01:20 新 goal 第 7/40 轮：cond_wait/signal 配对探测（首轮结果）
+- 探针：interpose `pthread_cond_wait` / `pthread_cond_signal`（带 tid + cond 指针）
+- 实测（ab_v690 / p5）：
+```
+CWAIT 7 次、CSIG 1 次
+  CSIG tid=137 cond=0x072E5C48
+  CWAIT tid=137 cond=0x072E5C90   ← 与上面不是同一个 cond（相差 0x48）
+  CWAIT tid=139 cond=0x072E5CF0
+  CWAIT tid=161/163 cond=0x0739B650   ← 两个线程等同一个 cond，但无对应 CSIG
+  CWAIT tid=166 cond=0x00056168 / tid=170 cond=0x00057590
+⇒ 多个 condvar 只被 wait、从未被 signal（与"等事件源不存在"一致）
+※ 本轮 INITCFG_ENTER=0（该镜像探针版本未含该钩子），下一轮需用合并版再跑
+```
+- 下一步（第 8/40 轮）：
+  1) 用**合并版探针**（含 INITCFG + CWAIT/CSIG + WAISEM/RCV）一次跑，按时间顺序看：
+     initializeConfig 进入后，哪个线程在哪个 cond 上等待且之后没有 signal
+  2) 找到后，用"对该 cond 主动 signal 一次"的实验验证它是否是卡点
