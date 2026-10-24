@@ -106,3 +106,112 @@ byte_offset = (y * rowpx + x) * bpp
 - 4 字节重复 ⇒ RGBA8888，`bpp=4`
 
 **一次运行即可定，且顺带确定颜色通道顺序**（例如纯黑会出现 `00 00 00 FF` 或 `FF 00 00 00`）。
+
+---
+
+## 七、geo 块完整布局与 stride 公式（第二轮实证）
+
+### 7.1 `BMP_Create` 的初始化调用 `0x11B774`
+
+```asm
+11b7a2: ldr  r5,[r0,#4]        ; r5 = geo（info 块）
+11b7a4: adds r1, r5, #4        ; src = geo + 0x04
+11b7a6: add  r3, r5, #12       ; dst = geo + 0x0C
+11b7aa: ldmia r1,{r0,r1}       ; 读 geo+0x04..0x0B
+11b7ac: stmia r3,{r0,r1}       ; ★ 写到 geo+0x0C..0x13  —— 【拷贝】
+11b7b2: str  r8,[r4,#12]       ; obj->[0x0C] = arg1
+11b7be: strh r3,[r5,#20]       ; geo+0x14 = 0（int16，稍后由 align 填）
+11b7c0: strh r3,[r5,#22]       ; geo+0x16 = 0（int16，保持 0）
+11b7c2: ldrsh r0,[r5,#8]       ; r0 = geo+0x08 （int16，宽度）
+11b7c6: bl   0x119D04          ; align_up(width, max(arg,8))
+```
+
+**⇒ `geo+0x0C` 是 `geo+0x04` 的【副本】**，所以：
+
+| 偏移 | 类型 | 含义 |
+|---:|---|---|
+| `+0x04` | int16 | 基准矩形 `x` |
+| `+0x06` | int16 | 基准矩形 `y` |
+| `+0x08` | int16 | **宽 w** |
+| `+0x0A` | int16 | **高 h** |
+| `+0x0C` | int16 | 当前矩形 `x`（= +0x04 的副本） |
+| `+0x0E` | int16 | 当前矩形 `y` |
+| `+0x10` | int16 | **当前宽 w**（GetSubRectangle 返回 `geo+0x0C`，读 `+4` = 这里 ✓） |
+| `+0x12` | int16 | **当前高 h**（读 `+6` = 这里 ✓） |
+| `+0x14` | int16 | **rowPixelCount（像素计 stride）** |
+| `+0x16` | int16 | ★ **疑似像素格式**（创建时置 0，与 a7c2 的 `format` 语义吻合） |
+| `+0x24` | u32 | **物理地址** |
+
+### 7.2 ★ stride 公式（`0x119D04` 实证）
+
+```asm
+119d06: subs r0, #1            ; r0 = width - 1
+119d08: cmp  r1, #8
+119d0c: movge r4, r1           ; r4 = max(align, 8)
+119d0e: movlt r4, #8
+119d12: adds r0, r0, r4        ; r0 = width - 1 + a
+119d16: bl   <div>             ; r0 = (width-1+a)/a
+119d1a: muls r0, r4            ; * a
+119d1c: sxth r0, r0
+```
+
+即：
+
+```c
+int a = (align >= 8) ? align : 8;
+stride_pixels = ((width - 1 + a) / a) * a;      /* = align_up(width, a) */
+```
+
+**⇒ 若宽度本来就是 8 的倍数，则 `stride == width`。**
+
+### 7.3 ★ 像素格式的推论
+
+`BMP_Create` 初始化时把 `geo+0x16` 置 **0**，而 a7c2 的实现里：
+
+```c
+unsigned int bpp = format ? 4 : 2;          /* gpe-raster.c */
+```
+
+⇒ **`format == 0` ⇒ `bpp = 2` ⇒ 16 bpp。**
+
+而 a7c2 的显示路径实现是 **RGBA4444**：
+
+```c
+pack(r,g,b,a) = (r & 0xF0) << 8 | (g & 0xF0) << 4 | (b & 0xF0) | (a >> 4);
+/* R[15:12] G[11:8] B[7:4] A[3:0] */
+```
+
+**⇒ 最可能的组合：`geo+0x16` = format = 0，bpp = 2，格式 RGBA4444。**
+
+> 仍需一次运行实测确认（打印 `geo+0x16` 与像素字节模式）。
+
+## 八、⚠️ 锁/死锁问题与"更彻底的绕过法"
+
+bitmap 对象里有：
+
+| 偏移 | 内容 |
+|---:|---|
+| `+0x1C` | 锁计数 |
+| `+0x20` | 另一计数 |
+| `+0x24` | **pthread_mutex** |
+| `+0x40` | **pthread_cond** |
+
+`writeLockBits`（槽 `+0x4C` @`0x11BB68`）会 `pthread_mutex_lock`，
+并在 `0x11BBA8` 处 `pthread_cond_wait` —— **这是 GPU fence 同步，没有 GPU 时可能永久阻塞。**
+
+### ★ 绕过法：根本不调 `writeLockBits`
+
+像素指针**直接可读**：
+
+```
+obj->[0x08] = 像素缓冲指针
+```
+
+两条独立代码路径都返回它：
+- `writeLockBits` 成功路径：`11bbfa: ldr r3,[r4,#8]` → `str r3,[r9]`
+- 另一个槽（`0x11B326`）：`ldr r3,[r0,#8]` → `str r3,[r1]`
+
+**⇒ 在纯软件渲染场景下没有 GPU 竞争，直接读 `obj+0x08` 即可，
+既避免死锁、又不需要 interpose 锁函数。**
+
+（仍建议 shim 里把 `WriteUnlockBits` interpose 成空操作，防止 App 其他路径真去加锁。）
