@@ -4689,3 +4689,17 @@ round=1..12（约 96 秒）每一轮都能看到： [MAPD] pid=121 comm=im.elf.r
   1) 对 `libOnDemandLoader.so` 的导出（`OnDemandLoaderInitialize`/`odl_init`/`odl_res`）
      做 interpose，打印每次"加载模块 + 解析符号"的入/出口 ⇒ 定位卡在哪一次加载
   2) 若 `odl_*` 也要走 osal 同步，则在对应队列补应答
+
+## 2026-10-25 00:30 第 60/60 轮（goal 轮次用尽）—— 最终状态
+```
+目标：让 App 界面真正显示并可交互
+结果：部分达成
+  ✅ 显示链路完全打通（满屏彩条，几何/格式已验证可复现）
+  ✅ 绘制层 shim 就绪（GRM bitmap→VDF 缓冲 + CPU gperm）
+  ❌ App 自身界面未显示：initializeConfig 仍不返回
+     已排除：死锁 / 失败退出(exit) / libc dlopen/dlsym / 单个 sem 短缺
+     收敛到：im.elf 自带 OnDemandLoader 内部加载卡住（唯一未验证层）
+产出：docs/HANDOFF_2026-10-25.md（交接说明）、ZVE10_QEMU_STATE.md（速查）、
+     artifacts 截图、ab_v651(L1)/ab_v660(L2)/ab_v603(基线) 镜像
+下一步：interpose libOnDemandLoader 的 odl_* 导出定位加载卡点
+```
