@@ -518,3 +518,40 @@ if (!pix) pix = ((void *(*)(void *, int))BMP_WriteLockBits)(bmp, 0);  /* 传 0�
    · 2 字节重复 → 16bpp（565 / 5551 / 4444 需再看位域）
    · 4 字节重复 → 32bpp（RGBA/BGRA 需再看字节序）
 ```
+
+## 十五、★★ `geo+0x14` 恒为 0 ⇒ `getRowPixelCount` 是【死 getter】
+
+全 bitmap 代码区（`0x11B000-0x11C200`）字段写入统计：
+
+| 字段 | 写入次数 | 值 |
+|---|---:|---|
+| `geo+0x14`（偏移 20） | **仅 1 处**（`0x11B7BE`） | **恒为 0** |
+| `geo+0x18`（偏移 24） | 2 处（`0x11B7D4`、`0x11B960`） | 对齐后宽 |
+| `geo+0x1A`（偏移 26） | 2 处（`0x11B7E4`、`0x11B970`） | 对齐后高 |
+
+而 `getRowPixelCount`（vtable `+0x18`，实现 `0x11B425`）返回的是 **`info + 0x14`** 的地址：
+
+```asm
+11b43e: ldr r3,[r0,#4]      ; info
+11b440: adds r3,#20         ; ★ info + 0x14
+11b442: str r3,[r1,#0]      ; *out = info+0x14
+```
+
+### ⇒ 结论
+
+**`GRM_bitmapGetRowPixelCount()` 在任何时候都返回 0**（因为 `geo+0x14` 永远不被赋非零值）。
+
+**⇒ 真正的 stride 在 `geo+0x18`（对齐后宽，像素计）。移植侧的修正正确，而且比他想的更彻底：不是"优先读 +0x18"，而是"那个 getter 本身就是死代码"。**
+
+### ★★ 一条可能与 QEMU 线现象相关的联想
+
+QEMU 线最新结论是"崩点模式更像某个 **size 查询返回 0** 导致的堆/缓冲越界"。
+
+**而这里正好有一个确定会返回 0 的尺寸 getter。**
+
+**⇒ 值得验证的假设**：如果 App 内部某处调用 `GetRowPixelCount` 并用结果做地址算术
+（如 `addr = pix + y * rowpx * bpp`），**`rowpx == 0` 会让所有行塌缩到同一地址**，
+或使字节数计算为 0 —— 与"size 查询返回 0"的现象吻合。
+
+**验证方法**：在 QEMU 侧 interpose `GRM_bitmapGetRowPixelCount`，
+打印调用者的 LR 与返回值。若确实有调用且返回 0，这条线就接上了。
