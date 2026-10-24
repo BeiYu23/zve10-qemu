@@ -4148,3 +4148,35 @@ ZZR7: r7=0（与上一轮"大结构基址"完全不同）
   1) 用 ZZMOVMAP 把 pc=0x040960B4 落到具体库/函数（libc? pthread? 还是别的库的 0x4096 段）
   2) 检查 r4/r5=1 的来源（很可能是某个返回值被当指针，例如我们 fake 返回 -EINVAL 后上层未处理）
   3) 若确认是"错误分支未处理"，则对那个 cmd 返回一个合法值而不是 -EINVAL
+
+## ★★★ 2026-10-24 21:20 新菜单线：**连续 190s 零崩溃**（第一版"能稳定跑"的配置），但 App 停在主循环不绘制
+- 本轮唯一改动：fake_ioctl 的 `0xc004820D`（wait-for-GPE-event）返回值 **1 → 0**
+```
+上一轮：address=1 崩溃（libosal_uipc.so+0x50B4，do_sleep_tmo 里 ldr r1,[r4,#0]，r4=1）
+本轮  ：crash = 0（无 data abort、无内核 oops、无 SIGABRT）
+```
+- 现配置（v52）：
+```
+kmod：真 backup/grm_ma/dmm + fake_gles（忠实 128KB 环契约，ioctl 未实现→-EINVAL，事件值 0）
+      + stub upm/accel/mag/compass
+preload：libmmapad.so（匿名 mmap +0x2000）+ libmprotsh.so（忽略 PROT_NONE）
+内核：含 ZZREG/ZZMOVMAP/ZZR7/ZZSIG/ZZTGKILL/ZZINSN 的全套调试钩子
+```
+- 运行状态（190s）：
+```
+modloads=36
+FAKEGLES GLESKICK ×4（App 有在往环里提交命令）
+ZZFUTEX ×44 / IMNANOSLEEP ×7  ⇒ App 主循环在跑、在等待
+★ UXIMG / GPUSHIM 日志 = 0   ⇒ 没有调用 GraphicsImage/gperm 绘制接口
+屏幕：全黑（非黑像素 75）
+```
+- 判读（下一步方向）：
+```
+① 现在不是"崩"，而是"App 起来了但没走绘制分支"
+② 可能卡在：
+   a) 等 /dev/stream 的 vsync/事件（我们机器模型的 streamfb 可能不发中断）
+   b) 等 GPU 完成信号（环里没人消费 ⇒ 需要 CheckUpdateFinished / 事件应答）
+   c) 还在资源加载/配置阶段
+③ 下一轮先看：/dev/stream 的 open/ioctl/read 行为（probe 已有能力），
+   以及 streamfb 模型是否有 vblank/中断可配
+```
