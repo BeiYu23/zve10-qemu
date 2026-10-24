@@ -203,3 +203,66 @@ ux::gfxeng::*  →  ux::core::GraphicsImage::clear / copy
 
 **正确顺序**：先用一个**已知有命中**的样本（如 `WriteLockBits` 的 4 个调用点）验证工具能给出非零，
 再用它去测未知项。**工具自检是最便宜的一步，而我跳过了它。**
+
+---
+
+## 八、完整链路（三条线合并，全部经 objdump 直接事实验证）
+
+```
+App
+ └→ ux::gfxeng::*                              （120 个导入符号）
+     └→ ux::core::GraphicsImage::clear / copy   ← appFw UND 导入 ⇒ 可 interpose
+         ├→ GRM_gpermRectblit                   @0x108E1E（在 clear 函体内，objdump 标注 clear+0x1ae）
+         └→ 0x108BFC → 0x108B90 → 0x112550
+              └→ GRM_gpermFillrect              @0x1125D0
+                  └→ 0x1156C0 构造 GPU 命令（每次 new(0x78)）
+                      └→ WriteLockBits(bmp, -1, NULL) → pthread_cond_wait  ★ 会阻塞
+```
+
+### 8.1 gperm 的 6 个调用点（objdump 直接事实）
+
+```
+108e1e: blx 3a7e0 <GRM_gpermRectblit@plt>   ← 在 GraphicsImage::clear 体内
+1125d0: blx 3b0ac <GRM_gpermFillrect@plt>   ← 在 0x112550 内（clear 的子路径）
+117df6: blx 3a7e0 <GRM_gpermRectblit@plt>
+117f0a: blx 3a7e0 <GRM_gpermRectblit@plt>
+126b6e: blx 3a7e0 <GRM_gpermRectblit@plt>
+22a134: blx 3a7e0 <GRM_gpermRectblit@plt>
+```
+
+### 8.2 关键结构（三条独立证据交叉验证）
+
+| 项 | 值 | 证据 |
+|---|---|---|
+| image 的内部 bitmap | `[image + 0x18]` | `0x109260: ldr r0,[r4,#24]`（sys_getInternalObject）+ clear 实现同位置 |
+| rect 结构 | `int16 x@+0, y@+2, w@+4, h@+6` | ① gpermFillrect 读 +4/+6；② clear 读 +4/+6；③ geo+0x0C 是 geo+0x04 副本 |
+| bitmap 像素指针 | `[bmp + 0x08]` | 两处独立代码路径返回它 |
+| bitmap 几何块 | `[bmp + 0x04]` | 构造函数 `str r0,[r4,#4]` |
+| stride（像素计） | `geo + 0x18` = `align_up(宽, max(a,8))` | `0x11B7D4` |
+| bpp | `table[geo + 0x1C]` = `[_,2,4,2,1,2,2,2,4,4]` | `0x119654` 查表 + rodata @0x29D88E |
+| 物理地址 | `geo + 0x24` | getPhysicalAddress |
+
+## 九、最终实现规格（五项，全部有直接事实支撑）
+
+```
+① interpose GRM_gpermFillrect / GRM_gpermRectblit     ← 汇聚点，覆盖全部绘制
+     · 从 FillRectParam+0x00 / RectBlitParam+0x00 取 bitmap
+     · 用 [bmp+0x08] 像素、geo+0x18 stride、table[geo+0x1C] bpp 做 CPU 填充
+     · mode ∉ {1,2} ⇒ 不绘制（照抄真机）
+② interpose GRM_bitmapWriteLockBits                   ← 中性化 arg1==-1 的 cond_wait
+③ GRM_fbrmCheckUpdateFinished → return 0              ← 唯一完成信号
+④ GRM_bitmapCreateFromPhys：读 phys → 映射 → 填 [bmp+0x08]
+⑤ 首次绘制用纯绿，读 2 字节定格式：
+     0x07E0 → RGB565   0x07C0 → RGBA5551
+     0x03E0 → ARGB1555 0x0F00 → RGBA4444
+```
+
+**备选/交叉验证**：`GraphicsImage::clear` / `copy`（App 层，参数更简单，
+但只覆盖 App 直接发起的绘制；libObj 内部路径不覆盖）。
+
+## 十、本文档的错误记录（保留以免重犯）
+
+本文 §一 曾错误断言"gperm 是死代码"，§七 已更正。
+根因是一个**未自检的 grep 命令**给出了恒为 0 的结果。
+
+**⚠️ 教训：用"返回零的检查"证明某物不存在时，必须先用已知存在的东西验证该检查。**
