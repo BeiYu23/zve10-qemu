@@ -5528,3 +5528,32 @@ B) 加载顺序：IMDB 199 条清单（顺序错曾导致 a7c2 类似症状）�
 C) 定向 trylock：只对 THREAD_INFRA 池用到的 mutex 加超时让路（全局做过，崩过一次）
 D) 用固件自带 mwf_monio.elf / app_monio.elf 观测线程池任务队列（可能直接看到卡住的 job）
 ```
+
+## ★★★★ 2026-10-25 11:10 找到卡住的真正源头：**grm_init 在等一个永远不会到来的 condvar**
+- 同轮栈解析（libObj base 0x05E82000）：
+```
+pid=139(THREAD_INFRA0) 栈中的 libObj 返回地址：
+  0x7D7E01 / 0x7D7751 / 0x685E59 / 0x685EF3
+  ⇒ 0x685EF3 = grm_init 内 bl 0x7D5BB0 之后
+  ⇒ 0x7D7E01 = 0x7D7D30 内 blx pthread_cond_wait@plt 之后
+⇒ 链路：grm_init → 0x7D5BB0 → 0x7D7D30 → pthread_mutex_lock → pthread_cond_wait
+```
+- 反汇编证实 0x7D7D30 里有：
+```
+bl pthread_mutex_lock / pthread_cond_signal / pthread_cond_wait / pthread_mutex_unlock
+⇒ 典型的"投递任务 + 等完成通知"模式
+```
+- 实验：
+```
+① 对 LR=0x7D7E00 的 cond_wait 施加 50ms 超时（每次最多 500ms）
+   → GRMWAIT 命中，grm_init 继续执行（栈显示它仍在 grm_init 内推进）
+   → 但 initializeConfig 仍不返回
+② 起看门狗线程每 50ms 对该 cond(0x072e5c90) signal
+   → GRMCOND/GRMKICK 生效，但 EXIT 仍未出现
+```
+- 结论：
+```
+· 图形初始化 grm_init 依赖一个"完成通知"，而通知方在我们环境里不会发出
+· 单纯放行 cond_wait 能让 grm_init 往前走，但后续还有别的等待/依赖
+· 这就是为什么 App 初始化始终推不动（不是 backup，不是锁顺序，而是 GFX 初始化链路）
+```
