@@ -4740,3 +4740,22 @@ NSLP tid=133 lr=0x058E5B6F   ← 连续多次，稳定
   1) 用带 maps_thread 的 fake_gles 镜像 + nanosleep 探针，同轮拿 base 与 lr
   2) 只关心 comm/线程为 Appframework 的那条 NSLP
   3) 定位后看它轮询的条件（libObj 或 libMWF 内的标志）
+
+## 2026-10-25 00:50 新 goal 第 3/40 轮：**两个轮询点都解析到具体库+偏移**
+- 同轮采集（ab_v671 / p3，libObj base 0x05E82000，MAPD 可用）：
+```
+NSLP tid=134 lr=0x058E5B6F → libMWF.so + 0x2FB6F   （libMWF 自己的内部线程）
+NSLP tid=176 lr=0x07B6B611 → libmpr.so  + 0x736611  （libmpr 框架线程）
+⇒ 两个轮询点都不是"App 卡死在 initializeConfig"，而是库内部线程的正常轮询
+⇒ ★ 说明 initializeConfig 的"不返回"另有地点，不能只看 nanosleep 轮询者
+```
+- 意义：
+```
+① 之前"334 次 nanosleep"其实是这些库内线程的常态心跳，不是 initializeConfig 的等待
+② 要定位 initializeConfig 必须回到它自己的线程（Appframework，tid 所见 184~186）
+   并抓该线程的**同轮**等待点（futex/sem/rcv 都要带 tid 过滤）
+```
+- 下一步（第 4/40 轮）：
+  1) 探针里给所有等待类 hook 加 tid 过滤（只打 Appframework 那个 tid）
+  2) 首次出现该 tid 的等待就打印 uaddr/qid/lr（同轮）
+  3) 据此直接指到 initializeConfig 内部的等待对象
