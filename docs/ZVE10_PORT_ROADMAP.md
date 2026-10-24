@@ -4424,3 +4424,31 @@ WAISEM_BYPASS 命中 1 次
      → 解析 lr=0x0653EB69 / 0x08AC5D8F 等地址所属库与函数
   2) 若确认停在 viewUnified2 的 initializeViewConfig 内部，就在该库入口做 inline hook
   3) 继续保持"每轮记录：INITCFG_EXIT 是否出现 / pvm 是否非 0 / 屏幕是否有内容"
+
+## ★★★ 2026-10-24 22:55 老菜单：**内核侧 maps dump 成功 + 把阻塞点解析到 `dmp_allocator_lib_init`**
+- 新增能力：fake_gles 里加了 `maps_thread`（每 8s 对 comm 前缀 "im.elf" 的进程 dump r-xp 段，最多 12 轮）
+```
+实测（ab_v630 / o13）：MAPD 输出 492 行，拿到完整布局
+  im.elf.real   00008000-0000D000
+  ld-2.11.2.so  04000000-04018000
+  libObj.so     05E82000-071E0000     ← 基址 0x05E82000
+  ...（其余库依次）
+```
+- 用该布局解析此前"只等不被 signal"的信号量 0x018004B5 的等待者 lr=0x0653EB69：
+```
+0x0653EB69 - 0x05E82000 = 0x6BCB69
+反汇编 libObj_cur.so @0x6BCB58 ⇒ 函数名 **dmp_allocator_lib_init**
+  （与我们早前在新菜单里 shim 过的是同一个函数；它开头就是 osal_wai_sem_tmo(sem, -1)）
+⇒ ★ 老菜单卡住的"没人发信号的 sem" 就在 dmp_allocator_lib_init 里
+```
+- 对照实验（ab_v631：用 LD_PRELOAD interpose `dmp_allocator_lib_init` 返回 0）：
+```
+DMPINIT_SHIM 命中 = 0
+⇒ interpose 无效：该函数在 libObj 内部被【直接调用】（同 DSO 内 bl，不走 PLT）
+⇒ 必须改用 inline hook / 二进制补丁（把开头改成 mov r0,#0; bx lr）
+```
+- 下一步（第 49/60 轮）：
+  1) 对 `libObj.so` 的 `0x6BCB58`（符号 `dmp_allocator_lib_init`）做 inline 补丁：
+     把前 8 字节改成 `movs r0,#0 ; bx lr`（Thumb），让调用方直接拿到"成功"
+  2) 补丁后重跑，观察 INITCFG_EXIT 是否出现、pvm 是否变非 0
+  3) 若 initializeConfig 返回 ⇒ 继续推进 0x83037A 信号量 → 管理器分配 → ViewManager ctor
