@@ -4397,3 +4397,30 @@ WAISEM_BYPASS 命中 1 次
 3) 若 signal 侧本该由某个被我们 stub 掉的模块发出（grm_ma/dmm/upm），
    就在对应 stub 里补上 osal_sig_sem 调用
 ```
+
+## ★★ 2026-10-24 22:45 老菜单：三连实验（信号量集合差 → 全部满足 → 仍需 config 对象）
+- 实验链：
+```
+① Bypass sem 0x018004B5 后重跑（c626）：
+   去重后 21 个 sem 的等待【全部】都能找到对应 SIGSEM ⇒ 不再有"只等不发"的信号量
+   但 INITCFG_ENTER=1 / EXIT=0 仍不变
+② 再查 osal_rcv_msg_tmo（c627）：9 个 qid 有接收，
+   其中 0x37807D / 0x12C032F 返回 -1022（超时，正常），其余 r=0
+   ⇒ 也没有"卡住不放"的接收
+③ 直接跳过 initializeConfig（c628：interpose 里 return 0，不调真函数）：
+   ★ INITCFG_EXIT 立刻打印（r=0），pvm=0x00000000
+   然后 address=0x0 数据中止（NULL 解引用）
+   ⇒ 说明【后续流程确实需要 initializeConfig 建好的配置对象】
+```
+- 收敛结论：
+```
+· 信号量/消息接收都不是当前瓶颈（已全部满足）
+· initializeConfig 内部卡点在【别的东西】上，且它必须真正完成（不能跳过）
+· 下一步必须看清 initializeConfig 内部到底停在哪一步 ⇒ 需要 im.elf 的 maps
+  （用户态读 /proc/self/maps 两次都失败，改为内核侧 dump）
+```
+- 下一步（第 48/60 轮）：
+  1) 内核侧实现"定时 dump im.elf.real 的 r-xp 段"（复用已验证的 ZZMOVMAP 遍历代码）
+     → 解析 lr=0x0653EB69 / 0x08AC5D8F 等地址所属库与函数
+  2) 若确认停在 viewUnified2 的 initializeViewConfig 内部，就在该库入口做 inline hook
+  3) 继续保持"每轮记录：INITCFG_EXIT 是否出现 / pvm 是否非 0 / 屏幕是否有内容"
