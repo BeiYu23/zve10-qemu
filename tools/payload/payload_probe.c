@@ -138,11 +138,12 @@ static void work(void)
 
     sapp(buf, &p, "PROBE_DONE\r\n");
 
+    /* ★ 写两份：probe.txt 便于外部查看；tmmc.jit 是工具 GET_FILE(0x4008) 的读取目标 */
     int ofd = open_w("/tmp/jiritsu/probe.txt");
-    if (ofd >= 0) {
-        write_all(ofd, buf, p);
-        sys1(SYS_close, ofd);
-    }
+    if (ofd >= 0) { write_all(ofd, buf, p); sys1(SYS_close, ofd); }
+
+    ofd = open_w("/tmp/jiritsu/tmmc.jit");
+    if (ofd >= 0) { write_all(ofd, buf, p); sys1(SYS_close, ofd); }
 }
 
 /* mkdir 用的极简实现（路径已存在时返回 -EEXIST，视为成功） */
