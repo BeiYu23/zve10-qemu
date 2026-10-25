@@ -5988,3 +5988,23 @@ pid=187 栈：… 0x073E1F44(等待对象) … 0x067098E9(= libObj+0x8878E9，�
 2) 按 a7c2 方法：由我们主动 SetSignal（或让它的消费者真完成）
 3) 判据：INITCFG_EXIT 是否出现 / GRM2 日志是否增长
 ```
+
+## ★★ 2026-10-25 17:00 新 goal 第 12 轮：MWF 信号等待归属确认 + 直接返回无效
+### interpose `MWF::ObjSignal::GetSignal`
+```
+MWSIG self=0x000547F0 id=0xFFFFFFFF t=165
+⇒ 等待者是 tid=165（不是 187），等待 id=-1（无限等）
+⇒ 直接返回 0（"已获得"）后，调用者仍反复调用（4 次）⇒ 语义不是"返回0=拿到信号"
+```
+### 判读
+```
+· MWF 的 GetSignal(id=-1) 是"等任意信号"，返回 0 可能表示"超时/无信号"
+· 正确做法应是让它真的收到一个 SetSignal（由另一线程/服务发起）
+⇒ 需要确认：谁会 SetSignal 这个对象，信号 id 是多少
+```
+### 下一步
+```
+1) 反汇编 ObjSignal::SetSignal 与 GetSignal 的返回值语义（谁调用 SetSignal）
+2) 若确认需要一个特定事件，则在我们的 worker 里主动 SetSignal(正确 id)
+3) 维持判据：INITCFG_EXIT / GRM2 日志
+```
