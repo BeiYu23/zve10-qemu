@@ -5817,3 +5817,24 @@ THR 187 pc=040a2146（libpthread 等待点）
 ② 用 libObj 的光栅锁 API（try_raster/unlock_raster）保护我们对 0x20312000 的写入
 ③ 锁探针按 mutex-trace.c 重写：dlvsym+atomic+走一帧拿 caller2，只报异常
 ```
+
+## 2026-10-25 13:50 第 6 轮补充：DMM 与本轮定位的关系
+### 实测：App 当前【完全没有】跟 dmm.ko 交互
+```
+grep -i dmm 只命中 3 行：MODARGS(DmmConfig=/setting/DmmConfig.bin)、udm_dmm 启动/退出
+⇒ 运行期没有任何 dmm 请求（说明 GPU/显存路径根本没走到）
+⇒ 所以 DMM 协议规格虽然拿到了，但【不是当前卡点】
+```
+### 当前卡点仍然是 grm 队列回调链
+```
+· 已确认可运行时替换 q+0xA4（我们替换后 worker 确实调用了我们的 cb：CBB）
+· 但替换后 initializeConfig 仍不返回
+· 关键怀疑：原回调本身承担"通知完成"的职责，我们换成空实现反而打断了它
+  或者：我们的 cb 里为 signal 去 lock(q+0x50)，而那把锁正被 requester(139) 持有 ⇒ 我们自己也卡住
+```
+### 下一步
+```
+1) 回调里【不要加锁】——直接 pthread_cond_broadcast(q+0x68)（无锁 signal 在 glibc 上允许）
+2) 若仍不通，把 139 的调用链再往上走一帧，确定它为何持有 q+0x50
+3) dmm 只有在 App 真的开始分配显存时才需要（当前阶段用不到）
+```
