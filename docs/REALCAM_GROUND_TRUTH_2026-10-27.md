@@ -517,3 +517,58 @@ m_pMyInstance = libObj+0x1459548
 * `menuc1330`（注入线程轮询 inst）：inst 恒 0，200 次后放弃；
 * `menuc1340`（在 inst==0 的第 40 次迭代尝试 `ViewGlobalMenuToInstance(0)`）：
   该分支日志**未出现**（疑被编译器/时序吞掉），需下一轮改用独立线程+显式日志重试。
+
+---
+
+## 16. 第 29 轮：`openView` 内部其实是"投一个 Event"，但 pVM==0 时调用会崩
+
+### 16.1 `viewManagerIf::openView(const char*,int)` 的真实实现（反汇编）
+
+```
+1410a4: ... ldr r6,[got pVM槽] ; ldr r9,[r6]        ; r9 = pViewManager
+1410bc: cmp r9,#0 ; beq 141102                       ; 若 pVM==0 跳过使用
+1410ca: … 用 r9 调 0x12CED4（按名字取 view 描述）
+141102: r0 = r5 (名字) ; bl IdGenerator::Get         ; ★ 名字 → view id
+14110c: new(16) ; Event ctor(r1 = 0x11012001, r2=4, r3=0)
+14111c: new(20) ; ParamBase(IdGenerator::Get(name)) ; Event::addParameter(6, …)
+141134: new(20) ; ParamBase(int 参数)              ; Event::addParameter(0x1A(26), …)
+14114c: 取全局对象 → bl 0x8A3B6C                    ; ★ 投递事件（app 自己的事件泵）
+```
+
+**要点**：
+* `openView("view/XXX", n)` = **构造 Event(0x11012001)**，参数 `6`=view id、`26`=int 参数，然后**投进 App 自己的事件泵**——
+  这正是 a7c2 说的"用原厂生命周期/事件入口"，不是手工建 UI；
+* 但实现里在 pVM 上取 view 描述（0x1410CA），**pVM==0 时会走空指针路径**。
+
+### 16.2 实验：直接调 openView ⇒ 崩（已实测）
+
+`menuc1360`（符号用 `dlopen("libObj.so")` 句柄解析后调用）：
+```
+TG handle=0x000222c8
+TG ov=0x063ab17d ce=0x0638689b pf=0x063885d5
+[Exception] address: 00000010  pc=libObj内  lr≈0x63ab159(回到我们的 trigger)
+```
+⇒ **`address 0x10` = pVM(NULL)+0x10**，与 16.1 的静态分析完全一致：
+**视图管理器没建起来之前，openView 不能调。**
+
+### 16.3 顺带两条重要工程结论
+
+1. **preload 里解析 libObj 符号必须用 `dlopen("libObj.so")` 的句柄**：
+   `dlsym(RTLD_DEFAULT, "_ZN13viewManagerIf8openViewEPKci")` 返回 **0**（libObj 是 dlopen 进来的，不在全局作用域）；
+2. **对照实验（重要）**：把 `/bin/im.elf` 换回**原厂 23240B 二进制、完全不 preload** 跑，
+   App **崩溃得更早**（串口仅 2959 行就进 `Exception>`）⇒ 我们改名成 `im.elf.real` 不是主因，
+   **真正卡住它的是缺失的服务应答**，不是名字。
+
+### 16.4 现在的确切位置（一句话）
+
+> App 能跑到 `initializeConfig` 并加载 `viewUnified2/CautionConfig`，但 **ViewManager / InputService 从未被创建**
+> （GDB 写 watchpoint 45s 零写入），因此既不能开视图也不能注入按键；
+> App 全进程**只创建过 2 个线程**（两个 grm worker），说明它的框架/UI 启动链根本没跑起来。
+
+### 16.5 下一轮
+
+1. 找 **谁创建 ViewManager**：`View::View(ViewManager*)`（libObj+0x8A0014）的调用者，或
+   `Application_System_Init` 里 `createRequestModelExecuteEvent` 之后应由谁消费；
+2. 先确认 App 的事件泵是否在跑（若没人消费事件，投 Event 也没用）；
+3. 若框架确实起不来，就按 a7c2 的"受控入口"：**直接 new 一个 ViewManager + View**（需要弄清 ctor 的父上下文），
+   而不是调 openView。
