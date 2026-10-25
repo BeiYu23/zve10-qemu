@@ -253,3 +253,16 @@ pViewManager           libObj + 0x149221C
 - A：继续逆"应用引导函数(0x8A2FA6 所在)"，把它依赖的 EventManager/ModelManager/配置对象逐一造出来
       —— 路径明确但工作量相当于重写 App 的一层初始化；
 - B：把目标收窄为"底座 + 引擎层在 QEMU 跑通"（已达成），UI 部分等有应用库/真机界面时再做。
+
+## 2026-10-27 状态速查（第 19 轮）
+
+| 项 | 现状 |
+|---|---|
+| libObj 基址 | **不固定**，实测 0x05E82000 / 0x05E77000 / 0x06079000 都出现过 ⇒ 必须从串口 QMMAP 解析 |
+| grm init 链路 | 0x7D7D30 → q2 worker → cb2 → 0x7D5200 → 0x7D8560 → 0x78C560 → 0x790B30 → 0x790CB0 → **0x7DCF70（once-guard）** → `dmp_allocator_mmap_init` |
+| 卡点真因 | **`/usr/kmod/grm_ma.ko` 是 stub**；换真模块后 `INIT_TAIL` 走通 |
+| 新卡点 | DMP/MA 显存分配：真 grm_gles → `sugilite_open` oops；fake_gles → `mspace_malloc` oops（池=0x5A5A） |
+| 备份服务 | `0x3E014D` 由 preload 应答（40+ 次/轮），不是卡点 |
+| 关键镜像 | `ab_v1640`（干净观测+应答）、`ab_v1660`（真 DMP 模块，init 走通但 oops）、`ab_v1670`（真 ma + fake_gles） |
+| 判据 | 仍以 `GRM2 > 0` 为绘制判据；目前 0 |
+| 工具 | `tb_gdb_trace{2..5}.sh`（分层下降）、`tb_locktrace{,2}.sh`（pthread 对象级）、`tb_owner.sh`（谁持锁）、`tb_scan_multi.sh`/`tb_threadscan2.sh`（栈扫描，动态基址） |

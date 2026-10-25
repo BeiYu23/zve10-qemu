@@ -6433,3 +6433,40 @@ EN=1 / EX=0 / 无崩溃
 🟡 initializeConfig：可跳过返回，不跳则不返回
 🎯 真卡点：初始化链未走通 ⇒ App 还没开始画
 ```
+
+---
+
+## 第 19 轮（2026-10-27）：grm init 死锁真因 = stub `grm_ma.ko`
+
+### 方法
+a7c2 式"跟着真实链路走"：GDB 分段布点 + pthread 原语级观测（cond/mutex 带对象指针）+ 栈扫描，
+基址一律从串口 `QMMAP … name=libObj.so` 动态解析（不再是固定 0x05E82000）。
+
+### 关键链条
+```
+0x7D7D30 请求等待 → q2 worker → cb2 → 0x7D5200 → 0x7D8560 → 0x78C560
+  → 0x790B30 → (全局未就绪) → 0x790CB0 → bl 0x7DCF70（引用计数/首次初始化）
+     → 0x7857F0（once-guard）→ blx dmp_allocator_mmap_init@plt  ← 卡死点
+```
+* `dmp_allocator_mmap_init`(0x6BD110) 是 12 字节跳板，尾跳 `dmp_allocator_lib_init@plt`；
+* once-guard 持锁后阻塞 ⇒ 第二个 init 线程也卡同一把锁 ⇒ 表面像"初始化自锁"。
+
+### 实验对照
+| 镜像 | 模块组合 | 结果 |
+|---|---|---|
+| `ab_v1640` | grm_ma=stub(22712) | `CALL_DMPINIT` 后永不返回，40s 无进展 |
+| `ab_v1660` | **真** grm_ma(24800)+真 grm_gles(15648) | `R_DMPINIT` 0.34s 返回 → `E_925E` → `INIT_METHOD` → **`INIT_TAIL` 走完**；随后内核 oops `sugilite_open+0x28 [grm_gles]` |
+| `ab_v1670` | 真 grm_ma + fake_gles | `/dev/dmpgles2` 映射成功，随后 oops `mspace_malloc+0x530 [grm_ma]`（r6/r3=`0x5A5A5A5A`，池从未初始化） |
+| `ab_v1680` | 去掉 grm_ma + 软件 `dmp_allocator_*`→0 | 连 `dmp_allocator_lib_init` 都到不了（更早失败），无 oops |
+| `ab_v1690` | 真 grm_ma + fake_gles + `ioctl` 追踪 | ioctl 拦截**未命中** ⇒ 触发 MA 的调用不经 libc `ioctl` PLT |
+
+### 结论
+1. **stub `grm_ma` 就是 grm init 死锁的真因**（与 `DMP_ALLOCATOR_ROOT_CAUSE.md` 一致）；
+2. 换成真模块后 init 闭合并暴露下一层：**图形显存分配链（dmpgles2 → grm_ma mspace）无法原样跑**；
+3. 要么给 dmpgles2 提供**正确的 mspace 池**（真 grm_gles 打开时炸硬件寄存器），
+   要么在**用户态 API 边界**把 MA/分配器整体替换成软件实现（a7c2 风格）。
+
+### 下一步
+* 先坐实"谁调用 MA"：用 GDB 在内核 `mspace_memalign` 入口打断点取用户态 LR（避免只靠用户态 ioctl 拦截）；
+* 或直接把 `GRM_bitmapCreate` 上游接管：让 App 的位图不经过 DMP/MA，而由 preload 用 `mmap` 从
+  `0x3E000000` 固定池切块（已有 `libgrm2.so` 的 bitmap→VDF 重定向可复用）。
