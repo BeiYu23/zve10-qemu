@@ -78,6 +78,8 @@ def main() -> int:
     ap.add_argument("--pid", default="0x0D95", help="initial (mass storage) PID, default 0x0D95")
     ap.add_argument("--service-pid", default="0x0336", help="Senser service PID, default 0x0336")
     ap.add_argument("--path", default="/tmp/jiritsu/libJit.so", help="remote target path")
+    ap.add_argument("--any", action="store_true",
+                    help="允许发送非 ELF 文件（如命令文本）")
     ap.add_argument("--service-only", action="store_true",
                     help="相机已在服务模式(0x0336)，跳过两阶段流程")
     ap.add_argument("--no-stop", action="store_true",
@@ -88,8 +90,8 @@ def main() -> int:
     args = ap.parse_args()
 
     data = open(args.payload, "rb").read()
-    if not data.startswith(b"\x7fELF"):
-        print("error: payload is not an ELF object", file=sys.stderr)
+    if not args.any and not data.startswith(b"\x7fELF"):
+        print("error: payload is not an ELF object (use --any for text)", file=sys.stderr)
         return 2
     print("payload: %d bytes  path=%s" % (len(data), args.path))
 
