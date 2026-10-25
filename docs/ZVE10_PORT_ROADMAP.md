@@ -6398,3 +6398,38 @@ EN=1 / EX=0 / 无崩溃
 · 未完成: requester 的放行条件（[r7+20]）不是简单写 0 能解决的
 · 建议: 回到"r7 与 arg 是否同一对象"的判定（在 0x7D7E06 处读当次 r7 并比对 arg）
 ```
+
+## 🚨 2026-10-26 00:50 里程碑撤回：整屏 (90,73,214) **不是 App 绘制**
+### 决定性证据（我方 QEMU 模型源码）
+```
+/mnt/build/src/qemu-sony/hw/display/bionz_streamfb.c:180-184
+ * Cheap "did the guest write anything at all?" check.  The stream buffer is
+ * memset() to 0x5a by the VDF init code and stays like that until the App
+ * actually renders, so a uniform buffer means "no frame yet".
+```
+```
+(90,73,214) 反推 RGB565：
+  R5=round(90*31/255)=11 ; G6=round(73*63/255)=18 ; B5=round(214*31/255)=26
+  0x5A5A ⇒ 解码正好 (90,73,214)，零误差
+⇒ 缓冲区里全是 0x5A 字节 —— 就是 VDF init 的 memset 填充
+```
+### 撤回内容
+```
+❌ "App 原生绘制：整屏 (90,73,214)"  —— 撤回
+✅ 正确判读：distinct=1 恰恰是"还没渲染"的判据（模型 streamfb_buffer_uniform 就是这么用的）
+✅ 与另外两条证据自洽：GRM2 日志=0、INPUTINJ=0
+```
+### 新的唯一判据（写死）
+```
+屏幕上出现任何颜色 ⇏ 进展
+必须满足：GRM2 日志 > 0（App 真的调用了 GRM 绘制接口）
+       且我们的 shim 成功执行了至少一次 Fill / Rectblit
+```
+### 当前真实状态
+```
+✅ 显示链路（QEMU 侧镜像 0x20312000 可用）
+✅ 绘制 shim libgrm2.so 就绪
+❌ App 原生绘制：未达成
+🟡 initializeConfig：可跳过返回，不跳则不返回
+🎯 真卡点：初始化链未走通 ⇒ App 还没开始画
+```
