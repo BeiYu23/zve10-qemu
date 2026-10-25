@@ -127,9 +127,9 @@ int main(int argc, char **argv)
     else { /* test */
         if (save_orig(fd, addr) == 0) {
             if (apply(fd, addr) == 0) {
-                logf("--- patched, holding 10 s (watch the screen!) ---");
+                logf("--- patched, holding 20 s (watch the screen!) ---");
                 sync();
-                sleep(10);
+                sleep(20);
                 logf("--- restoring ---");
                 restore(fd);
             }
