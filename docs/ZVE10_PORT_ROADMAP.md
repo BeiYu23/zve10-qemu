@@ -5685,3 +5685,26 @@ tid=187: MLOK +0x7858E9                                 ← initializeConfig 也
 2) 运行时记录 0x7858E9 的 lock/unlock 配对，找出"只 lock 不 unlock"的 tid
 3) 那个 tid 大概率卡在 DMP/GPU 路径（我们已绕过 DMP sem 0x18004B5，仍不够）
 ```
+
+## ★★ 2026-10-25 12:35 新 goal 第 2 轮：DMP 死锁假设的两次验证（都无效）
+- 按协作方链条：worker 在【持队列锁】状态下进回调 → 0x7857F0 持 DMP 全局锁 → dmp_allocator_mmap_init → dmp_allocator_lib_init → osal_wai_sem_tmo(0x18004B5,-1) 永久阻塞 ⇒ 锁永不释放
+- 我方两次验证：
+```
+① interpose dmp_allocator_mmap_init → return 0（PLT 路径，命中：DMMI_RET）
+   ⇒ EN=1 / EX=0，仍卡住
+② 直接二进制补丁 libObj 0x6BCB58（dmp_allocator_lib_init 开头改为 movs r0,#0; bx lr）
+   ⇒ EN=1 / EX=0 / 无崩溃，仍卡住
+③ 顺带发现：dmp_allocator_lib_init 的调用【不走 PLT】（interpose 不生效，DMLI_RET 从未出现）
+   ⇒ 它由 libObj 内部直接 bl 调用
+```
+- 结论：
+```
+· DMP sem 这条不是唯一阻塞点（或补丁未覆盖到实际调用的那个入口）
+· worker(143) 仍然阻塞在“传入 0x7858E0 的那个 mutex”上（该函数是通用加锁包装，mutex 由调用者传入）
+· 要定位真正的持有者，需要记录 (调用点, mutex 地址, tid) 三元组并配对 lock/unlock
+```
+- 下一步：
+```
+用"预解析 real 函数指针 + 记录三元组"的方式重写锁探针（避免在 mutex hook 里 dlsym 造成 EN=0），
+然后按 mutex 地址配对，找出只 lock 不 unlock 的 tid
+```
