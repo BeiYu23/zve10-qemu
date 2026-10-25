@@ -5,6 +5,7 @@
 **当前状态**：**未达成**。显示链路、绘制 shim、服务应答、探针体系全部就绪；App 初始化链未走通。
 
 > 路线对照（与 a7c2-re 的方法差异、该改哪一层）：见 `docs/ROUTE_DIFF_VS_A7C2.md`。
+> 卡点调用链（GDB 实证 + 0x3E014D 服务应答）：见 `docs/TRACE_GRM_INIT_CHAIN.md`。
 
 ---
 
@@ -58,7 +59,28 @@ actually renders, so a uniform buffer means "no frame yet"*。
 | 用户态探针 | ✅ | `/lib/libgrmlog.so`（LD_PRELOAD）：锁 / cond / sem / ioctl / 线程 / MWF 信号 |
 | 内核 & 模块 | ✅ | 3.0.27_nl-rt106+，35 个模块；bootin → sen/ash → `im.elf` |
 
-## 2. 卡点：`initializeConfig()` 不返回
+## 2. 卡点：`initializeConfig()` 不返回（**2026-10-26 已定位并部分解决，见 §2.0**）
+
+### 2.0 更新：真正的卡点 = Backup 同步服务 `0x3E014D` 无人应答
+
+用 GDB 逐层下降（每轮 2.5 分钟）得到的完整链：
+
+```
+libObj+0x7D7D30 请求等待 → q2 worker(0x7D7C10) → cb2(0x7D7870, P[0]=1)
+→ 0x7D7940 → 0x7D5200 → 0x7D8560 → 0x78C560 → 0x790B30 → 0x7DCF70
+→ 0x6F925E → vtbl+8=0x6F534E (port init) → 0x6F4C74 → blx Backup_nread@plt
+→ libbackup.so:Backup_nread → backup_sync_msg(qid=0x003E014D) → 永不返回
+```
+
+* 在 preload 里按 `(qid, msg, …)` 正确应答 `0x003E014D` 后，App **越过该卡点**
+  （镜像 `ab_v1610/ab_v1620`，连续 118s 无异常，应答 5000+ 条）；
+* 但 **`GRM2` 仍为 0**：App 还没走到绘制，截图噪声不算进展；
+* ⚠️ 早期探针把 `osal_snd_sync_msg` 参数写成 `(msg, qid)`（顺序反了），
+  所以历史上"应答过 0x3E014D 没变化"的结论**作废**。
+
+**完整证据、协议布局、复现脚本见 `docs/TRACE_GRM_INIT_CHAIN.md`。**
+
+### 2.1 静态结构（历史记录）
 
 ### 2.1 静态结构
 ```
