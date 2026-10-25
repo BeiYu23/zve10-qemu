@@ -6223,3 +6223,31 @@ waited but NO handler: 全部 6 个
 ② 若确认"该创建 handler 的子系统没起来"，那就是缺的服务名
 ③ 备选：直接对这些 obj 的"事件"伪造一次（但要同时改它们检查的状态，否则空转）
 ```
+
+## 2026-10-25 21:40 新 goal 第 20 轮：MWF 初始化确实跑了，但 handler 绑定可能是"假阴性"
+### 实测（ab_v1450）
+```
+MWFCLSINIT t=122    ← MWF::Initialize 被调用了（MWF_Init C 接口未调用）
+HB2（EventHandlerUseSignal 构造） = 0 次
+```
+### 但静态检查推翻了这个"0 次"的可靠性
+```
+libMWF.so 自身有 8 处引用 EventHandlerUseSignal 构造
+libObj.so 里 0 处
+⇒ 说明 handler 是在 libMWF 内部创建的（内部直接 bl，不走 PLT）
+⇒ 我们用 LD_PRELOAD interpose 看不到它 ⇒ H={} 是"假阴性"，不能作为"没有 handler"的证据
+```
+### 教训（又一次）
+```
+用户态 interpose 只能看到"跨模块 PLT 调用"；同模块内直接调用不可见。
+要判断"handler 是否创建"，必须换手段：
+  · hook libMWF 内部函数（需要二进制补丁/入口 hook）
+  · 或观察效果（信号是否被置位）而不是观察调用
+```
+### 当前真实状态（去掉假阴性后）
+```
+✅ App 原生绘制：整屏底色
+✅ initializeConfig 可跳过并返回（EX=1）
+🟡 不跳则永不返回；跳过则因配置为空而崩
+❓ 卡点确切位置：仍在 viewUnified2 的加载/初始化链中，但"哪个事件"未被可靠定位
+```
