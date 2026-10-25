@@ -340,3 +340,48 @@ App ──UIPC sync──> 0x014C0424 (grm_ma 服务) ──> 内核 mspace_mema
 App 拿到有效 VA 后**静默停住**（无异常、无新请求）。下一步用 GDB 看它此刻停在哪个调用
 （大概率是在等我们"另一个"字段/另一个 opcode 的回复），或者在 `0x768xxx` 客户端里
 逐函数读清 `dmm_open`(op1) 返回结构该填什么。
+
+---
+
+## 12. 第 25 轮：MA 应答后 App 不再"卡在同步发送"，而是**在 libc 里空等**
+
+### 12.1 全量同步发送打点（`menuc1240`，镜像 `ab_v1810`）
+
+给**每一条** `osal_snd_sync_msg` 都加 `SS/SR`（进入/返回）日志后复跑：
+
+```
+… SS/SR qid=0x008f013a ret=-1020（日志服务，正常）
+MA op=7 findbyname
+MA op=1 dmm_open
+MA op=9 malloc  → MAMAP32 va=0x09af2000   ← 我们回了合法 VA
+（此后：没有任何新的 SS，也没有 Exception）
+```
+
+⇒ **App 不是卡在某个同步发送上**（否则会看到只有 SS 没有 SR 的那一条）。
+
+### 12.2 进程内线程普查（`menuc1250-1262`，自建 in-guest census）
+
+在 preload 里起一个线程，12s/24s 各读一次 `/proc/self/task/*/{comm,stat}`：
+
+```
+CEN T12
+  tid=123 st=R sp=0x5efff4c0 pc=0x04284534   ← 主线程，pc 在 libc（0x0424f000+ 区间）
+  tid=128 st=R sp=0x04921b74 pc=0x04021344   （uipc_proxy，正常）
+CEN T24   （完全相同，两个时刻都不变）
+```
+
+**两条硬结论**：
+1. **主线程停在 libc**（`pc` 落在 libc 映射内）⇒ 它在 futex/poll 一类原语里等，不是在我们 hook 里；
+2. **此刻进程只有 2 个线程**——正常 App 在后期有 40+ 线程，说明它**很早就停了**，
+   也就是"打通 MA 之后仍然走不下去"的下一个原因在**更早的初始化**里，不是线程太多卡住。
+
+### 12.3 工具状态
+
+新增可复用的 in-guest 诊断：线程普查（comm/state/sp/pc）+ 栈扫描（找 libObj 返回地址）。
+本轮 maps 解析还有 bug（`libObj_base()` 返回 0，导致栈扫描没输出），下一轮先修它再取主线程调用链。
+
+### 12.4 下一轮
+
+1. 修 `libObj_base()`（打印 maps 读取长度做自检），拿到主线程在 libc 里等**之前**的那条 libObj 调用链；
+2. 同时对照 `0x768xxx` 客户端：`op1 dmm_open` 的返回结构我们只填了 status，
+   很可能 App 需要它返回的"池/句柄"才能继续 → 用同样的方法（歧义就做实验否证）。
