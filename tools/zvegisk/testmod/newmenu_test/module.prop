@@ -1,0 +1,3 @@
+name=color-test
+version=1
+description=Only replaces color_cmn.uxc with 0x400c set to magenta. First overlay verification.
