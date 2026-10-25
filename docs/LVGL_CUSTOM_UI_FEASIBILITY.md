@@ -160,3 +160,48 @@ Phase 4（产品化）：
 
 **⇒ 现实的第一小步：50 行画个方块。成功了这个项目就可以推进，
 失败了我们就知道卡在参数结构上，回去继续逆向。**
+
+---
+
+## 九、★★★ 实测更新（Phase 2 结果）：高层 API 是空桩
+
+**已在真机上跑过两个探针（崩溃隔离，agent 无恙）：**
+
+### 探针 1：符号解析
+
+```
+dlopen(/usr/lib/libObj.so) = 0x22078      ✓ 成功
+GRM_gpermFillrect          → 0x4891f4d    ✓
+GRM_gpermRectblit          → 0x4892087    ✓
+GRM_bitmapCreate           → 0x4892c19    ✓
+（七个符号全部解析成功，子进程 EXIT_CODE=0）
+```
+
+### 探针 2：实际调用了五个无参函数
+
+```
+GRM_screenGetOnBitmap     = 0x00   ← 空桩
+GRM_fbrmInitializeYUV     = 0x00   ← 空桩
+GRM_fbrmPrepareUpdateYUV  = 0x00   ← 空桩
+GRM_fbrmUpdateYUV         = 0x00   ← 空桩
+GRM_fbrmTerminateYUV      = 0x00   ← 空桩
+```
+
+**⇒ 整个 FBRM / 屏幕接口在 ZV-E10 上被编译成空函数。**
+
+**★★★ 关键推论：**
+
+| 结论 | 说明 |
+|---|---|
+| **独立进程自绘 UI** | ❌ **不可行** —— 拿不到屏幕位图 |
+| **`GRM_gpermFillrect/Rectblit`** | ✅ 是真的，但**需要有效位图** |
+| **`GRM_bitmapCreate`** | ✅ 真的，但**11+ 个参数**，只有 im.elf 内部会调 |
+| **唯一可行路径** | **在 im.elf 内部拦截（preload / zmagisk）** |
+
+### 下一步的关键动作
+
+**Hook `GRM_bitmapCreate`，记录 im.elf 调用它时的**真实参数** ——
+这样 11 个参数的语义就从实际使用中反推出来了，而不必靠猜。**
+
+**★ 有了参数语义，我们就能自己创建位图，然后 `GRM_gpermRectblit` 上去。
+⇒ LVGL 的 flush_cb 才真正可实现。**
