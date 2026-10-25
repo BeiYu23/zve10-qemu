@@ -1,67 +1,92 @@
-# DMP 分配器死锁：全局锁在无限等待 sem 时被长期占用
+# DMP 分配器死锁假设 —— 已被实验证伪
 
-> 依据：ZV-E10 `libObj.so` 反汇编
-> 关联：`docs/MEMORY_LAYOUT_CORRECTED.md`、`docs/QEMU_BOOT_PROGRESS.md`
+> **状态：❌ 已证伪（2026-10-25，第 2/40 轮实验）**
+> 保留本文是为了记录推理路径与证伪方法，避免后人重复。
 
-## 结论
+## 原假设（本文档旧版本）
 
-`grm_init` 的 worker 线程之所以卡住，是因为它在回调里进入 DMP 显存分配器的
-引用计数生命周期，**在持有一把全局 mutex 的情况下**尾调用到 `dmp_allocator_lib_init`，
-而后者开头就无条件等待 semaphore `0x18004B5`（timeout = -1）。
+`grm_init` 的 worker 在回调里进入 DMP 引用计数生命周期，在持有一把全局 mutex 的情况下
+尾调用 `dmp_allocator_lib_init`，后者开头无条件等待 semaphore `0x18004B5`（timeout = -1），
+锁永不释放 ⇒ 请求方、其它 worker、`initializeConfig` 全部堵死。
 
-锁被长期占用 ⇒ 请求方、其它 worker、`initializeConfig` 线程全部堵在这把锁上。
+## 证伪实验（QEMU 侧执行）
 
-## 链条
+| # | 实验 | 结果 |
+|---|---|---|
+| ① | interpose `dmp_allocator_mmap_init` → `return 0`（PLT 路径，`DMMI_RET` 命中） | **EN=1 / EX=0，仍卡住** |
+| ② | 二进制补丁 `libObj 0x6BCB58`（`dmp_allocator_lib_init` 开头 → `movs r0,#0; bx lr`） | **EN=1 / EX=0，无崩溃，仍卡住** |
 
-```
-worker (tid=143)
-  持有队列锁         (libObj+0x7D7C37)
-  进入回调
-  libObj+0x7857F0            引用计数 acquire
-      pthread_mutex_lock(&dmp_lifecycle_mutex)      ← 持锁
-      refcount 0 -> 1
-      dmp_allocator_mmap_init()
-          libObj+0x6BD110   只有 12 字节：
-            push {r7,lr}; add r7,sp,#0
-            ldmia.w sp!, {r7,lr}
-            b.w dmp_allocator_lib_init@plt           ← 尾调用
-              libObj+0x6BCB58   dmp_allocator_lib_init (1032 B)
-                6bcb5c  ldr  r0, =0x018004B5
-                6bcb60  mov.w r1, #0xFFFFFFFF
-                6bcb64  blx  osal_wai_sem_tmo             ← 无限等待
-      （永不返回）⇒ 全局锁永不释放
-```
+**⇒ 即使 `dmp_allocator_lib_init` 立即返回，卡点不变 ⇒ 它不是阻塞源。**
 
-## 为什么会连锁堵死
+**附带发现**：`dmp_allocator_lib_init` 在 libObj 内部是**直接 `bl`** 调用，不走 PLT，
+所以做法 ① 天然无效；做法 ② 是有效的，但同样没解开 ⇒ 假设本身错。
 
-`0x7857F0` 与配对的 `0x785880`（释放）都用同一把全局 mutex 保护引用计数：
+## 更正后的正确图景
 
-- acquire：`mutex_lock` → `refcount++` → 首次调用 `dmp_allocator_mmap_init()` → `mutex_unlock`
-- release：`mutex_lock` → `refcount--` → 归零调 `libObj+0x6BCF60`（`dmp_allocator_lib_init+0x408`）→ `mutex_unlock`
-
-首次初始化发生在**持锁区间内**，所以初始化一旦阻塞，所有 acquire/release 都排队。
-
-## 修复方向
-
-不要只绕过 semaphore —— `dmp_allocator_lib_init` 有 1032 字节，sem 只是第一步。
-更彻底的做法是让整个 init 立即返回，从而缩短锁的持有期：
+反汇编 `libObj+0x7D7C10`（worker 循环）逐指令还原：
 
 ```c
-/* 方案 A（推荐，粒度小） */
-extern "C" int dmp_allocator_mmap_init(void) { return 0; }
+worker(queue_t *q)
+{
+    r5 = q + 4;      // 队列 mutex
+    fp = q + 0x20;   // 队列 cond
+    r6 = q + 0x50;   // 完成 mutex
+    sl = q + 0x68;   // 完成 cond
 
-/* 方案 B（更彻底） */
-extern "C" int dmp_allocator_lib_init(void) { return 0; }
+loop:
+    pthread_mutex_lock(q+4);              // 0x7D7C32
+    if (q->count == 0) {                  // q+0x98
+        pthread_cond_wait(q+0x20, q+4);   // 0x7D7CA2  空闲等待
+        goto loop;
+    }
+    item = dequeue(q + 0x98);             // 0x7D7BF0
+    pthread_mutex_unlock(q+4);            // 0x7D7C50  ★ 回调【之前】已解锁
+
+    if (item[-8] == 2) {
+        cb = q->[0xA4];                   // 0x7D7C82
+        cb(item[4]);                      // 0x7D7C88  ★ 回调（无锁）
+        free(item - 8);
+        goto loop;
+    }
+    ...
+    pthread_mutex_lock(q+0x50);           // 0x7D7C64
+    pthread_cond_signal(q+0x68);          // 0x7D7C6A
+    pthread_mutex_unlock(q+0x50);
+}
 ```
 
-两者都是 `libObj.so` 的 GLOBAL DEFAULT 导出符号，调用点走 PLT，可被 LD_PRELOAD 拦截。
+**关键点：**
 
-## 已知代价
+1. **`+0x7D7C37` 是 `0x7D7C32` 那条 `blx` 的返回地址（LR = 0x7D7C36|1），
+   而它在 `0x7D7C50` 就被释放 —— 在回调之前。**
+   ⇒ "worker 持有队列锁却在回调里等锁" 的前提不成立。
 
-DMP 分配器会处于"假就绪"状态。后续真正申请显存的地方会拿到无效结果，
-可能崩在更远处 —— 但那时死锁这一层已经清掉，问题性质变了：
-从"多线程互锁"变成"单个子系统没实现"，可定位性高得多。
+2. **`libObj+0x7858E0` 是 16 字节通用加锁包装**（`return pthread_mutex_lock(m) != 0`），
+   mutex 由调用者传入。libObj 里有 **172 个调用点**、**401 个解锁点**。
+   ⇒ 所有调用者的 LR 都被压成同一个 `0x7858E9`，**该值无法用于归因**。
 
-## 判据
+3. **真正的阻塞点是回调 `q->[0xA4]`**：worker 出队、解锁、进入回调后不返回，
+   于是该 worker 无法再处理后续请求，队列积压，请求方与 `initializeConfig` 全部等待。
 
-`grm_init` 的 `pthread_cond_wait` 是否被 signal —— worker 一旦返回就会 signal。
+4. 回调极可能是 **GPU 命令提交**，提交后等"GPU 完成"信号；QEMU 无真 GPU ⇒ 信号永不到来。
+   这与 `CmdGpeFlush → 同步 Flush → callback → 交换缓冲` 的既有描述一致。
+
+## 下一步（待验证）
+
+在 `0x7D7C88` 前后打 enter/exit 两点：
+
+```c
+void *cb = *(void **)(q + 0xA4);
+log("QCB enter cb=", cb);
+cb(*(void **)(item + 4));
+log("QCB exit");
+```
+
+- 只有 `enter` 无 `exit` ⇒ 确认阻塞在回调
+- 取到 `cb` 真实地址后即可解它等待的对象
+
+## 方法论教训
+
+**"看到某线程持有一把锁 + 另一线程等这把锁" 不等于死锁成因** ——
+必须先确认**这把锁在该线程的当前调用路径上是否仍被持有**。
+本例中 LR 指向的加锁点早已经由对应的 unlock 释放，锁归因是错的。
