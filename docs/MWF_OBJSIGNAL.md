@@ -72,3 +72,56 @@ consume:
 1. 打点「`GetSignal` 返回 0 之后调用方检查什么状态」——看它读哪个全局/字段
 2. 追查该状态由哪个子系统置位
 3. 只有当确认该状态在当前环境**永远不可能就绪**时，才考虑伪造那个状态字段本身
+
+## 六、谁真正 SetSignal（libObj 全局统计）
+
+| 方法 | 调用点数量 |
+|---|---:|
+| `GetSignal` | **30** |
+| `SetSignal` | **2** |
+| `ClearSignal` | 0（`GetSignal` 返回时自清）|
+
+**30 : 2 的比例说明信号是「事件驱动置位」，不是业务代码直接置的。**
+
+### 两个 `SetSignal` 调用点都在错误/中止路径
+
+| 站点 | 所属函数 | 特征 |
+|---|---|---|
+| `0x95335A` | `0x9532A8`（448 B）| 含 `79` / `65` / `0x7000` 等常量，命令/诊断路径 |
+| `0xA0A97E` | `0xA0A934`（172 B）| 先 `MonCtrl::ConPrintfMessage` 打日志、带错误码 `0x23E`，**出错后置信号叫醒等待者** |
+
+### 正常置位机制：`EventHandlerUseSignal`
+
+```c
+MWF::EventHandlerUseSignal::EventHandlerUseSignal(ObjSignal *sig)   // libMWF @0x2A080, 40 B
+{
+    MWF::EventHandler::EventHandler(this);
+    this->[0x00] = EventHandler_vtable + 8;
+    this->[0x04] = sig;          // 绑定 signal
+}
+```
+
+**事件到达时由处理器（虚调用）去 `sig->SetSignal()`。信号 = 「某个事件到了」的抽象。**
+
+## 七、★ 结论：手动 SetSignal 不能推进流程
+
+**等待者等的是**事件**。手动置位只是把它们叫醒，醒来检查状态发现没变，随即回到等待。**
+
+**⇒ 这也解释了「外部看门狗周期性 SetSignal 无效」。**
+
+## 八、正确的排查顺序
+
+```
+① 按信号对象分组，看各等待线程分别在等哪个 obj
+② interpose EventHandlerUseSignal 构造函数，记录 (handler, signal) 配对
+③ 从 handler 的 vtable 反查它处理哪类事件
+④ 追该事件源为何不产生事件
+```
+
+**最便宜的判据：若某个信号对象**根本没有** handler 绑定，
+说明「该创建 handler 的代码没跑」—— 那才是明确缺失的环节。
+
+## 九、已证伪的假设
+
+**曾怀疑 `dlopen(viewUnified2.so)` 卡在其构造函数里 `0x5D5000` 的无限 `osal_wai_sem_tmo`。
+QEMU 侧实测：无 patch 运行时**所有** osal 无限等信号量都有返回（S=81 / E=81）⇒ 假设不成立。**
