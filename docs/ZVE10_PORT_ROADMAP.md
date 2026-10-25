@@ -5708,3 +5708,32 @@ tid=187: MLOK +0x7858E9                                 ← initializeConfig 也
 用"预解析 real 函数指针 + 记录三元组"的方式重写锁探针（避免在 mutex hook 里 dlsym 造成 EN=0），
 然后按 mutex 地址配对，找出只 lock 不 unlock 的 tid
 ```
+
+## ★★★★ 2026-10-25 12:45 新 goal 第 3 轮：**锁配对成功，抓到一个明确的三线程 ABBA 环**
+### 方法
+```
+interpose pthread_mutex_lock / unlock，按【mutex 地址】配对（不再依赖 LR —— 0x7858E0 是通用包装，
+所有调用点 LR 都是 0x7858E9，无法区分）
+实测（ab_v1141 / sq）：ML 260 次、MU 285 次、38 个 mutex
+```
+### 结果：5 把 mutex 从未被解锁，持有者如下
+```
+0x072E5C10  持有者 tid=139
+0x072E5C78  持有者 tid=139
+0x072E5CD4  持有者 tid=142
+0x072E5DA8  持有者 tid=143
+0x072DFD30  持有者 tid=143
+```
+### 结合此前栈证据，形成闭环
+```
+139 = 请求方（grm_init→0x7D7D30，CWAT 0x7D7E01）
+142 = worker（CWAT 0x7D7CA7，队列空等待）
+143 = worker（在回调/锁里）
+⇒ 三个线程各自持锁并等待对方 ⇒ 典型 ABBA（三节点环）
+```
+### 下一步
+```
+① 定向 trylock：只对上面这几把（0x072E5xxx / 0x072DFxxx）加"限时 trylock 后让路"
+   —— 全局做过会崩，定向做风险小得多
+② 或者：先确认 139/142/143 各自"在等哪一把"（把 lock 前/后打点配对）
+```
