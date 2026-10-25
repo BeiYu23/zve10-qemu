@@ -6200,3 +6200,26 @@ ctor = sub_14BCE8(设 vtable) + 4 次 load（失败则 exit(0)）
    定位"它在等哪个 MWF 信号"
 2) 对该 obj 主动 SetSignal（或让上游真的置位）
 3) 判据：4 次 load 全成功 ⇒ ctor 正常返回 ⇒ 配置非空 ⇒ 不崩
+
+## ★★★★ 2026-10-25 21:10 新 goal 第 19 轮：**6 个被等待的 MWF 信号，一个 handler 都没有**
+### 实测（ab_v1440：interpose EventHandlerUseSignal ctor + GetSignal）
+```
+handlers bound to signals: {}          ← 一个都没有
+signal objs waited: 0x00055E60 / 0x00057408 / 0x0005F178 / 0x0007CB48 / 0x00083BA0 / 0x00083D58
+waited but NO handler: 全部 6 个
+```
+### 判读
+```
+· libObj 里 SetSignal 只有 2 个调用点，且都在错误/中止路径（协作方结论）
+· 正常置位机制是 MWF::EventHandlerUseSignal（事件驱动）
+· 而我们的环境里【一个 handler 都没绑定】
+⇒ 这 6 个线程等的是"永远不会被置位的信号"
+⇒ 这是"事件系统没接上"的直接证据，不是某把锁/某个 sem 的问题
+```
+### 下一步
+```
+① 查 EventHandlerUseSignal 到底由谁创建（若在 libMWF 内部创建，我们的 interpose 看不到
+   ⇒ 需要从 libMWF 的导出/调用点反查，或直接 hook 其 SetEvent）
+② 若确认"该创建 handler 的子系统没起来"，那就是缺的服务名
+③ 备选：直接对这些 obj 的"事件"伪造一次（但要同时改它们检查的状态，否则空转）
+```
