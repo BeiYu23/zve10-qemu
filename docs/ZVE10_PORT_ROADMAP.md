@@ -6085,3 +6085,35 @@ C) 暂停老菜单深挖，回到"显示链路 + 工具"的既有成果
 2) 或找出设置该信号的真正来源（哪个子系统/线程 SetSignal）
 3) 一旦 INITCFG_EXIT 出现，立刻看 GRM2 是否开始增长（那时画面才会从纯色变内容）
 ```
+
+## 2026-10-25 18:40 新 goal 第 15 轮：MWF 等待的调用方全部拿到（并确认 -1 是超时不是 id）
+### 协作方结论（与反汇编一致）
+```
+MWF::ObjSignal::GetSignal(u32 tmo)：
+  tmo==0xFFFFFFFF ⇒ pthread_cond_wait（无限等）
+  成功只取决于 this+0x3C 这个标志字节；SetSignal 才置位
+  返回码：0=成功 / 12→6 / 110→5 / 其它→0xFFFF（都是 errno 映射）
+⇒ 我们之前"interpose 返回 0"只是让它醒来，不改变业务状态 ⇒ 它检查状态后又回去等
+```
+### 我方实测：所有 GetSignal 调用方（lr 已抓）
+```
+GL obj=0x00054DF0 tmo=0xffffffff t=164 lr=0x0732E567
+GL obj=0x000571A8 tmo=0xffffffff t=168 lr=0x08BE18C1
+GL obj=0x0005F260 tmo=0xffffffff t=140 lr=0x074007A5
+GL obj=0x0007C750 tmo=0xffffffff t=179 lr=0x0D710297
+GL obj=0x00083918 tmo=0xffffffff t=183 lr=0x066FB229
+GL obj=0x00083760 tmo=0xffffffff t=183 lr=0x066F9459
+⇒ 多个线程各自等不同的 MWF 信号（不是单一瓶颈）
+```
+### 结论
+```
+· "满屏底色"已证明 App 的绘制链能跑通（App 原生渲染到 VDF）
+· 现在缺的是"某个状态就绪"，而不是某个信号本身
+· 多个线程都在等 ⇒ 更像某个子系统整体没起来
+```
+### 下一步
+```
+1) 逐个解 lr 对应的函数（0x892229 / 0x891459 附近已有落点），看它们等的是什么状态变量
+2) 找到那个状态由谁写；若确认永不就绪 ⇒ 才是需要伪造/补齐的地方
+3) 优先做"能让 INITCFG_EXIT 出现"的那一个
+```
