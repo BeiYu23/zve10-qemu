@@ -5737,3 +5737,29 @@ interpose pthread_mutex_lock / unlock，按【mutex 地址】配对（不再依�
    —— 全局做过会崩，定向做风险小得多
 ② 或者：先确认 139/142/143 各自"在等哪一把"（把 lock 前/后打点配对）
 ```
+
+## ★★★ 2026-10-25 13:00 新 goal 第 4 轮：等待边定位 + 定向 trylock 实验
+### 1) 等待边（W 记录后未成功 L）
+```
+只在死锁地址段（0x072Dxxxx / 0x072Exxxx）内记录：
+  waits that never acquired： 0x072DFF44  tid=187   ← initializeConfig 等这把
+  locks never released：      0x072DFD30(143) / 0x072E5C10(139) / 0x072E5DA8(143)
+                              0x072E5CD4(142) / 0x072E5C78(139)
+⇒ 187 明确在等 0x072DFF44，而该地址没有出现在"已持有"列表里（持有者可能是被截断的早期日志）
+```
+### 2) 定向 trylock（只对 0x072Dxxxx/0x072Exxxx，30×10ms 超时后放行）
+```
+TK_GIVEUP 命中 4 次：
+  0x072DFF44 tid=187
+  0x072E5C10 tid=187
+  0x072E5DA8 tid=189
+  0x072DFD30 tid=189
+⇒ 环被打断了（187 越过了它等的那把锁），但 initializeConfig 仍未返回
+⇒ 说明锁只是表象之一：越过锁之后又停在别的等待（cond/sem/osal）
+```
+### 3) 结论
+```
+· 死锁环确实存在（139/142/143 各持 1~2 把，187 等 0x072DFF44）
+· 但"解开锁环"不足以让初始化完成 ⇒ 后面还有非锁依赖
+· 需要在下一次实验里同时记录：cond/sem 等待 + 锁释放，形成完整等待图
+```
