@@ -5657,3 +5657,31 @@ pid=139(THREAD_INFRA0) 的栈里同时出现 0x685E59(grm_init)、0x7D7C11(worke
 2) 若是 worker 本身：dump 它在 0x7D7BF0（取请求）或 [r4,#0xA4]（回调）里的卡点
 3) 若是发起线程：说明 worker 已死/未启动，检查其创建返回值
 ```
+
+## ★★★★ 2026-10-25 12:25 新 goal 第 1 轮（续）：用运行时锁站点把死锁画出来了
+### interpose pthread_create 包 worker，拿到内核 tid
+```
+PCT wrap start=0x06659C11 (libObj+0x7D7C11)  →  WTID tid=141 / tid=142
+⇒ grm_init 创建的两个 worker 就是 141/142（我们之前看到的"卡住的 Infra 线程"）
+```
+### 把 pthread_cond_wait / pthread_mutex_lock 的调用点换算成 libObj 偏移（同一轮）
+```
+tid=139: MLOK +0x7D7DCB, +0x7D7F73, CWAT +0x7D7E01     ← 请求方在 0x7D7D30 里等完成
+tid=142: MLOK +0x7D7C37, CWAT +0x7D7CA7                 ← worker 在队列 cond 上等
+tid=143: MLOK +0x7D7C37(队列锁) → 之后 MLOK +0x7858E9 ×4, +0x7DCF7F, +0x7857FD, +0x767473
+                                                        ← ★ worker 持有队列锁，却在回调里等别的 mutex
+tid=187: MLOK +0x7858E9                                 ← initializeConfig 也在等同一把 0x7858E9 的锁
+```
+### 结论（目前最准确）
+```
+· worker(143) 取到请求后，在【回调里】阻塞于 0x7858E0 处的 mutex（0x7858E9 是其返回地址）
+· 它同时持有队列锁 ⇒ 其它 worker(142) 与请求方(139) 全被堵住
+· initializeConfig(187) 也在等 0x7858E9 同一把锁
+⇒ 真正需要救的是"谁持有 0x7858E0 的 mutex 且不释放"
+```
+### 下一步
+```
+1) 0x7858E0 是个极小包装（push/mutex_lock/unlock/pop），找出它锁的是哪个全局 mutex（0x7857F2 处有配套的 lock/unlock）
+2) 运行时记录 0x7858E9 的 lock/unlock 配对，找出"只 lock 不 unlock"的 tid
+3) 那个 tid 大概率卡在 DMP/GPU 路径（我们已绕过 DMP sem 0x18004B5，仍不够）
+```
