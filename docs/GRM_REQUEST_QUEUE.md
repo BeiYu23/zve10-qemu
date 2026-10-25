@@ -139,3 +139,61 @@ void *dequeue(struct list *l)        // l = q + 0x98
 | `+0x0C` | 回调参数（`item+4`）|
 
 `free()` 也以 `item−8` 为基址。
+
+## 八、请求方（`0x7D7D30`）的完整等待流程
+
+`0x7D7D30` 创建两个队列后，自己作为**请求方**发起一次请求并等待完成：
+
+```asm
+7dc6: pthread_mutex_lock(q2+0x04)              ; 队列锁
+7dd2: bl 0x7D7840 (q2+0x98, &desc)             ; ★ 请求入队
+7dda: pthread_cond_signal(q2+0x20)             ; ★ 唤醒 worker（队列条件）
+7de0: tst  [r7+28], #0x8000                    ; 是否同步请求
+7de4: bne  0x7D7F6A                            ; 同步 ⇒ 另一路径
+7df2: pthread_mutex_unlock(q2+0x04)
+7df6: r1 = q2 + 0x50                           ; 完成锁
+7df8: r0 = q2 + 0x68                           ; ★★ 完成条件
+7dfc: pthread_cond_wait                        ; ★★★ 等待点
+7e02: pthread_mutex_unlock(q2+0x50)
+7e06: r3 = [r7, #20]                           ; ★ 醒来后读结果字段
+7e08: cmp r3, #0
+7e0a: bne 0x7D7E74                             ; 非 0 ⇒ 错误/重试
+7e0e: [r4, #0] = 1                             ; 置"已完成"标志
+7e18: b 0x7D7D58                               ; 正常返回
+```
+
+**要点：**
+
+1. **等待的是 `q2+0x68`，配对锁是 `q2+0x50`** —— 不是另一个队列的 `+0x68`
+2. **请求方自己也会 `signal(q2+0x20)`** 来唤醒 worker，所以 worker 不应处于睡眠态
+3. **仅仅 signal 完成条件不够**：醒来后要检查 `[r7+20]` 结果字段，
+   **= 0 才走成功路径，否则跳 `0x7D7E74`**
+
+## 九、两个队列必须分清
+
+| 变量 | 地址（某次运行）| 完成条件 | 角色 |
+|---|---|---|---|
+| **q2** | `0x072E5C28` | **`0x072E5C90`** | **请求方等这个** |
+| q | `0x072E5CD0` | `0x072E5D38` | 另一个队列 |
+
+**⇒ 若 worker 去 signal `q+0x68` 而非 `q2+0x68`，请求方永远不会被唤醒。**
+
+## 十、worker 不 signal 的三种可能
+
+结合 worker 循环的 type 分支：
+
+| 可能 | 判据 |
+|---|---|
+| **item 类型为 `2`**（按设计不 signal，责任在 cb）| 打 `item[-8]` |
+| **cb 内部卡住**（不返回）| 打 cb 的 enter/exit |
+| **worker 未取到 item**（队列空/被抢）| 观察 `q+0x98` 的 count |
+
+## 十一、实测结论（QEMU 侧，libc 层 cond 统计）
+
+- 一整轮只有 **7 次** `pthread_cond_signal`
+- **`0x072E5C90`（q2+0x68）从未出现在 signal 列表**
+- 其中一次 signal 的 `lr` 落在 `libMWF.so` 内 ⇒ **libMWF 内部确实会 SetSignal**（此前"0 次"是 LD_PRELOAD 假阴性）
+- **⇒ 事件系统是活的，但 grm 这条链的完成通知从未发出**
+
+**该统计方式（hook libc 的 `pthread_cond_wait/signal`，用 `cond − 0x08` 反查 `ObjSignal`，
+并读 `+0x3C` 标志位）能绕开"同模块内直接调用不可见"的盲区。**
