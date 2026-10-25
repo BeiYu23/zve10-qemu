@@ -101,14 +101,20 @@ int main(int argc, char **argv)
     logf("PATCH_START uid=%d", geteuid());
     int pid = (argc > 1) ? atoi(argv[1]) : 157;
     const char *mode = (argc > 2) ? argv[2] : "test";
-    if (argc > 3) g_offset = strtoul(argv[3], 0, 0);
+    if (argc > 3) {
+        g_offset = strtoul(argv[3], 0, 0);
+        /* ★ 符号表里的地址最低位可能是 Thumb 标志位，必须清掉 */
+        if (g_offset & 1) {
+            g_offset &= ~1UL;
+        }
+    }
     logf("pid=%d mode=%s", pid, mode);
 
     int found = 0;
     unsigned long base = find_base(pid, "libObj.so", &found);
     if (!found) { logf("NO_BASE"); logf("PATCH_DONE"); return 1; }
     unsigned long addr = base + g_offset;
-    logf("libObj base=0x%lx  offset=0x%lx  target=0x%lx", base, g_offset, addr);
+    logf("libObj base=0x%lx  offset=0x%lx (thumb-bit cleared)  target=0x%lx", base, g_offset, addr);
 
     char mp[64]; snprintf(mp, sizeof mp, "/proc/%d/mem", pid);
     int fd = open(mp, O_RDWR);
@@ -121,9 +127,9 @@ int main(int argc, char **argv)
     else { /* test */
         if (save_orig(fd, addr) == 0) {
             if (apply(fd, addr) == 0) {
-                logf("--- patched, holding 3 s (watch the screen!) ---");
+                logf("--- patched, holding 10 s (watch the screen!) ---");
                 sync();
-                sleep(3);
+                sleep(10);
                 logf("--- restoring ---");
                 restore(fd);
             }
