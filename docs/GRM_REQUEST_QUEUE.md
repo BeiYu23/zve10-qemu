@@ -1,0 +1,91 @@
+# 图形请求队列：对象布局与完成通知责任归属
+
+> 依据：ZV-E10 `libObj.so` 反汇编（`0x7D7780` 构造 / `0x7D7C10` worker / `0x7D7D30` 封装）
+
+## 一、队列对象布局（`0x7D7780` 构造，192 字节）
+
+```asm
+7d7784: r9 = q
+7d7792: str  r1, [r9, #0xA4]        ; 回调由调用者传入
+7d7788/96: init_list(q + 0x98)      ; 待处理链表
+7d77a2: pthread_mutex_init(q + 0x04) ; 队列锁
+7d77ae: pthread_cond_init (q + 0x20) ; 队列条件
+7d77ba: pthread_mutex_init(q + 0x50) ; 完成锁
+7d77c2: pthread_cond_init (q + 0x68) ; 完成条件
+```
+
+| 偏移 | 类型 | 角色 |
+|---|---|---|
+| `+0x04` | mutex | 队列锁 |
+| `+0x20` | cond | 队列空时 worker 等 |
+| **`+0x50`** | **mutex** | **完成锁** |
+| **`+0x68`** | **cond** | **完成条件（请求方等这个）** |
+| `+0x98` | list | 待处理链表 |
+| **`+0xA4`** | **ptr** | **回调（构造时传入）** |
+
+四个同步对象在同一个构造函数里初始化 ⇒ 属于同一个「请求/完成」结构。
+
+## 二、worker 循环（`0x7D7C10`）
+
+```c
+loop:
+    pthread_mutex_lock(q+0x04);              // 0x7D7C32
+    if (*(u32*)(q+0x98) == 0) {
+        pthread_cond_wait(q+0x20, q+0x04);   // 0x7D7CA2 空闲等待
+        goto loop;
+    }
+    item = dequeue(q+0x98);                  // 0x7D7BF0
+    pthread_mutex_unlock(q+0x04);            // 0x7D7C50 ★ 回调前已解锁
+
+    type = *(u32*)(item - 8);
+
+    if (type == 2) {                         // 0x7D7C80
+        cb = *(void**)(q+0xA4);
+        cb(*(void**)(item + 4));
+        free(item - 8);
+        goto loop;                            // ★★★ 此处【不】signal
+    }
+    if (type == 0x8001) {                     // 0x7D7CB0
+        cb = *(void**)(q+0xA4);
+        cb(*(void**)(item + 4));
+        pthread_mutex_lock(q+0x50);           // 0x7D7CBC
+        pthread_cond_signal(q+0x68);          // 0x7D7CC2
+        pthread_mutex_unlock(q+0x50);         // 0x7D7CC8
+        goto loop;
+    }
+    pthread_mutex_lock(q+0x50);               // 0x7D7C62
+    pthread_cond_signal(q+0x68);              // 0x7D7C6A
+    pthread_mutex_unlock(q+0x50);             // 0x7D7C70
+    return 0;
+```
+
+## 三、★ 关键结论：完成通知的责任按 type 分配
+
+| `item[-8]` | 回调参数 | 谁负责 signal |
+|---:|---|---|
+| **2** | `item[4]` | **回调自己** —— worker 不 signal |
+| **0x8001** | `item[4]` | **worker**，在回调返回后 signal |
+| 其它 | — | **worker** signal 后返回 |
+
+**⇒ 若请求类型是 2，替换回调却不在其中 signal，请求方将永久等待。**
+
+## 四、signal 的正确姿势
+
+**固件自身在 `0x8001` 分支中的写法即为标准答案：**
+
+```c
+pthread_mutex_lock(q+0x50);
+pthread_cond_signal(q+0x68);
+pthread_mutex_unlock(q+0x50);
+```
+
+- **必须持有 `q+0x50`**：它是 `q+0x68` 的配对锁；不持锁 signal 可能丢失唤醒
+- **用 `signal` 而非 `broadcast`**：目标是单个等待者
+- 请求方在 `pthread_cond_wait(q+0x68, q+0x50)` 中等待时，该函数会原子释放 `q+0x50`
+  ⇒ **"请求方持有 q+0x50 在等"这一说法不成立**，回调里加锁不会自锁
+
+## 五、排查提示
+
+- 记录 `item[-8]` 的 type，即可判断该请求的完成通知由谁负责
+- 记录 `q+0xA4` 的实际值，确认回调是谁
+- 多个 worker（如 141/142/143）可能分属不同队列对象，堵一个不一定堵全部
