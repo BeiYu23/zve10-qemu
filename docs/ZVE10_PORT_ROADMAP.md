@@ -5866,3 +5866,29 @@ requester(187) 仍在等 q2+0x68 = 0x072E5C90 的完成条件
 2) 或直接把 q2 的 worker 换成我们自己的循环（完全掌控 type/通知）
 3) 同时并行开 L2（GRM_bitmapCreate + gperm CPU 实现），它不依赖这条链
 ```
+
+## ★★★ 2026-10-25 14:35 第 7 轮：两个队列确认、稳态为空、requester 仍在等（predicate 疑点）
+### 实测（ab_v1220：枚举 libObj 创建的所有 worker 队列 + 每 500ms 采样）
+```
+WQ2 0x072e5cd0 n=1
+WQ2 0x072e5c28 n=2
+Q30 q=0x072e5cd0 cnt=0 head=0 type=0
+Q31 q=0x072e5c28 cnt=0 head=0 type=0   （持续为空）
+⇒ 只有两个队列；稳态都空
+⇒ 但 requester(187) 仍停在 q2+0x68(0x072E5C90) 的 cond_wait
+```
+### 关键推断（协作方静态 + 我方实测合起来）
+```
+· 0x7D7D30 = 按需创建两个队列（各带 worker）+ 等待完成
+· 队列条目：type 在 item-8、cb 参数在 item+4
+· q+0x68 只有 worker 会 signal（type==2 时由回调负责）
+· 我们替换回调并持锁 signal 后仍不返回
+⇒ 最可能：requester 的 cond_wait 是【带谓词循环】——
+   我们发了 signal，但它检查的标志/结果没变 ⇒ 又回去等
+⇒ 必须知道「谓词是什么」，以及「结果写在哪里」
+```
+### 下一步
+```
+解 0x7D7D30 在 cond_wait 之后的那一段（返回前的谓词检查与结果拷贝）
+—— 这是目前唯一未知点，拿到它就能让 requester 真正返回
+```
