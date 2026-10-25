@@ -5621,3 +5621,39 @@ grm_init 依赖的 is a 【worker 线程完成一次请求】；
 🟡 卡点：grm_init 等待它自己启动的 worker 完成请求（worker 卡在哪未定位）
 ❌ 目标（App 菜单显示）未达成
 ```
+
+## ★★★★ 2026-10-25 12:20 新 goal 第 1 轮：**抓到了 grm_init 自建 worker 的入口地址**
+### interpose pthread_create（只看 libObj 发起的）
+```
+PCR2 lr=0x066597ED start=0x06659C11
+⇒ libObj base 0x05E82000 换算：
+   lr    = libObj+0x7D77ED   ← 正是 0x7D7780 里那条 pthread_create 之后
+   start = libObj+0x7D7C11   ★ worker 函数入口
+```
+### worker（0x7D7C10）反汇编要点
+```
+循环体：
+  pthread_mutex_lock
+  ldr r3,[r4,#0x98] ; cmp r3,#0     ← 检查队列是否为空
+  bl 0x7D7BF0                       ← 取出一个请求项
+  pthread_mutex_unlock
+  取 item；若 item->[-8]==2 分支：
+      pthread_mutex_lock → pthread_cond_signal → pthread_mutex_unlock   ← ★它确实会 signal 完成
+      blx [r4,#0xA4]                ← 调用回调（真正干活的函数指针）
+      free(item)
+  → 循环
+⇒ 也就是说：worker 会 signal，但前提是它能把请求项取出来并执行完回调
+```
+### 线程归属
+```
+pid=139(THREAD_INFRA0) 的栈里同时出现 0x685E59(grm_init)、0x7D7C11(worker 入口)、
+  0x7D7751、0x7D7E01(0x7D7D30 内 cond_wait 之后)
+⇒ 说明 139 既是"发起方"（grm_init 调用链）又带着 worker 的帧
+   —— 需要确认 139 到底是发起线程还是 worker 本身（下一步用 pthread_create 的 tid 输出比对）
+```
+- 下一步（第 2 轮）：
+```
+1) interpose pthread_create 时把 *tid 打出来（目前没打），与 139 比对
+2) 若是 worker 本身：dump 它在 0x7D7BF0（取请求）或 [r4,#0xA4]（回调）里的卡点
+3) 若是发起线程：说明 worker 已死/未启动，检查其创建返回值
+```
