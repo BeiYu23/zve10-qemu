@@ -152,3 +152,42 @@ App init
 | `/mnt/build/menuc1101.c` | 0x3E014D 应答 v2（MonDrv 等已核键值） |
 | `/mnt/build/menuc1102.c` | v2 + 软件绘制 shim 合体 |
 | 镜像 | `ab_v1600`(v1) / `ab_v1610`(v2) / `ab_v1620`(v2+shim) |
+
+---
+
+## 7. 追加结果（同一天，合并探针 `ab_v1630`）
+
+把 **观测探针**（`menuc1009.c`：`INITCFG_ENTER/EXIT` + qid 普查 + qdump）与
+**备份应答**（`menuc1110.c`）合成一份 preload 后重跑，得到决定性的顺序证据：
+
+```
+… BKV n=1..48（0x005C00xx 属性读，成对 size=0/3）…
+INITCFG_ENTER tid=188 lr=0x068a6ead
+MISSSO //lib/viewUnified2.so (err=-2)
+ZZREAD Appframework pid=188 fd=23 count=512 dev=viewUnified2.so
+QMMAP … ret=0x0ec63000 name=viewUnified2.so          ← 15 MB 的 viewConfig 模块
+QMMAP … len=0x228000 off=0xb78000 name=viewUnified2.so
+MISSSO //lib/CautionConfig.so (err=-2)
+ZZREAD Appframework pid=188 fd=23 count=512 dev=CautionConfig.so
+QMMAP … ret=0x0fab3000 name=CautionConfig.so
+QMMAP … anon 0x1218d8
+（此后只有 probe 自己的 Y9/PV 轮询行与 App 的 IMNANOSLEEP 轮询，无异常）
+```
+
+**含义**：`initializeConfig` 不再卡住——它真的开始 **load `viewUnified2` / `CautionConfig`**
+（正是 ctor 的那几次 load）。所以"App 初始化链走不通"这条结论**作废**，
+现在状态是：**初始化在推进，App 主循环进入 nanosleep 轮询，但 `GRM2 = 0`（仍未绘制）**。
+
+## 8. 现在的下一个问题
+
+App 已经不死、在轮询，却没有任何绘制/建屏痕迹。按 a7c2 的经验，这一层对应
+他们的"`process_power_on → boot_start_seq → model_future::wait`"一类**启动/首设状态机**，
+以及"建屏要由原生命周期入口触发"。所以下一步优先做：
+
+1. **确认有没有建屏**：在 preload 里给 `GRM_bitmapCreate`（libObj 通过 PLT 导入，可拦）
+   加只记录不改变行为的日志，回答"UI 到底有没有申请过位图"；
+2. 若无建屏：找 App 的启动状态机在等什么（沿用本轮的 GDB 逐层下降方法）；
+3. 若有建屏但 `GRM2` 仍 0：说明绘制走的是另一条内部路径，需要按 `ROUTE_DIFF_VS_A7C2.md`
+   D2 那条把绘制入口(PLT `GRM_gpermFillrect/Rectblit`)接住。
+
+**新镜像**：`ab_v1630`（观测探针 + 备份服务应答，当前最完整基线）。
