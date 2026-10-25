@@ -189,3 +189,26 @@ App ──UIPC sync──> 0x014C0424 (grm_ma 服务) ──> 内核 mspace_mema
 
 ⇒ **CPU 侧没有可用的像素面**：菜单像素由 RTOS/硬件解描述符后产生。
 我们 QEMU 里 `0x20312000` 仍是全 `0x5A5A` ⇒ **App 连描述符都没写过**，卡在 MA 服务。
+
+### 8.4 `grm_ma.ko` 服务端接口（已从 .ko 符号表整理，带偏移，供下一轮实现用）
+
+`grm_ma.ko`（19,628 B，**符号完整**）里的关键实现函数：
+
+| 偏移 | 名字 | 推测职责 |
+|---:|---|---|
+| 0x005c | `ma_init` | 模块初始化 |
+| 0x00d0 | `ma_user_sync_cb` | **UDIF 用户请求同步回调（服务入口）** |
+| 0x01fc | `ma_dmm_open_send_recv` | 向 dmm 发请求并收应答 |
+| 0x0348 | `ma_dmm_open_impl` | 打开 dmm 连接（拿池） |
+| 0x03b8 | `ma_dmm_close_send_recv` | 关闭 dmm |
+| 0x0588 | `ma_cache_ctl` | cache 维护（flush/invalidate） |
+| 0x0680 | `ma_create_msp_impl` | 创建 memspace |
+| 0x0704 | `ma_findbyname_impl` / 0x0750 `ma_findbyphys_impl` | 按名/按物理地址查 |
+| 0x07bc | `ma_mspace_memalign_wrapper` | **memalign（我们崩在这里的上一层）** |
+| 0x07ec | `ma_malloc_impl` / 0x08e0 `ma_free_impl` | 分配/释放 |
+| 0x097c | `ma_create_mspace_wrapper` / 0x09c8 `ma_destroy_mspace_wrapper` | mspace 生命周期 |
+| 0x0ab4 | `ma_compact_init_impl` / 0x0bc0 `ma_compact_impl` | 内存整理 |
+
+配合 App 侧的请求（`w0=0x00920009` / `0x0092000a` 这类"服务类+opcode"），
+下一轮要做的是：**对 `ma_user_sync_cb` 的 opcode 分派表和 `ma_malloc_impl` 的返回格式做 RE**，
+然后在 preload 里实现 `0x014C0424` 服务端（分配用 `/dev/mem` 固定池，回复真实句柄/物理地址）。
