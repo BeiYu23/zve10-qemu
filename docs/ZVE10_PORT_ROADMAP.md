@@ -5763,3 +5763,31 @@ TK_GIVEUP 命中 4 次：
 · 但"解开锁环"不足以让初始化完成 ⇒ 后面还有非锁依赖
 · 需要在下一次实验里同时记录：cond/sem 等待 + 锁释放，形成完整等待图
 ```
+
+## ★★★★ 2026-10-25 13:15 新 goal 第 5 轮：**请求方与 worker 的等待点/cond 地址全部对上了**
+### 实测（ab_v1170：定向 trylock + cond 等待点日志）
+```
+CW 0x007D7CA7 c=0x072E5CF0 t=142      ← worker 在"队列空"条件上等待
+CW 0x007D7E01 c=0x072E5C90 t=187      ← 请求方（grm_init 路径）在"完成"条件上等待
+```
+### 关键判读
+```
+· 187(requester) 已经压入请求并在 0x7D7E01 等"完成"（cond 0x072E5C90）
+· 142(worker) 却在 0x7D7CA7 等"队列空"（cond 0x072E5CF0）
+⇒ 两者对不上：如果请求真的入队，worker 应被唤醒并处理
+⇒ 现在的形态高度像是【wakeup 丢失 / 入队与判空用的不是同一个字段】
+```
+### 与 worker 反汇编对照（0x7D7C10）
+```
+loop: lock q+4 ; if (*(q+0x98)==0) wait(q+0x20,q+4) ; item=dequeue ; unlock
+      if (type==2) { cb(q+0xA4, item+4); free; goto loop }        ← ★该分支【不 signal 完成】
+      else { lock q+0x50; signal(q+0x68); unlock; return 0 }      ← 只有非 type==2 才通知完成
+⇒ 若请求 type==2（回调型），完成通知需由 callback 内部发出
+⇒ 但 requester 期望的是 q+0x68（0x072E5C90）被 signal
+```
+### 下一步
+```
+1) 确认 requester 等待的 cond（0x072E5C90）对应 q+0x68 还是 q+0x20（需要 q 的地址）
+2) 抓 q 地址：worker 的 r4；可在 worker 进入 0x7D7C10 时用探针记录其栈上参数
+3) 若确认是"type==2 分支不通知"的路径，则需要让 callback 完成后由我们补一次 signal
+```
