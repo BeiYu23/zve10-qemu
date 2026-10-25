@@ -191,3 +191,66 @@ App 已经不死、在轮询，却没有任何绘制/建屏痕迹。按 a7c2 的
    D2 那条把绘制入口(PLT `GRM_gpermFillrect/Rectblit`)接住。
 
 **新镜像**：`ab_v1630`（观测探针 + 备份服务应答，当前最完整基线）。
+
+---
+
+## 9. 环境纪律修正 + 干净探针下重新定位（2026-10-26 晚）
+
+### 9.1 两条必须先记住的修正
+
+1. **`libObj` 基址不是固定的**。旧的 0x05E82000 只在**旧探针**下成立；换上干净探针后实测为
+   **0x05E77000**（差 0xB000）。任何 GDB 断点地址都必须**从串口动态解析**：
+   ```
+   BASE=$(grep -ao 'ret=0x[0-9a-f]* name=libObj.so' serial.log | tail -1 | sed 's/ret=\(0x[0-9a-f]*\).*/\1/')
+   ```
+   之前用硬编码基址做的栈扫描，L+ 偏移**整体偏了 0xB000**，读数全部作废。
+
+2. **旧基线探针（`menuc1009`）本身在"动手"**，不是纯观测：它内部起了 `Y9` 工作线程，
+   调 `Application_System_Init`、**重放 viewUnified2 的 init_array（1768 项）**、poke presenter
+   （`W5/W6/IA` 日志就是它）。这正是 a7c2 §18 明确反对的"手搓生命周期"。
+   ⇒ 之前"INITCFG_ENTER 之后卡住"的观测，是在**被动过手脚**的 App 上取得的。
+
+### 9.2 干净探针（`menuc1120/1121`，镜像 `ab_v1640/ab_v1650`）
+
+只做三件事：应答 `0x003E014D`、**只记录不改行为**地拦 `GRM_bitmapCreate / gpermFillrect /
+gpermRectblit / bitmapWriteLockBits / bitmapGetPhysicalAddress / screenGetOnBitmap`、OSAL 目的队列普查。
+（外加 30s 时 dump 一次 `/proc/self/maps`，用于把地址映射回模块。）
+
+干净探针下的实测：
+
+| 观测 | 结果 |
+|---|---|
+| 备份请求 | 正常应答（前 40 条与旧版一致：`0x00BD00xx` 数据读、`0x005C00xx` 属性读） |
+| `initializeConfig`（0x14BE84） | **一次都没进**（70s 内 0 命中） |
+| `viewManagerIf::openView` / `View::View` | **0 命中**（没建过任何 view） |
+| `GRM_bitmapCreate` / `gperm*` | **0 命中**（没申请过位图，没画过一笔） |
+| 进程状态 | 存活；41 个线程；主线程 `pc` 落在 **libpthread**（0x0408c000-0x0409c000），即卡在 pthread 原语 |
+| 卡点线程 | `THREAD_INFRA0 sp=0x0924dbc8`，返回链里有 **L+7d7e01**（= 0x7D7E00，正是 `0x7D7D30` 的 `cond_wait` 之后）⇒ **还是那个 grm 等待器** |
+| grm worker | 另一个 `THREAD_INFRA0 sp=0x0968dd58` 链为 `L+7d7ca7 L+7d7c11` ⇒ **worker 空转在取队列处** |
+
+### 9.3 单层下钻结果（`tb_subtrace.sh`，基址动态解析）
+
+```
+2.73 L_8560  进入 0x7D8560
+2.75 E_A620 / R_A620 返回       (0x78A620 ok)
+2.75 E_A690 / R_A690 返回       (0x78A690 ok)
+2.76 E_ADB0 / R_ADB0 返回       (0x78ADB0 ok)
+2.85 E_C560 进入 0x78C560  ← 之后 50 秒无返回、也到不了 Backup_nread
+```
+
+⇒ 干净环境下卡在 **`0x78C560` 内部**（不是 Backup 服务，那一层在"动过手脚"的探针下才被走到）。
+
+### 9.4 结论与下一步
+
+```
+现状：App 自然启动 → grm 请求(0x7D7D30) → cb2 → 0x7D5200 → 0x7D8560 → 0x78C560 ⇒ 卡住
+      worker 空转、waiter 永远等不到完成；没有建屏、没有位图、没有绘制
+```
+
+下一步（仍是同一套方法，但**一次要问多个问题**，避免一轮一层）：
+
+1. 在 **`0x78C560` 内部**下一次布点：`0x7904C0`（取对象）、`0x790B30`、`0x787A40`、`0x790680`、
+   以及 `0x78C560` 的各 case 返回点，一次运行看出它走的是哪个命令码、停在哪一步；
+2. 同时读 `[r7,#20]`（即 `0x7D7E00` 之后要比较的结果字）确认失败码；
+3. 若 78C560 是在等**别人的锁/事件**：用 `/proc/self/task/*/wchan` 普查（探针可直接读）
+   判断是 futex/poll/read 哪一类，再决定补哪一层（服务 or 器件）。
