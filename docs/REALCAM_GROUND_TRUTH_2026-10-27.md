@@ -674,3 +674,76 @@ struct inode {
 2. 与厂商模块的期望值对照（已知 `grm_gles` 期望 `i_cdev == 0x198`）；
 3. 若不符：按候选 config（`FS_POSIX_ACL=y` / `SECURITY=y` / `IMA=y` 组合）重编内核，
    直到 `offsetof(i_cdev)==0x198` —— **这一步可能一次性解开后面所有"服务应答了却不前进"的问题**。
+
+---
+
+## 19. 第 32 轮：**实测内核 struct 偏移 = 0x190，厂商模块期望 0x198（差 8 字节）**
+
+### 19.1 怎么量的（可复现）
+
+给我们的 `fake_gles.ko`（内核探针模块，源码在 `/mnt/build/fg_tb2/fake_gles.c`）加一行：
+
+```c
+printk(KERN_INFO "INOFF inode_i_cdev=%u inode_size=%u file_private_data=%u file_size=%u inode_i_private=%u\n",
+       offsetof(struct inode,i_cdev), sizeof(struct inode),
+       offsetof(struct file,private_data), sizeof(struct file), offsetof(struct inode,i_private));
+```
+
+**构建工具链必须用 Buildroot 6.4**（宿主 gcc 15 编不了 3.0 内核）：
+
+```bash
+export PATH=/mnt/build/toolchain/armv7-eabihf--glibc--stable-2018.02-1/bin:$PATH
+export LD_LIBRARY_PATH=/mnt/build/toolchain/compat:/mnt/build/toolchain/armv7-eabihf--glibc--stable-2018.02-1/lib
+make -C /mnt/build/src/a7c-kernel/linux M=/mnt/build/fg_tb2 ARCH=arm \
+     CROSS_COMPILE=arm-buildroot-linux-gnueabihf- modules
+# 模块安装位置：/usr 分区 /kmod/grm_gles.ko（我们的 probe 模块内部名是 fake_gles）
+```
+
+### 19.2 实测结果（当前内核）
+
+```
+INOFF inode_i_cdev=400(0x190)  inode_size=424  file_private_data=168(0xA8)  file_size=192  inode_i_private=420
+```
+
+* **`struct file` 完全匹配**（`private_data=0xA8`，厂商 `sugilite_open` 正是写 `[filp+0xA8]`）；
+* **`struct inode` 差 8 字节**：我们 `i_cdev=0x190`，`grm_gles` 期望 **0x198** ⇒ 它读到的是别的字段
+  （实测为 0）⇒ 打开 `/dev/dmpgles2` 时 `ldrex` 访问 0x40 崩溃。
+
+### 19.3 为什么是 8 字节：3.0.27 的 `struct inode` 布局
+
+`i_cdev` 之前只有两个 config 相关字段：
+
+```c
+#ifdef CONFIG_SECURITY
+	void *i_security;            /* +4 */
+#endif
+	...
+#ifdef CONFIG_QUOTA
+	struct dquot *i_dquot[MAXQUOTAS];   /* MAXQUOTAS=2 ⇒ +8 */
+#endif
+	union { ... struct cdev *i_cdev; };
+```
+
+（`CONFIG_FS_POSIX_ACL` 的 `i_acl/i_default_acl` 在 `i_cdev` **之后**，改它不影响——我们试过，偏移不变 ✓ 证实）
+
+⇒ **厂商内核几乎肯定开了 `CONFIG_QUOTA`（MAXQUOTAS=2）**，正好 +8 字节 = 0x198。
+**正在按这个改内核并重编验证**（`CONFIG_QUOTA=y` + `CONFIG_QUOTACTL=y`）。
+
+### 19.4 这为什么可能是"总闸"
+
+App 整条链上的怪象（`grm_gles` open 崩、`grm_ma` 取到 0x5A5A 垃圾池、服务都应答了却不前进）
+**都可能是同一个原因**：我们内核与厂商内核的结构布局不一致，**厂商原版 .ko 到处读错字段**。
+若对齐成功，很多"补服务也不动"的问题可能一次性消失。
+
+### 19.5 关于"要不要换成 virt 现代机型"（回答用户的疑问）
+
+**换不了**：ZV-E10 是 Sony CXD90045（ARMv7 + 私有中断控制器/定时器/内存映射），
+厂商 3.0.27 内核**只能在 cxd90045 机型上启动**；a7c2 能上 `virt` 是因为它那颗是 AArch64 + 接近标准 ARM64 内存模型。
+
+真正的差别不在"机型新老"，而在**我们把替换点放在哪一层**：
+* a7c2：真固件用户态 + 只替换**用户态 API**（mpgpe/GPE/OSD 消费者）+ 标准 ramfb ⇒ 完全不用碰内核 ABI；
+* 我们：跑**真内核 + 35 个厂商 .ko** ⇒ 必须同时满足**内核 ABI 与设备语义**（本轮就是这块的账）。
+
+⇒ 结论：机型保留（被迫），但要做两件事减轻内核负担：
+1. **对齐内核 config**（正在做；目标是让厂商 .ko 的偏移假设成立）；
+2. **砍掉不需要的厂商模块**（wlan/bt/usb 等，a7c2 就是这么干的），只留 App 菜单所需的最小集。
