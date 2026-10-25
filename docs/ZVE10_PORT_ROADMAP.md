@@ -6170,3 +6170,33 @@ C) 隐藏 /usr/lib/viewUnified2.so 强制走 fallback
 2) 找出崩溃点用到 config 的哪个字段（0x50 / 0x6CCF3D7 两处）
 3) 用"最小合法值"填充（例如各字段指向一个全零的可写块而非 NULL）
 ```
+
+## ★★★ 2026-10-25 20:20 新 goal 第 18 轮：配置对象布局 + 关键判断（不该 nop load）
+### 协作方解出配置对象布局（24 字节）
+```
++0x00 vtable   +0x04 viewConfig 指针   +0x08 modelConfig 指针
++0x0C modelTree 指针   +0x14 byte=0
+ctor = sub_14BCE8(设 vtable) + 4 次 load（失败则 exit(0)）
+⇒ "假 config" 不是填一个数，是填三个【子对象指针】
+```
+### 我方实测补充
+```
+· 无 patch（ab_v1411）：所有 osal 无限等信号量【全部都有返回】（S=81/E=81）
+  ⇒ 卡点不在 osal 信号量
+· initializeConfig 所在线程（tid=188 本轮）**栈里没有 libMWF 地址**
+  ⇒ 说明它当前不在 MWF 里等；但整体仍有 6 个线程在 MWF GetSignal 上无限等
+  ⇒ 需要按"谁先卡"重新排序分析
+```
+### 结论（当前最可信的判断）
+```
+1) 不 patch 时 initializeConfig 永不返回；patch 掉 4 次 load 就能返回（EX=1）
+   ⇒ 卡点确实在 4 次 load 之一（viewUnified2 的加载/初始化）
+2) 但 patch 后崩溃（0x50 / 0x6CCF3D7）⇒ 因为三个子对象指针为空
+3) 正解仍是让 load 真跑完，而不是跳过（协作方判断正确）
+```
+### 下一步
+```
+1) 在 dlopen(viewUnified2) 期间抓 GetSignal 调用（哪个 obj / 哪个 lr），
+   定位"它在等哪个 MWF 信号"
+2) 对该 obj 主动 SetSignal（或让上游真的置位）
+3) 判据：4 次 load 全成功 ⇒ ctor 正常返回 ⇒ 配置非空 ⇒ 不崩
