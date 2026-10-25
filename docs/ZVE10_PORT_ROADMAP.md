@@ -6031,3 +6031,35 @@ B) 转 L2 演示：让我们的 shim 自己驱动一次绘制（把 App 的资�
    —— 能得到"屏幕上有内容"的可视结果，但不是 App 原生渲染
 C) 暂停老菜单深挖，回到"显示链路 + 工具"的既有成果
 ```
+
+## 🎉 2026-10-25 17:50 新 goal 第 14 轮：**App 自己把整屏刷成统一底色（App 侧渲染首次到达屏幕）**
+### 关键动作
+```
+之前几轮的 streamfb 参数不完整（只给了 blank-pattern=off），模型用了默认几何
+本轮显式指定：
+  -global driver=bionz-streamfb,property=width,value=640
+  -global driver=bionz-streamfb,property=height,value=480
+  -global driver=bionz-streamfb,property=stride,value=1280
+  -global driver=bionz-streamfb,property=format,value=1
+镜像：ab_v1290（含 libObj 0x7D7E0A 强制成功补丁）
+```
+### 结果（重大）
+```
+屏幕：640×480 全部 307,200 像素 = 单一颜色 (90,73,214)（紫蓝）
+⇒ ★ 不是噪声、不是我们的测试图，而是【App 自己刷的整屏底色】
+⇒ 说明 App → VDF 缓冲 → streamfb → 屏幕 这条链路真的通了
+截图：docs/artifacts/2026-10-25_oldmenu_app_fullscreen_fill.png
+```
+### 意义
+```
+· 之前"灰底+底部噪声"其实是几何不匹配造成的假象（模型按默认几何读）
+· 现在几何对齐后可以看到 App 的真实输出
+· 这是"App 向屏幕输出"的第一个确定证据（虽然还只是纯色底，没有控件内容）
+```
+### 下一步
+```
+1) 既然底色能出来，说明 App 正在执行绘制流程 —— 继续观察是否会出现第二层内容
+2) 我们的 libgrm2.so（bitmapCreate→VDF + CPU gperm）此时可能已经派上用场
+   → 下一轮带 libgrm2 跑并抓 GRM2 日志
+3) 若只有底色没有控件，说明控件绘制被卡在某个 GRM 调用上 → 正是我们的 shim 要接的地方
+```
