@@ -747,3 +747,62 @@ App 整条链上的怪象（`grm_gles` open 崩、`grm_ma` 取到 0x5A5A 垃圾�
 ⇒ 结论：机型保留（被迫），但要做两件事减轻内核负担：
 1. **对齐内核 config**（正在做；目标是让厂商 .ko 的偏移假设成立）；
 2. **砍掉不需要的厂商模块**（wlan/bt/usb 等，a7c2 就是这么干的），只留 App 菜单所需的最小集。
+
+---
+
+## 20. 第 33 轮：**找到了 MA 的 DMM 服务（qid 0x0061003C），并从用户态成功应答**；剩下的是 RT 内核 BUG
+
+### 20.1 从 `grm_ma.ko` 反汇编出的 DMM 往返协议（关键）
+
+`ma_dmm_open_send_recv`（0x1FC）：
+
+```
+osal_valloc_msg_wait(0x61003C, &msg, 24, 1)     ← 24 字节消息
+msg[0x00] u16 = 1（操作码）  msg[0x04]=ctx  msg[0x08]=0
+msg[0x0C] = 0xFFFFFFFF      msg[0x10]=source  msg[0x14] u16=序列号  msg[0x16] u16=1
+osal_snd_msg(0x61003C, msg)                      ← ★ 不是 snd_sync！
+osal_rcv_msg_tmo(0x014C0424, &msg, 30000)        ← 30 秒超时，在 MA 自己的队列上收应答
+校验：reply[0x00]==0x8001 且 u16@reply[6]==序列号
+取值：*out1 = reply[0x10]  *out2 = reply[0x14]  *out3(u16) = reply[0x04]
+```
+
+* 字面量取自 `grm_ma.ko` .text 0x33C = **0x0061003C**（DMM 队列）、0x340 = 0x014C0424（MA 队列）、
+  0x344 = 序列号全局（模块 .data +0x34）；
+* `ma_init` 里 `osal_reg_sync_msg_queue_cb(0x014C0424, ctx, 0, 0)` ⇒ **MA 的用户侧队列确实是 sync 队列**（我们的 hook 没错），
+  但**它跟 DMM 的往返是 snd_msg+rcv_tmo**（合作方指出的这点是对的）。
+
+### 20.2 我们在 preload 里实现 DMM 服务 —— **成功**
+
+```
+DMMREG sym=0x04073301  rc=0  h=0x60b9f340        ← osal_reg_msg_queue_cb(0x61003C, ...) 成功
+DMMW  valloc=0x04072fed snd=0x04072c35           ← dlopen("libosal_uipc.so") 解析到真符号
+DMMREQ n=1 w0=0x04040004 seq=1                   ← ★ 内核 MA 真的把请求送来了
+DMMREP seq=1 n=1                                 ← ★ 我们的应答已发回 0x014C0424
+```
+
+**要点**：
+1. **DMM 服务是用户态的**（0x61003C 未被内核占，我们注册成功并收到内核发来的消息）；
+2. 应答必须**在独立线程里发**（在回调里直接发会让接收线程重入）；
+3. 解析 `osal_*` 必须用 `dlopen("libosal_uipc.so")` 句柄（`dlsym(RTLD_DEFAULT)` 会给 0x90c0 这类假地址）。
+
+### 20.3 现在的卡点：收到/发出应答后内核 BUG（RT 断言）
+
+```
+Internal error: Oops: 817  PC is at __bug+0x20  LR is at __migrate_enable+0x10c
+r0=0x00000083(131) 进程 THREAD_INFRA0
+```
+
+* 这是 PREEMPT_RT 的 **`__migrate_enable` 断言**（migrate 计数不平衡）；
+* 触发点在**厂商模块（grm_ma/osal_uipc）处理应答的路径**上；
+* 30 秒超时未应答时也会走到同一断言（说明这条 RT 语义在我们内核里和厂商编译时假设不一致）。
+
+⇒ **又一次指向"我们重建的内核与厂商内核不一致"**（与第 32 轮的 struct 偏移问题同源）：
+厂商 `.ko` 假设的 RT 语义 / 内核版本内部实现与我们 `#144` 不完全一致。
+
+### 20.4 下一轮
+
+1. 对比 RT 配置：`CONFIG_PREEMPT_RT_FULL` / `CONFIG_PREEMPT_RT_BASE` / `CONFIG_MIGRATE_DISABLE` 等，
+   看厂商内核可能的组合（我们当前是 `PREEMPT_RT_BASE`）；
+2. 或者绕开内核 MA：既然 **DMM 请求是内核→用户态** 的，我们也可以**让 MA 的 mspace 永远不被使用**
+   （在用户态 MA 服务里把 malloc 应答做得完全自洽），同时在自定义入口路线上继续；
+3. 记录结论：**"补服务"这条路已经打通到"内核真的来问我们了"**，剩下的是 RT/ABI 级别的对齐。
