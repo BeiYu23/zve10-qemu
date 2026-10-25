@@ -212,3 +212,46 @@ App ──UIPC sync──> 0x014C0424 (grm_ma 服务) ──> 内核 mspace_mema
 配合 App 侧的请求（`w0=0x00920009` / `0x0092000a` 这类"服务类+opcode"），
 下一轮要做的是：**对 `ma_user_sync_cb` 的 opcode 分派表和 `ma_malloc_impl` 的返回格式做 RE**，
 然后在 preload 里实现 `0x014C0424` 服务端（分配用 `/dev/mem` 固定池，回复真实句柄/物理地址）。
+
+---
+
+## 9. 第 22 轮：在 preload 里实现 grm_ma 服务（`0x014C0424`）——**部分成功，协议还差一层**
+
+### 9.1 从 `grm_ma.ko::ma_user_sync_cb` 反汇编出的分派表（已确认）
+
+`u16 *(u32*)req` = opcode（高 16 位 `0x0092` 是服务标签），opcode 1..13：
+
+| op | 处理 | 入参 | 出参（**在同一个消息缓冲里**） |
+|---:|---|---|---|
+| 1 | `ma_dmm_open_impl` | req+4 | req+0x1C |
+| 2 | `ma_dmm_close_impl` | req+4 | req+8 |
+| 3 | `ma_create_msp_impl` | req+4{name,size,flags} | req+0x20 |
+| 4 | （默认/空） | — | — |
+| 5 | `ma_cache_flush_impl` | req+8, out req+4 | |
+| 6 | `ma_cache_invalidate_impl` | req+8, out req+4 | |
+| 7 | `ma_findbyname_impl` | req+4 | req+0x14 |
+| 8 | `ma_findbyphys_impl` | req+4 | req+8 |
+| **9** | **`ma_malloc_impl`** | req+4{msp,size,align} | **req+0x10{status,ptr}** |
+| 10 | `ma_free_impl` | req+4{msp,ptr} | req+0x10 |
+| 11 | `ma_compact_init_impl` | req+4 | req+8 |
+| 12 | `ma_compact_impl` | req+4 | req+0x14 |
+| 13 | `ma_compact_fin_impl` | req+4 | req+8 |
+
+`ma_malloc_impl` 内部：`msp=[r5]`，`size=[r5+4]`，`align=[r5+8]`；成功时 `out[0]=0, out[4]=ptr`，
+失败 `out[0]=-1`；找不到 msp ⇒ `-1018`。
+
+### 9.2 尝试：在 preload 里应答（`menuc1170/1171`，镜像 `ab_v1730/ab_v1740`）
+
+* 首次尝试（**回错字段**：op7 的 out 应在 req+0x14，我写到了 req+4）⇒ App 只发出 **1 条** 请求就不再动。
+* 修正字段后：**MA 请求量 12,788 条**，但内容出现大量 `0xf7f7f7f7` 填充与荒谬尺寸
+  （`size=0x06e56323`），我们的回复让 App 进入**重试风暴**（run 直接跑到 80s 超时）。
+
+⇒ 说明"只把 op 分派和 status 填 0"不够：**App 对 findbyname / dmm_open 的返回值有具体期待**
+（很可能是 msp 的真实句柄/指针，后续 malloc 会带回来做比较），我们必须先 RE
+**用户态客户端**（libObj 里的 `ma_*` 封装）才能实现正确应答。
+
+### 9.3 本轮得到的另一个硬结论
+
+`op=7 findbyname` 的入参就是字符串 `"gcl_common..."`（w1..w4 连起来是 ASCII），
+说明 **App 用名字查 mspace**；这给了下一轮 RE 的抓手：
+在 libObj 里搜 `"gcl_common"` 就能找到客户端代码。
