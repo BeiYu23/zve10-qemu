@@ -5791,3 +5791,29 @@ loop: lock q+4 ; if (*(q+0x98)==0) wait(q+0x20,q+4) ; item=dequeue ; unlock
 2) 抓 q 地址：worker 的 r4；可在 worker 进入 0x7D7C10 时用探针记录其栈上参数
 3) 若确认是"type==2 分支不通知"的路径，则需要让 callback 完成后由我们补一次 signal
 ```
+
+## ★★★ 2026-10-25 13:40 新 goal 第 6 轮：**成功替换了 grm 队列的回调（可编程介入点打通）**
+### 拿到队列对象与回调
+```
+worker 启动参数即队列对象 q（interpose pthread_create 拿到）：
+  q  = 0x072E5CD0   cb=q+0xA4=0x06659721(libObj+0x7D7721)  cnt=0
+  q2 = 0x072E5C28   cb=q+0xA4=0x06659871(libObj+0x7D7871)  cnt=1  ← 有 1 个请求在排队
+```
+### 动作：把 q+0xA4 改成我们自己的实现，并在回调后主动 signal 完成
+```
+QPA/QPB 命中（两个队列都替换成功）
+CBB arg=0x09458C34  ← 我们的回调确实被 worker 调用了
+⇒ 证明：grm 队列的回调是【可以运行时替换】的
+```
+### 但 initializeConfig 仍未返回（Appframework 187 依旧等）
+```
+THR 187 pc=040a2146（libpthread 等待点）
+⇒ 仅"回调返回 + signal 完成 cond"还不够，requester 还在别处等
+```
+### 下一步（对齐 a7c2 的 headless-osd 思路）
+```
+① 不要只替换回调：按 a7c2 模板【自己跑 worker 循环】——
+   收消息 → 处理 → 写回 → 通知完成（并且失败时毒化，不给假 ACK）
+② 用 libObj 的光栅锁 API（try_raster/unlock_raster）保护我们对 0x20312000 的写入
+③ 锁探针按 mutex-trace.c 重写：dlvsym+atomic+走一帧拿 caller2，只报异常
+```
