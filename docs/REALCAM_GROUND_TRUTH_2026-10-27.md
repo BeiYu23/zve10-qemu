@@ -255,3 +255,44 @@ App ──UIPC sync──> 0x014C0424 (grm_ma 服务) ──> 内核 mspace_mema
 `op=7 findbyname` 的入参就是字符串 `"gcl_common..."`（w1..w4 连起来是 ASCII），
 说明 **App 用名字查 mspace**；这给了下一轮 RE 的抓手：
 在 libObj 里搜 `"gcl_common"` 就能找到客户端代码。
+
+---
+
+## 10. 第 23 轮：`grm_ma` 服务应答语义仍未对上（但拿到关键线索）
+
+### 10.1 `ma_findbyname_impl` / `ma_dmm_open_impl` 的**出参布局**（反汇编确认）
+
+`ma_findbyname_impl(req, out)`（0x704），出参从 `req+0x14` 起：
+
+```
+成功： out[0] = entry->[8]   out[4] = entry 指针   out[8] = entry 指针   out[12] = entry 指针
+失败： out[0] = 0            out[4] = -8(-0x8)     …
+```
+
+`ma_dmm_open_impl(req, out)`（0x348），出参从 `req+0x1C` 起：成功时 `out[0]=0`、`out[0xC]=新 entry`。
+
+### 10.2 修正后的应答实验（`menuc1180`，镜像 `ab_v1750`）
+
+* **好消息**：App 接受了我们给的 mspace 句柄——后续 `op9 malloc` 里 `msp=0x68640000`
+  **正是我们返回的值**（说明握手字段位置对了）；
+* **坏消息**：紧接着 malloc 的 `size` 变成 `0x06e56323`（明显是**指针字节**）、`align` 同值，
+  我们按 size 分配失败 → App 重试 **10,075 次**（跑到 70s 超时）。
+
+⇒ 说明 `findbyname` 的返回里**还有一两个字段**（很可能是 msp 的 size/align 描述）被 App 当作
+结构体读走了；我们填的是猜测值，于是 App 把指针当 size 用。
+
+### 10.3 名字串的真相（排除一个方向）
+
+`op7` 入参的字符串按字节解是 **`gl_common`（很可能完整是 `gcl_common`）**，
+但我们在 `libObj.so / libmpr.so / libMWF.so / libgrm.so` 里**搜不到 `gcl_` 这个串**（连 `common` 都只有少量命中）。
+
+⇒ 这个名字**不是静态字面量**，是运行期拼出来的（或来自 `viewUnified2/CautionConfig` 之类的大配置库）。
+**所以"搜字符串找客户端"这条路走不通**，下一轮改用"按 opcode 常量在 .text 里找客户端封装"。
+
+### 10.4 下一轮的更优切入点
+
+`ma_malloc_impl` 的入参是 `{msp, size, align}`（req+4 起），出参 `{status, ptr}`（req+0x10 起）——
+这部分我们已经对了。真正没对的是 `findbyname/dmm_open` 返回的 **entry 结构**。
+既然 `entry->[8]` 被返回给用户态，下一步应当在
+`ma_list_findbyname` / `ma_list_add`（0x10A4 / 0xE54）里看清 **entry 结构的完整字段**，
+然后在 preload 里返回**自洽的完整 entry**（而不是只填几个字段）。
