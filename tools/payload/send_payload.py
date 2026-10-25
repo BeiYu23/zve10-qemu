@@ -54,12 +54,34 @@ def load_a6700(src: str):
     return legacy
 
 
+
+def open_service_channel(legacy, service_pid, timeout):
+    """相机已在服务模式(0x0336)时，直接打开+单阶段认证。"""
+    import time
+    deadline = time.time() + timeout
+    dev = None
+    while time.time() < deadline:
+        for d in legacy.iter_usb_devices():
+            if d.idVendor == 0x054C and d.idProduct == service_pid:
+                dev = d; break
+        if dev: break
+        time.sleep(0.5)
+    if dev is None:
+        raise RuntimeError("0x%04x 不在总线上" % service_pid)
+    target = legacy.open_target(dev)
+    legacy.authenticate_target(target)
+    return target, legacy.SenserChannel(target)
+
 def main() -> int:
     ap = argparse.ArgumentParser(description="Send a libJit payload to a Sony camera")
     ap.add_argument("payload", help="local .so to upload")
     ap.add_argument("--pid", default="0x0D95", help="initial (mass storage) PID, default 0x0D95")
     ap.add_argument("--service-pid", default="0x0336", help="Senser service PID, default 0x0336")
     ap.add_argument("--path", default="/tmp/jiritsu/libJit.so", help="remote target path")
+    ap.add_argument("--service-only", action="store_true",
+                    help="相机已在服务模式(0x0336)，跳过两阶段流程")
+    ap.add_argument("--no-stop", action="store_true",
+                    help="不发送 STOP_SENSER（保持服务模式，避免相机断开 USB）")
     ap.add_argument("--timeout", type=float, default=30.0)
     ap.add_argument("--read-result", action="store_true", help="GET_FILE after upload")
     ap.add_argument("--dry-run", action="store_true", help="build frames, do not touch USB")
@@ -83,10 +105,13 @@ def main() -> int:
     target = None
     try:
         print("authenticating (initial pid %s → service pid %s)…" % (args.pid, args.service_pid))
-        target, channel = legacy.run_authentication(
-            int(args.pid, 0), int(args.service_pid, 0), args.timeout,
-            read_product_info=True,
-        )
+        if args.service_only:
+            target, channel = open_service_channel(legacy, int(args.service_pid, 0), args.timeout)
+        else:
+            target, channel = legacy.run_authentication(
+                int(args.pid, 0), int(args.service_pid, 0), args.timeout,
+                read_product_info=True,
+            )
         print("authenticated")
 
         code, body = channel.send(legacy.PFUNC_ADJUST_CONTROL, body=sel)
@@ -108,7 +133,10 @@ def main() -> int:
             else:
                 print("raw: " + body[:512].hex())
 
-        legacy.vendor_request_out(target.device, legacy.STOP_SENSER)
+        if not getattr(args, "no_stop", False):
+            legacy.vendor_request_out(target.device, legacy.STOP_SENSER)
+        else:
+            print("no-stop: 保持服务模式（相机不会断开）")
         print("STOP_SENSER sent")
         return 0 if (st == 0 if st is not None else True) else 1
     finally:
