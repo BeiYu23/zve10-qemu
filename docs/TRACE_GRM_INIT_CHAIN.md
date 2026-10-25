@@ -305,3 +305,56 @@ sem_wait +0xA4D4、mutex_lock +0x6BA4）。实测一轮（`ab_v1650`，libObj ba
 2. 用 GDB 读该 mutex 的 owner 字段（glibc 2.11 `pthread_mutex_t`：`+0x0c` owner tid 附近）确定谁持有；
 3. 若确认是"两个 init 路径互相等待"，就按 a7c2 的做法**让初始化只走一条**（用它们原有的生命周期/单线程入口），
    而不是去伪造完成或强行 signal。
+
+---
+
+## 11. 突破：卡点在 `dmp_allocator`，换真 `grm_ma.ko` 后 grm init 走通（2026-10-27）
+
+### 11.1 定位到具体调用（`tb_owner.sh`）
+
+`0x7857F0`（grm 的 once-guard）在首次调用时做三件事：
+
+```
+785820: bl  0x7857D0                    ; mutex_init
+785828: blx dmp_allocator_mmap_init@plt ; ★ 卡在这里
+78582C: 置就绪标志，解锁返回
+```
+
+`dmp_allocator_mmap_init`（libObj+0x6BD110）是个 12 字节跳板，**尾跳到 `dmp_allocator_lib_init@plt`**，
+两者都是**导出符号、走 PLT** ⇒ 可被 preload 拦截（见 `DMP_ALLOCATOR_ROOT_CAUSE.md`）。
+
+### 11.2 换真模块 = 立即解决
+
+镜像 `ab_v1660`（`ab_v1640` + 用真 `/usr/kmod/grm_ma.ko`(24800B)、`grm_gles.ko`(15648B) 覆盖 stub）：
+
+```
+2.37 CALL_DMPINIT   (0x785828)
+2.71 R_DMPINIT      (0x78582C)   ← 0.34s 就返回了（之前永远不返回）
+2.72 E_925E         (0x6F925E)
+2.76 INIT_METHOD    (0x6F534E)
+2.97 INIT_TAIL      (0x6F53B4)   ← port 对象 init() 完整走完
+```
+
+⇒ **"两个初始化线程互相缠住"的表象，本质是 `grm_ma` 是 stub**：真模块在时 once-guard 正常返回，
+整条 grm 请求链闭合。这条与 `DMP_ALLOCATOR_ROOT_CAUSE.md` 的结论完全一致（a7c2 也是真模块 + 用户态 shim）。
+
+### 11.3 立刻暴露的下一个卡点：MA 分配器
+
+| 组合 | 结果 |
+|---|---|
+| 真 `grm_ma` + 真 `grm_gles`（`ab_v1660`） | init 走通，随后内核 oops：`sugilite_open+0x28/0x1f8 [grm_gles]`（打开 `/dev/dmpgles2` 时炸） |
+| 真 `grm_ma` + 旧 `fake_gles`（`ab_v1670`） | `/dev/dmpgles2` 映射成功（`0a56a000-0a58a000 rw- dmpgles2`），但接着 oops：`mspace_malloc+0x530/0xc64 [grm_ma]` |
+
+两种情况都进 `Exception>`。也就是说：**图形显存分配这条硬件链（dmpgles2 → grm_ma 的 mspace）没法原样跑**。
+
+### 11.4 下一步（a7c2 式：在用户态 API 边界写软件分配器）
+
+`dmp_allocator_mmap_init` / `dmp_allocator_lib_init` 都是导出+PLT，先前的阴性对照
+（`return 0`）只证明"单独拦它不够"，因为后面还有 `MA_*` 层的真实调用。所以要成组处理：
+
+1. 用 `readelf`/反汇编枚举 libObj 里 `MA_`/`dmp_allocator_` 的导出面（目前只见 2 个导出，
+   其余可能经全局函数指针表调用 —— 参考 `DMP_ALLOCATOR_*` 文档里的 `[ctx]` 结构）；
+2. 在 preload 里给这套分配器**真实现**：从一块固定预留区（如 `0x3E000000` 或 VDF 附近）切块返回，
+   `free` 记回空闲表；这等价于 a7c2 的"软件 GPE + 软件资源"做法，而不是假成功；
+3. 分配器通了之后，`GRM_bitmapCreate/gpermFillrect` 就有真实位图可写，绘制即可落到
+   `0x20312000`（streamfb）——这是通往"屏幕出现 App 菜单"的最后一段。
