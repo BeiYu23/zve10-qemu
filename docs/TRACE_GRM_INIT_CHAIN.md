@@ -254,3 +254,54 @@ gpermRectblit / bitmapWriteLockBits / bitmapGetPhysicalAddress / screenGetOnBitm
 2. 同时读 `[r7,#20]`（即 `0x7D7E00` 之后要比较的结果字）确认失败码；
 3. 若 78C560 是在等**别人的锁/事件**：用 `/proc/self/task/*/wchan` 普查（探针可直接读）
    判断是 futex/poll/read 哪一类，再决定补哪一层（服务 or 器件）。
+
+---
+
+## 10. 干净环境下的进一步收敛（cond/mutex 级证据）
+
+### 10.1 `tb_locktrace*.sh`：直接盯 pthread 原语（带对象指针）
+
+新增脚本在 `pthread_cond_wait / pthread_cond_signal / sem_wait / pthread_mutex_lock` 上布点，
+打印**等待对象指针 + 调用者**（libpthread 基址 0x0408C000，符号：cond_wait +0x89F0、cond_signal +0x9144、
+sem_wait +0xA4D4、mutex_lock +0x6BA4）。实测一轮（`ab_v1650`，libObj base 0x06079000）：
+
+```
+2.74 MUTEX_LCK  obj=074dccd4 lr=libObj+7d7c37   ← worker(q) 取队列锁
+2.75 COND_WAIT  obj=074dccf0 mutex=074dccd4 lr=libObj+7d7ca7   ← worker(q) 空转
+2.85 MUTEX_LCK  obj=074dcc2c lr=libObj+7d7c37   ← worker(q2) 取队列锁
+2.85 COND_WAIT  obj=074dcc48 mutex=074dcc2c lr=libObj+7d7ca7   ← worker(q2) 空转
+2.87 MUTEX_LCK  obj=074dcc2c lr=libObj+7d7dcb   ← 请求方拿 q2 队列锁
+2.88 COND_SIGN  obj=074dcc48 lr=libObj+7d7ddf   ← 请求方唤醒 q2 worker ✓
+2.89 MUTEX_LCK  obj=074dcc78 lr=libObj+7d7f73   ← 走 0x7D7F6A 分支
+2.91 COND_WAIT  obj=074dcc90 mutex=074dcc78 lr=libObj+7d7e01   ← 请求方等完成（q2 base+0x68）
+```
+
+对象关系自洽：q2 base=0x074DCC28（队列锁 +4、队列 cond +0x20、完成锁 +0x50、完成 cond +0x68），
+**所以"唤醒 worker 的通路是通的"**，剩下的问题是 **worker 里 cb 卡住 → 永远不 signal 完成 cond**。
+
+### 10.2 继续下钻到 cb 内部（`tb_b30.sh` / `tb_chain.sh`）
+
+```
+2.48 E_C560(0x78C560) → 2.49 E_790B30 → BR_CB0(0x790CB0)      ← 走"全局未就绪"早退分支
+2.73 CALL_DCF70(0x790CB4) → E_DCF70 命中 **两次**（两个线程）
+       之后：再无 6F925E / INIT_METHOD / BACKUP_W / R_DCF70 / AFTER_WAKE
+```
+
+`0x790CB0` 是**惰性初始化 + 就绪检查**：
+```
+790cb4: bl 0x7DCF70     ; 引用计数 + 首次初始化（内部 7857F0 once-guard → 0x6F925E → port init）
+790cb8: bl 0x788800     ; 就绪查询，返回 1 才算 ready
+790cc0: if (r0 != 1) → 失败分支；else 置 [r2+4]=1 并回到主路径
+```
+
+实测结论：**两个线程都卡在 `0x7DCF70` 里面，连 `0x6F925E` 都没走到**
+⇒ 不是 Backup 服务的问题，是 **grm 自己的"首次初始化 once-guard"（0x7DCF70 → 0x7857F0）
+被两个初始化线程互相缠住**（一个持锁进 init，另一个卡在同一个锁上）。
+
+### 10.3 下一步（很窄，一到两轮可定案）
+
+1. 在 `0x7857F0`（once-guard 的 `pthread_mutex_lock`）与 `0x7DCF70` 的 `pthread_mutex_lock`
+   （`libObj+0x7D7DF...`/`0x7DCF7A`）上布点，打印 **拿到的 mutex 指针** 与调用者；
+2. 用 GDB 读该 mutex 的 owner 字段（glibc 2.11 `pthread_mutex_t`：`+0x0c` owner tid 附近）确定谁持有；
+3. 若确认是"两个 init 路径互相等待"，就按 a7c2 的做法**让初始化只走一条**（用它们原有的生命周期/单线程入口），
+   而不是去伪造完成或强行 signal。
