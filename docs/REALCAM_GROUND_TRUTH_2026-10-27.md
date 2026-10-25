@@ -1,0 +1,78 @@
+# 真机取证（ZV-E10 root shell，2026-10-27）——对我们 QEMU 路线最关键的几条
+
+> 通过 `tools/payload/cam.py`（agent TCP 7777）**只读**采集，未在相机上写任何文件。
+
+## 1. 最重要：App 的绘制目标就是 `/dev/stream` 的 32MB 映射，偏移正是 `0x20312000`
+
+真机 `im.elf`(pid 157) 的 `/proc/157/maps` 里，按大小排序的前几名：
+
+| 大小 | 权限 | 偏移 | 设备 |
+|---:|---|---:|---|
+| **32.00 MB** | `rw-s` | **0x20312000** | **/dev/stream** |
+| 26.09 MB | `r--p` | 0 | /usr/share/app/image_cmn_43.uxc |
+| 19.37 MB | `r-xp` | 0 | /usr/lib/libObj.so |
+| 15.56 MB | `r-xp` | 0 | /usr/lib/CautionConfig.so |
+| 11.47 MB | `r-xp` | 0 | /usr/lib/viewUnified2.so |
+| **8.00 MB** | `rw-s` | 0x3f7ed000 | **/dev/stream** |
+| 8.00 MB | `-w-s` | 0x80000000 | /dev/mem |
+| **4.00 MB** | `rw-s` | 0x22312000 | **/dev/stream** |
+| 4.00 MB | `rw-s` | 0x3f3ec000 | /dev/mem |
+
+**⇒ 我们 streamfb 镜像 `0x20312000` 的选择是对的**，而且真机上这块有 **32MB**（不是 1.9MB），
+后面紧跟 `0x22312000` 处还有 4MB 的第二个 stream 窗口。QEMU 侧实测 App 也做了同样的映射：
+
+```
+QMMAP len=0x2000000 off=0x20312000 prot=0x3 flags=0x1 fd=6 name=stream   (两次，双缓冲?)
+```
+
+⇒ 只要 App 开始画，像素就落在我们已经在镜像的地址上；**模型区至少要覆盖 0x20312000 + 32MB**。
+
+## 2. 模块依赖图（真机 `/sys/module/*/holders`、`/proc/modules`）
+
+```
+liro  ──uses──> dmm ──uses──> grm_gles          (dmm 与 liro 都是 grm_gles 的 holder)
+dmm   ──uses──> grm_gles
+grm_ma: refcnt=0, holders 空  (UDIF 驱动：init 只做 udif_driver_register，不靠符号引用)
+osal_uipc: 被 38 个模块依赖
+```
+
+* `grm_ma` 是 **UDIF 驱动**（`init_module` = `udif_driver_register`），所以 refcnt 0 不代表没被用；
+  它导出 `ma_create_mspace_wrapper` / `ma_dmm_open_impl` ⇒ **MA 的 mspace 内存来自 dmm**。
+* `dmm` 参数：`DmmConfig=/setting/DmmConfig.bin`（78120 B）——**我们镜像里的一致 ✓**。
+* 真机 `/setting` 比我们多：`Backup.bin`(1235836，我们有)、`psd.bin`(4820992)、`facedmy.bin`、
+  `facerec0.bin`、`mode/`、`appfw_infra/`、`updater/`、`gps/`。**我们镜像只有一个 DmmConfig + ulogio**。
+
+## 3. 设备节点（真机 `/dev` 共 346 项）
+
+有：`fb0`、`fb1`、`dmpgles2`(char 248:29)、`uipc`、`mem`、`kmem`、`backup`、`dmac`、`dma330`、`ldec`、`dnflasha0..31`、`hdmi*`
+**没有**：`/dev/ma`、`/dev/grm_ma`、`/dev/dmm`、`/dev/liro`、`/dev/vdf`（都是内核内部/UDIF）。
+
+* `/dev/dmpgles2` 被 im.elf 映射为 **128KB**：`0b833000-0b853000 rw-s off=0`
+  ⇒ 我们 `fake_gles` 的窗口大小（256KB 上限、实际映射按用户请求 128KB）**与真机一致**。
+
+## 4. 其它真机事实
+
+* App 启动方式：`/usr/bin/im.elf debug s g r u l i a lazy-global`（**没有 wrapper、没有 preload**）。
+* 内核 cmdline（内存预留）与我们 `real_cmdline_lowlog.txt` **逐项一致**（含 `memrsv=680M@0x15800000:uc`、
+  `mem=256M@0x80000000@1`、`memrsv=256M@0x80000000:uc`、8 段 `wbimem`）。
+* App 还映射了 25 个 `/dev/mem` 窗口，常被多个线程轮询的是 **`0x1196b000`**（1 页）；
+  另有 `0x20098000`(500KB)、`0x20028000`、`0x20145000`、`0x3e753000`、`0x3f3ec000`(4MB)、`0x80000000`(8MB, 只写)。
+  读 `0x80000000` 前 16KB = 高熵随机数据（未初始化 scratch，不是图像）。
+* 真机 kernel `3.0.27_nl-rt106+ #1`（我们是重建的 `#142`）。
+
+## 5. 对当前卡点的直接含义
+
+我们的崩溃是内核 `grm_ma::mspace_memalign`（调用者：`osal_uipc.ko`），mspace 内容是 `0x5A5A5A5A`。
+真机依赖图说明 **MA 的池由 `dmm` 提供，而 `dmm` 依赖 `grm_gles`**。
+我们在 QEMU 里用 `fake_gles` 顶替了 `grm_gles`（不导出内核接口），
+`dmm` 拿不到真正的显存池 ⇒ MA 的 mspace 是垃圾 ⇒ uipc 大块分配时炸。
+
+⇒ 两条候选路线（下一轮实验）：
+1. **真 `grm_gles` + 只把 `sugilite_open` 打成 `return 0`**（避免碰硬件寄存器），让 dmm 拿到依赖；
+2. 或者干脆**绕开 MA**：把 uipc 大块分配那条路在用户态接管（仍需先坐实是哪个调用触发）。
+
+## 6. 还想从真机拿的东西（都只读）
+
+* `/setting/psd.bin`、`/setting/appfw_infra/`、`/setting/mode/` 的文件清单（可能影响 App 初始化分支）；
+* `dmesg` 里 **module init 阶段**（前 200 行）与 `liro`/`ldec`/`stream` 相关的行（可能有缓冲地址打印）；
+* 若安全：用只读 payload 把 `/dev/dmpgles2` 的 128KB 窗口整块 dump 出来（对比我们 fake_gles 的初始化内容）。
