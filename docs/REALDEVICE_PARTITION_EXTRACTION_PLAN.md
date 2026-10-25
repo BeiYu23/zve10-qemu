@@ -19,6 +19,23 @@
 | 协议常量 | category `0x1001`、`SET_FILE` `0x4007`、`SET_FILE2` `0x4010`、`file_id=2` | 本机核实命中 |
 | AES 密钥 | `md5("jiritsu team" + 4×0x00)`（**固定，非机型专属**）| a6700 源码 + 本机串存在 |
 
+
+### ★ 文件系统选择（重要修正）
+
+| 文件系统 | 谁提供 | 我们的 payload 能用吗 |
+|---|---|---|
+| **FAT32 (vfat)** | **内核**（`vmlinux` 里注册了 `vfat`）| **✅ 能** —— `mount -t vfat` |
+| **exFAT** | **userspace**（`libInfraFsys.so` / `libObj.so` / `libmpr.so` 里的 **Petit FatFs**：`PFDRV_EXFAT_*`、`PFFAT_EXFAT_*`、`PFENT_EXFAT_*`、`PFVOL_EXFAT_*`）| **❌ 不能** |
+
+**⇒ SD 卡必须格式化为 **FAT32**，不能用 exFAT。**
+
+**★ 为什么可以放心用 FAT32：eMMC 全盘仅 1.85 GB，**任何单个分区都不可能超过 4 GB**
+（FAT32 单文件上限），所以不存在必须切分的情况。**
+
+**★ 另一个待验证点：`mount()` 需要 CAP_SYS_ADMIN。**
+载荷以 euid=0 运行，但维护进程是否保留完整 capability 未知 ⇒
+**Stage 1 必须同时测 `mount`，不只是写文件。**
+
 ## 二、要提取的目标（16 个分区）
 
 ```
@@ -54,7 +71,7 @@ nflasha8, 9, 11, 14, 19, 20, 21, 22, 24, 25, 26, 27, 28, 29, 30, 31
 
 ```
 ① 准备 SD 卡
-   · 格式化为 FAT32 或 exFAT
+   · 格式化为 **FAT32**（exFAT 内核不支持，只能靠 Sony 的 userspace 库，payload 用不了）
    · 可用空间 ≥ 1.5 GB
    · 在电脑上建目录 dump/
 
