@@ -5838,3 +5838,31 @@ grep -i dmm 只命中 3 行：MODARGS(DmmConfig=/setting/DmmConfig.bin)、udm_dm
 2) 若仍不通，把 139 的调用链再往上走一帧，确定它为何持有 q+0x50
 3) dmm 只有在 App 真的开始分配显存时才需要（当前阶段用不到）
 ```
+
+## ★★ 2026-10-25 14:10 新 goal 第 6 轮末：稳态下两个队列都是空的，但 requester 仍在等完成
+### 实测（ab_v1201：worker 入口转储 + 每 400ms 采样队列头）
+```
+WQ 0x072E5CD0 / WQ 0x072E5C28   ← 两个队列对象
+QM0 q=0x072E5CD0 head=0 type=0
+QM1 q=0x072E5C28 head=0 type=0   ← 稳态时两个队列都是空
+⇒ 之前看到的 cnt=1 只是瞬时
+```
+### 但
+```
+requester(187) 仍在等 q2+0x68 = 0x072E5C90 的完成条件
+⇒ 说明那次请求已经被"取走"，但完成通知没有发出（或被吞）
+```
+### 与协作方静态结论的对照
+```
+· 队列对象构造在 0x7D7780：q+0x04 队列锁 / q+0x20 队列cond / q+0x50 完成锁 / q+0x68 完成cond / q+0x98 链表 / q+0xA4 回调
+· worker 的 type==2 分支【不 signal】，完成通知责任在回调
+· type==0x8001/其它 分支才由 worker 自己 signal
+⇒ 稳态队列为空 + requester 仍在等 ⇒ 要么那条请求走了 type==2 而回调没通知，
+   要么根本是另一个（未捕获的）队列/条件在等
+```
+### 下一步
+```
+1) 打印 item 的 type（需要在 worker 取项处取 head-8；当前稳态为空，需在刚入队时采样）
+2) 或直接把 q2 的 worker 换成我们自己的循环（完全掌控 type/通知）
+3) 同时并行开 L2（GRM_bitmapCreate + gperm CPU 实现），它不依赖这条链
+```
