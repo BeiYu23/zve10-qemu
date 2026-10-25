@@ -150,12 +150,22 @@ static int mount_sd(void)
     if(sy3(SYS_mknod,(int)"/tmp/zdev/p1",(060660),(int)dev)){lg("mknod_fail\n");return -1;}
 
     sy2(SYS_mkdir,(int)"/tmp/zsd",0755);
-    /* ★ 实测：不带任何选项才能读写 */
-    if(sy5(SYS_mount,(int)"/tmp/zdev/p1",(int)"/tmp/zsd",(int)"vfat",0,0)){
-        lg("mount_fail\n");return -1;
+    /* ★★★ 必须【只读】挂载：
+     *   vfat 不支持多重读写挂载 —— 我们若读写挂上，相机自己的挂载会 EINVAL，
+     *   导致无法录制/回放。只读允许多重挂载（实测过）。 */
+    if(sy5(SYS_mount,(int)"/tmp/zdev/p1",(int)"/tmp/zsd",(int)"vfat",1 /*MS_RDONLY*/,0)){
+        lg("mount_ro_fail\n");return -1;
     }
     lg("sd_mounted\n");
     return 0;
+}
+
+/* 立刻卸载 SD 卡，把冲突窗口压到毫秒级 */
+static void unmount_sd(void)
+{
+    sy2(SYS_umount2,(int)"/tmp/zsd",0);
+    sy2(SYS_umount2,(int)"/tmp/zdev",0);
+    lg("sd_unmounted\n");
 }
 
 /* 检查 UI 是否起来了：扫 /proc/PID/maps 找 viewUnified 或 appFw */
@@ -248,6 +258,10 @@ static void work(void)
     static char bm[32];
     n=readfile("/tmp/zsd/zvegisk/boot_mode",bm,sizeof bm);
     lg("boot_mode="); lg(n>0?bm:"(none)"); lg("\n");
+
+    /* ★★★ 立刻卸载：vfat 多重挂载会与相机自己的挂载冲突（EBUSY），
+     *   所以只保持毫秒级窗口。Phase 2 若需要模块文件，先拷到 /log 再卸载。 */
+    unmount_sd();
 
     /* ⑤ Phase 1：先只看模式，不做任何 bind */
     if(n>0 && shas(bm,"new")){
