@@ -24,9 +24,17 @@
 #define OUT "/log/zvegisk_probe.log"
 #define LIBOBJ "/usr/lib/libObj.so"
 
-static void wr(const char *s)
+/* 截断（只在父进程 fork 之前调用一次） */
+static void wr_reset(void)
 {
     int fd = open(OUT, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+    if (fd >= 0) close(fd);
+}
+
+/* ★ 追加写 —— 父子的输出不会互相覆盖 */
+static void wr(const char *s)
+{
+    int fd = open(OUT, O_WRONLY | O_CREAT | O_APPEND, 0644);
     if (fd >= 0) { write(fd, s, strlen(s)); close(fd); }
 }
 
@@ -78,6 +86,7 @@ static void probe(void)
 int main(void)
 {
     signal(SIGSEGV, SIG_DFL);
+    wr_reset();               /* 先清空，之后全部追加 */
     pid_t p = fork();
     if (p == 0) {
         probe();          /* 不会返回；崩了也只有这个子进程死 */
