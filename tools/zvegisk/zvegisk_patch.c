@@ -20,7 +20,9 @@
 
 #define OUT    "/log/zvegisk_patch.log"
 #define ORIG   "/log/zvegisk_orig.bin"
-#define FILLRECT_VADDR 0x683f4cUL
+/* 默认目标：GRM_gpermFillrect；可用第 4 个参数覆盖 */
+#define DEFAULT_OFFSET 0x683f4cUL
+static unsigned long g_offset = DEFAULT_OFFSET;
 #define PATCH_LEN 4
 
 static void wrr(void){int fd=open(OUT,O_WRONLY|O_CREAT|O_TRUNC,0644);if(fd>=0)close(fd);}
@@ -99,13 +101,14 @@ int main(int argc, char **argv)
     logf("PATCH_START uid=%d", geteuid());
     int pid = (argc > 1) ? atoi(argv[1]) : 157;
     const char *mode = (argc > 2) ? argv[2] : "test";
+    if (argc > 3) g_offset = strtoul(argv[3], 0, 0);
     logf("pid=%d mode=%s", pid, mode);
 
     int found = 0;
     unsigned long base = find_base(pid, "libObj.so", &found);
     if (!found) { logf("NO_BASE"); logf("PATCH_DONE"); return 1; }
-    unsigned long addr = base + FILLRECT_VADDR;
-    logf("libObj base=0x%lx  target=0x%lx", base, addr);
+    unsigned long addr = base + g_offset;
+    logf("libObj base=0x%lx  offset=0x%lx  target=0x%lx", base, g_offset, addr);
 
     char mp[64]; snprintf(mp, sizeof mp, "/proc/%d/mem", pid);
     int fd = open(mp, O_RDWR);
