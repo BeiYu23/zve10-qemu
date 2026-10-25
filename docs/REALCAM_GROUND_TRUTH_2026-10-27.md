@@ -425,3 +425,47 @@ CEN T24   （完全相同，两个时刻都不变）
 1. **把 `dmm_open`(op1) 的字段位置定死**：用 `ab_v1890`（能走到 op9 的那版）做基线，
    一次只改一个字段（+0 / +4 / +12）做 A/B，观察 App 是否继续发 op9/op3；
 2. 基址解析换一条路：直接在 preload 里读 `/proc/self/maps` 但先把长度打印出来自检（上次失败原因未定）。
+
+---
+
+## 14. 第 27 轮：按 a7c2 的做法补"输入注入"这一层
+
+### 14.1 a7c2 到底怎么做的（对照我们的路线）
+
+他们**不是**只靠生命周期入口就出画面，而是两层配合：
+
+1. **用固件自己的生命周期入口**把菜单 controller 建起来（我们对应 `viewManagerIf::openView(...)`）；
+2. **用原 OSAL API 注入按键**（32B App 消息，raw 键码 + `press=1/release=0`，guest 侧 50ms 短按；
+   拨盘用有符号增量 `±1024` 而不是 press/release）。
+   键码表：MENU `0x1ab`、确认 `0x1ac`、上 `0x3`、下 `0x30`、左 `0x15`、右 `0x1af`、删除/C2 `0x1f8`、右后拨盘 `0x10000013`。
+
+⇒ **"菜单键是否要按下去"——要，这是他们验证过的必经一步。**
+
+### 14.2 ZV-E10 这边的等价物（我们早就反汇编出来了）
+
+```
+InputService::createEvent(unsigned long key, uchar press)   libObj+0x11C89A（导出）
+InputService::pushFilterEvent(Event*)                       libObj+0x11E5D4（导出）
+InputService::callback_panel → snd_InfraInputEvent_to_InputServant → osal_snd_msg(qid=0x14A0429)
+_InfraInputEvent = 24B；qid 0x14A0429 只被 libObj 引用 ⇒ InputServant 在本进程内
+m_pMyInstance = libObj+0x1459548
+```
+
+**并且当年"注入无效"的根因已经消失**：那时 `viewUnified2.so` 根本没被加载 ⇒ `m_pMyInstance == NULL`；
+本轮实测 App **已经加载 viewUnified2.so 并跑完它自己的 init**。
+
+### 14.3 本轮实验状态
+
+* 组合探针（`menuc1320` = poke + 备份服务 + MA 服务 + 输入注入 + GRM shim）已编好（镜像 `ab_v1920`）；
+* 但注入点被我写在了 worker 的第 30 次迭代（1s/次），本轮 48s 就 idle 退出，**只跑到 `Y9 i=24`**，
+  ⇒ **注入还没执行到**（这也解释了日志里没有 `INJ ...`）；
+* 日志里那段 `Exception stack` 是**我们内核探针自己的 printk 回溯**（`fake_gles maps_thread`），不是 guest 崩溃。
+
+### 14.4 下一轮（明确的 a7c2 步骤）
+
+1. 把注入点提前到**初始化一完成就执行**（不依赖 worker 迭代计数），并在注入前后各打一次
+   `m_pMyInstance`、`GRM2` 计数；
+2. 注入序列：`createEvent(0x1ab,1)+push` → 80ms → `createEvent(0x1ab,0)+push`；
+3. 若 MENU 无反应，再依次试 `view/HARDKEYMENU_DISP` 等 name-based `openView`（已在 `menuc1310` 里实现，
+   只差把它放进正确时机）；
+4. 判据：`GRM2 > 0` 且 `/dev/stream@0x20312000` 由均匀 `0x5A5A` 变非均匀。
