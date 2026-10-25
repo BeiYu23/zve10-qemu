@@ -572,3 +572,41 @@ TG ov=0x063ab17d ce=0x0638689b pf=0x063885d5
 2. 先确认 App 的事件泵是否在跑（若没人消费事件，投 Event 也没用）；
 3. 若框架确实起不来，就按 a7c2 的"受控入口"：**直接 new 一个 ViewManager + View**（需要弄清 ctor 的父上下文），
    而不是调 openView。
+
+---
+
+## 17. 第 30 轮：App **从不自己调用 `Application_System_Init`**（框架启动链根本没开跑）
+
+### 17.1 实验（干净探针 + 只观测 `Application_System_Init`）
+
+探针 `menuc1400`（`ab_v1990`）= 干净观测 + 备份服务 + MA 服务 + **interpose `Application_System_Init`（只记录参数）**，
+**不含任何 Y9/MWF poke**。跑 40s 结果：
+
+```
+（没有任何 APPINIT 行）
+MA op=7 findbyname  → MA op=1 dmm_open → MA op=9 malloc → MAMAP32 va=0x096e5000
+之后静默（无异常）
+```
+
+⇒ **App 自己的启动链在调用 `Application_System_Init` 之前就停住了**；
+此前能看到 `INITCFG_ENTER`/`viewUnified2` 加载，**全靠我们 Y9 线程手动调它**——那是绕过 App 自身启动的。
+
+### 17.2 排除"启动参数/名字"这条假设（对照实验）
+
+设备上 App 的启动参数是 `/usr/bin/im.elf debug s g r u l i a lazy-global`。
+我们把 wrapper 改成**完全照抄这份 argv**（镜像 `ab_v2000`）跑：**行为一模一样**
+（无 APPINIT、MA 三步、随后静默）⇒ **argv 不是判别条件**。
+
+### 17.3 现在最大的未知
+
+App 在 `MA malloc` 之后做什么、期待什么——它没有报错也没有继续。
+下一步不再猜：用我们已有的**内存 inline hook**（`install_hook5`，之前给 `libObj 0x69CA08` 用过）
+去挂 `libObj 0x7684DC / 0x76858E / 0x7687D0` 这几个 **MA 客户端小函数**（已用 qid 常量定位到 0x768xxx 区），
+打印它们的入参/返回，**看清 App 拿到我们回复后到底判断了什么**。
+
+### 17.4 备选（若客户端确实要求"内核态语义"）
+
+那就要么：
+* 给 libObj 的 MA 客户端喂**与真机一致的结构**（需要真机上把这块内存 dump 下来对照）；
+* 要么放弃"让它自然启动"，改为 **a7c2 的受控入口**：由我们构造 ViewManager/View 并驱动，
+  同时用 `libgrm2.so` 软件光栅化——这条不依赖 App 自身启动链，但需要弄清 View 构造的上下文参数。
