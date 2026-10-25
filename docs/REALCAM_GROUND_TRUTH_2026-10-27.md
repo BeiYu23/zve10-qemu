@@ -806,3 +806,57 @@ r0=0x00000083(131) 进程 THREAD_INFRA0
 2. 或者绕开内核 MA：既然 **DMM 请求是内核→用户态** 的，我们也可以**让 MA 的 mspace 永远不被使用**
    （在用户态 MA 服务里把 malloc 应答做得完全自洽），同时在自定义入口路线上继续；
 3. 记录结论：**"补服务"这条路已经打通到"内核真的来问我们了"**，剩下的是 RT/ABI 级别的对齐。
+
+---
+
+## 21. 第 34 轮：**ABI 修复验证成功（i_cdev 0x198 ✓）**；新卡点是 `task_struct`/RT 内联不一致
+
+### 21.1 `CONFIG_QUOTA=y` 让结构布局对上厂商模块（已验证）
+
+重建内核 `#144`（`CONFIG_QUOTA=y, CONFIG_QUOTACTL=y`），再用**新 config 重编** `fake_gles.ko` 打印：
+
+```
+INOFF inode_i_cdev=408(0x198)  inode_size=432  file_private_data=168(0xA8)  file_size=192
+```
+
+**`0x198` = 厂商 `grm_gles` 期望的偏移** ✓
+（此前 `#142` 无 QUOTA 时是 `0x190`，差 8 字节 = `i_dquot[MAXQUOTAS=2]`）
+
+**实测效果**：真 `grm_gles` 打开 `/dev/dmpgles2` **不再崩在 `sugilite_open`**，
+现在只剩 `mspace_malloc`（MA 池）这一个崩溃点。
+
+### 21.2 DMM 服务：用户态实现"能收能回"，但内核侧照样 BUG
+
+* 用户态注册 `0x0061003C` 成功、能收到内核 MA 的请求、能把 24B 应答发回 `0x014C0424`；
+* 但在内核处理应答（或 30s 超时）时触发：
+
+```
+WARN_ON_ONCE(p->migrate_disable <= 0)   ← kernel/sched.c 的 __migrate_enable
+Internal error: Oops: 817  PC=__bug+0x20  LR=__migrate_enable+0x10c
+进程 THREAD_INFRA0；调用链里有 0x5f3c9xxx [grm_ma] / 0x5f047xxx [osal_uipc]
+```
+
+**⇒ `migrate_disable/migrate_enable` 在 RT 内核里是头文件内联的**（直接读写
+`current->migrate_disable`），厂商 .ko 用的是**厂商内核的头文件常量偏移**；
+我们内核的 `struct task_struct` 布局与之不同 ⇒ 内联代码把计数写到了错字段 ⇒ 我们这边看到 `<=0` 就 BUG。
+
+**这与第 32/34 轮的 `struct inode` 问题是同一类**：**重建内核的 struct 布局必须与厂商内核一致**。
+
+### 21.3 内核态 fake_dmm.ko 尝试失败
+
+把 `fake_dmm.ko`（注册 0x61003C、内核里直接回应答）**编进 preload**、运行时用 `init_module(128)` 加载：
+
+```
+MODLOAD fake_dmm rc=20
+```
+
+⇒ 被拒（`-20`）。可能原因：Sony 内核有模块签名/白名单，或我们的 `init_module` 调用方式不对。
+（注：vendor .ko 都是签名的，我们自己编的没有签名。）
+
+### 21.4 下一轮（两条并行）
+
+1. **继续对齐 struct 布局**：量 `offsetof(struct task_struct, migrate_disable)` 等，
+   并从**厂商 .ko 的反汇编里读出它假设的偏移**（内联代码里有 `ldr/str [current, #off]`）——
+   用"厂商模块的常量"反推内核 config，比猜更快；
+2. **或绕开内核 MA**：既然我们已能在用户态完整应答 MA（op7/op1/op9），
+   就继续走"用户态 MA + libgrm2 软件光栅化"这条路，不去触碰内核 MA/DMM。
