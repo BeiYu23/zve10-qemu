@@ -610,3 +610,67 @@ App 在 `MA malloc` 之后做什么、期待什么——它没有报错也没有
 * 给 libObj 的 MA 客户端喂**与真机一致的结构**（需要真机上把这块内存 dump 下来对照）；
 * 要么放弃"让它自然启动"，改为 **a7c2 的受控入口**：由我们构造 ViewManager/View 并驱动，
   同时用 `libgrm2.so` 软件光栅化——这条不依赖 App 自身启动链，但需要弄清 View 构造的上下文参数。
+
+---
+
+## 18. 第 31 轮：发现一个**可能解释一切怪象**的底层问题：我们内核的 `struct inode` 布局与厂商内核不一致
+
+### 18.1 线索来源：真 `grm_gles` 打开 `/dev/dmpgles2` 时崩在 `[inode+0x198] == 0`
+
+早期 oops：
+
+```
+PC is at sugilite_open+0x28/0x1f8 [grm_gles]
+ 434: ldr r4,[r0,#408]     ; r4 = *(u32*)(inode + 0x198)   ← 应为 inode->i_cdev
+ 45c: ldrex r2,[r3]        ; r3 = r4+0x40  ⇒ r4=0 ⇒ 访问 0x40 崩
+r4 = 00000000
+```
+
+`chrdev_open()` 在调用 `ops->open` 之前一定已经设置 `inode->i_cdev`；
+读到 0 说明 **模块编译时的 `i_cdev` 偏移（0x198）和我们内核的实际布局不一致**。
+
+### 18.2 我们内核的 config 与"厂商内核"差在哪
+
+```
+我们的 .config:
+  # CONFIG_FS_POSIX_ACL is not set
+  # CONFIG_SECURITY is not set
+  # CONFIG_SECURITYFS is not set
+  # CONFIG_IMA ... (未开启)
+```
+
+而 `struct inode` 在 3.0.27 里正是这些宏**夹在 `i_flags` 与 `i_cdev` 之间**：
+
+```c
+struct inode {
+    umode_t i_mode; unsigned short i_opflags; kuid_t i_uid; kgid_t i_gid;
+    unsigned int i_flags;
+#ifdef CONFIG_FS_POSIX_ACL          ← 两个指针（i_acl / i_default_acl）
+#endif
+    const struct inode_operations *i_op;
+    struct super_block *i_sb;
+    struct address_space *i_mapping;
+#ifdef CONFIG_SECURITY             ← 一个指针（i_security）
+#endif
+    …  dev_t i_rdev; …  struct cdev *i_cdev;
+```
+
+**每开一个这样的选项，后面所有字段（含 `i_cdev`）整体后移 4 字节。**
+厂商内核（跑着 ext2/私有驱动，且有 Sony 安全/ACL 相关代码）几乎肯定开了其中若干项
+⇒ **同一份 `.ko` 在我们内核里读 `inode->i_cdev` 会读到"别的字段"**（实测读到 0）。
+
+### 18.3 为什么这条很重要
+
+我们的内核是**自己重建**的（`3.0.27_nl-rt106+ #142`，业务模块全是**厂商原版 .ko**）。
+如果结构布局不一致，**所有厂商模块都可能在各处读错偏移**，表现为：
+* `grm_gles` open 崩（已见）；
+* `grm_ma` 的 mspace/池指针取到垃圾（`0x5A5A5A5A`，已见）；
+* 各种"服务明明应答了但 App 不前进"的古怪行为（这一整轮的谜题）。
+
+### 18.4 下一轮：把偏移量**量出来**并按需校正内核
+
+1. 在我们自己的 `fake_gles.ko`（已能自由重建）里加一行 printk：
+   `offsetof(struct inode,i_cdev)`、`offsetof(struct file,private_data)`、`sizeof(struct inode)`、`sizeof(struct file)`；
+2. 与厂商模块的期望值对照（已知 `grm_gles` 期望 `i_cdev == 0x198`）；
+3. 若不符：按候选 config（`FS_POSIX_ACL=y` / `SECURITY=y` / `IMA=y` 组合）重编内核，
+   直到 `offsetof(i_cdev)==0x198` —— **这一步可能一次性解开后面所有"服务应答了却不前进"的问题**。
