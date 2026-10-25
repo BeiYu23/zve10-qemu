@@ -469,3 +469,51 @@ m_pMyInstance = libObj+0x1459548
 3. 若 MENU 无反应，再依次试 `view/HARDKEYMENU_DISP` 等 name-based `openView`（已在 `menuc1310` 里实现，
    只差把它放进正确时机）；
 4. 判据：`GRM2 > 0` 且 `/dev/stream@0x20312000` 由均匀 `0x5A5A` 变非均匀。
+
+---
+
+## 15. 第 28 轮：**UI/视图系统从未初始化**（pVM 与 InputService 实例全程为 0）
+
+### 15.1 运行时证据（GDB 写watch + 探针轮询）
+
+在 `ab_v1930`（poke+备份+MA+注入+GRM shim 的组合镜像）上：
+
+* **GDB 对两个全局变量下写 watchpoint**（`tb_watchpv.sh`，地址按当轮 QMMAP 动态解析，本轮 libObj=0x6262000）：
+  `libObj+0x149221C`(pViewManager) 与 `libObj+0x1459548`(InputService::m_pMyInstance)
+  ⇒ **45 秒内零次写入**（`wp.log` 只有 ARMED）。
+* **探针侧轮询**同样从头到尾：
+  ```
+  IJ wait i=100 inst=0x00000000
+  IJ wait i=180 inst=0x00000000
+  INITCFG_ENTER tid=189
+  PV i=36 pVM=0 inst=0 ida=0
+  ```
+
+⇒ **App 的视图管理器与输入服务从未被创建**。这也解释了上一轮"注入无效"：
+不是注入方式错，是**注入对象还不存在**。
+
+### 15.2 这与 a7c2 的经验一致
+
+他们的原话是：*"View 打不开 ⇒ `InputService::m_pMyInstance = NULL` ⇒ 注入无效"*，
+而他们的解法是**先用原厂生命周期入口把 controller/视图建起来**，再注入按键。
+我们现在正处在这一步之前：**连 view 系统本身都没起来**。
+
+### 15.3 已确认可用的"受控入口"素材（下一轮直接用）
+
+| 符号 | 位置 | 说明 |
+|---|---|---|
+| `ViewGlobalMenuToInstance` | **viewUnified2.so +0x2E4C0F（导出）** | 全局菜单视图构造器（`new(0x16c)` + ctor）|
+| `ViewBaseMenuToInstance` | viewUnified2.so +0x2DE0F6 | 基础菜单视图 |
+| `ViewSettingMenuToInstance` | viewUnified2.so +0x2F36F4 | 设置菜单视图 |
+| `viewManagerIf::openView(const char*,int)` | libObj+0x14117C（导出） | 名字式开视图 |
+| `InputService::createEvent/pushFilterEvent` | libObj+0x11C89A / 0x11E5D4（导出） | 按键注入 |
+
+**问题**：这些入口都依赖 view 框架已初始化（pVM/pMyInstance），而它们为 0。
+⇒ 下一轮要么找到**创建 ViewManager 的那条原厂路径**（谁在正常启动里 new ViewManager？），
+要么按 a7c2 的做法**直接把视图对象构造出来**再交给绘制（需要弄清 ctor 的父上下文参数）。
+
+### 15.4 本轮实验记录（避免重复）
+
+* `menuc1330`（注入线程轮询 inst）：inst 恒 0，200 次后放弃；
+* `menuc1340`（在 inst==0 的第 40 次迭代尝试 `ViewGlobalMenuToInstance(0)`）：
+  该分支日志**未出现**（疑被编译器/时序吞掉），需下一轮改用独立线程+显式日志重试。
