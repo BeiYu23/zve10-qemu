@@ -132,3 +132,60 @@ osal_uipc: 被 38 个模块依赖
    "Stream 窗口内容从 `0x5A5A` 变成非均匀"；
 2. **建模目标可能要挪**：如果像素面在 `0x22312000`，streamfb 应改镜像那里（或同时镜像两块）；
 3. **当前阻塞点不变**：仍是内核 `grm_ma::mspace_memalign`（MA 池来自 dmm，dmm 依赖 grm_gles）。
+
+---
+
+## 8. 决定性发现：App 的图形请求走 UIPC 到 `0x014C0424`（grm_ma 服务）
+
+用 preload hook `osal_snd_sync_msg` 记录**大消息**（≥512B）后，抓到 App 的真实服务调用面：
+
+```
+SV qid=0x014c0424  w0=0x0092000a w1=0x6864fb20 w2=0x20312000
+SV qid=0x014c0424  w0=0x00920009 w1=0x6864faa0 w2=0x00258000
+SV qid=0x014c0424  w0=0x00920009 w1=0x6864faa0 w2=0x00002000
+SV qid=0x014c0424  w0=0x00920009 w1=0x6864faa0 w2=0x00001000
+SV qid=0x014c0424  w0=0x00920009 w1=0x6864faa0 w2=0x00000200
+SV qid=0x00924127  w0=0x00920111 w1=0x6864faa0 w2=0x00000200
+SV qid=0x0094016a / 0x012182ed / 0x00ca8192 / 0x00c881bb …
+```
+
+* `0x014C0424` 正是我们旧文档里记的 **"grm_ma 服务"**（当年 QSYNC 统计 69 次 ret0）。
+* 消息里 `w2 = 0x20312000`（stream 基址）、`0x258000 / 0x2000 / 0x1000 / 0x200`（大小）——
+  这就是 **App 通过 UIPC 向内核 grm_ma 申请图形内存**的证据。
+* 我们 QEMU 里因此走到 `grm_ma::mspace_memalign` 并崩溃（池是 `0x5A5A` 垃圾）。
+
+### 8.1 这与"真机 grm_ma refcnt=0"并不矛盾
+
+`grm_ma` 的 `init_module` 只做 `udif_driver_register`；**UDIF 是按名字查表调用，不 module_get**，
+所以 refcnt 永远是 0（真机 `liro`/`upm` 的 refcnt 也都是 0）。**不能用 refcnt 判断"没走 MA"。**
+
+### 8.2 修正后的路线（a7c2 式：服务在用户态实现，而不是修内核池）
+
+```
+App ──UIPC sync──> 0x014C0424 (grm_ma 服务) ──> 内核 mspace_memalign（QEMU 里坏）
+```
+
+⇒ 有两条路：
+1. **让内核侧 MA 有合法池**（要 dmm/grm_gles 全真工作；`sugilite_open` 因 `inode->i_cdev==0` 崩，
+   我们试过把它打成 `return 0`，结果触发 RT `__migrate_enable` 的 BUG ⇒ 这条路不是打一枪能解决的）；
+2. **在 preload 里实现 `0x014C0424` 服务**（完全照 `0x003E014D` 备份服务的做法），
+   用普通 `mmap`（`/dev/mem` 固定池，如 stream 窗口）应答分配请求 ⇒ **App 拿到"图形内存"，
+   内核 MA 根本不会被调用**。
+
+**⇒ 下一步就是做 2**：先反汇编 `grm_ma.ko`（19KB，带符号）搞清 UDIF 请求/应答格式，
+再在 preload 里实现该 qid 的服务端。
+
+### 8.3 真机取证的其它结论（合作方，方法论已修正）
+
+按 DOWN 期间 100 轮采样（100ms）：
+
+| 面 | 结论 |
+|---|---|
+| `stream@0x20312000`(32MB) | **唯一变化的面**，尾指纹恒定 ⇒ **活跃命令/描述符环** |
+| `stream@0x22312000`(4MB) | 静态（4 色） |
+| `stream@0x3f7ed000`(8MB) | wbi_cmpr **压缩流**（RGB565 解码呈重复竖带） |
+| `mem@0x3f3ec000`(4MB) | 0.4% 非零，近乎空 |
+| `mem@0x80000000`(8MB, wo) | 噪声 |
+
+⇒ **CPU 侧没有可用的像素面**：菜单像素由 RTOS/硬件解描述符后产生。
+我们 QEMU 里 `0x20312000` 仍是全 `0x5A5A` ⇒ **App 连描述符都没写过**，卡在 MA 服务。
