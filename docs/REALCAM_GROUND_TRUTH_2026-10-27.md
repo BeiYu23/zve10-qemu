@@ -860,3 +860,59 @@ MODLOAD fake_dmm rc=20
    用"厂商模块的常量"反推内核 config，比猜更快；
 2. **或绕开内核 MA**：既然我们已能在用户态完整应答 MA（op7/op1/op9），
    就继续走"用户态 MA + libgrm2 软件光栅化"这条路，不去触碰内核 MA/DMM。
+
+---
+
+## 22. 第 35 轮：找到 App 在 MA 之后的**断言点**，并发现 MA 客户端有**两条通道**
+
+### 22.1 我们自己的 assert hook 吞掉了 App 的断言（重要教训）
+
+`menuc1009` 系探针里 `__assert_fail` 被我们 hook 成 **打印后死循环**。
+于是 App 一旦断言，**表面上就是"静默停止"**——之前多轮"App 突然不动了"其实是被我们自己的 hook 挂住了。
+
+修好观测后立刻看到：
+
+```
+AAS e == MA_ErrNone @dmp_allocator.c:116  lr=0x…（libObj+0x6BCBD0）
+```
+
+### 22.2 断言点定位（libObj 反汇编）
+
+`dmp_allocator_lib_init`（libObj+0x6BCB58）流程：
+
+```
+6bcb58: osal_wai_sem_tmo(…, -1)                    ; 进临界区
+6bcb86: 构造请求 {name, 640(0x280), 0,0,0,0, -1, 0}  on stack
+6bcbb6: bl 0x7675B4                                 ; ★ 创建 dmm 连接对象
+6bcbba: cbz r0 → 成功; 否则 → __assert_fail("e == MA_ErrNone", 105/116)
+```
+
+`0x7675B4` → `new(0xB8)` + ctor `0x7687CC(obj, req)`：
+
+```
+7687d6: movs r0,#5 ; ldr r1,[req+4] ; bl 0x76898E   ; 发请求（长度 6）
+7687e0: ldr r3,[obj+16] ; cmp #1 ; bne 失败          ; ★ 要求 obj->[16] == 1
+7687fa: 读取 reply: [req+4] → obj+40 ; [req+12] 字节 ; [req+0] = 16 字节名字指针
+```
+
+⇒ **我们 op1 的应答（status=0）让 `obj->[16]` 不是 1 ⇒ 直接判失败 ⇒ 断言。**
+
+### 22.3 MA 客户端有**两条通道**（此前只 hook 了一条）
+
+`0x7688D0`（真正的发送函数）：
+
+```
+osal_valloc_msg_wait(qid_lit, &msg, len+32, 0)     ; 32 字节头 + 负载
+msg[0] u16 = 2 ; msg[2] u16 = 0x80 ; msg[4]=0 ; msg[8]=arg ; msg+16 构造 ; msg+24 负载
+osal_snd_msg(qid_lit, msg)                          ; ★ 异步发送（不是 sync！）
+```
+
+而之前我们 hook 的 `osal_snd_sync_msg(0x014C0424)` 只覆盖了**同步**那一类请求（op7/op1/op9）。
+⇒ **还有一整条异步 MA 通道我们完全没应答**，这解释了"应答了还是不走"。
+
+### 22.4 下一轮
+
+1. hook `osal_snd_msg`（qid 0x014C0424）把**异步 MA 请求**也接住，打印 opcode/长度/负载，
+   看清这条通道的请求与“应答该发到哪里”；
+2. 同时把 op1 的应答改成让 `obj->[16]` 变成 1（先按 `reply[4]=1` 之类做 A/B 试）；
+3. 记录：**assert hook 必须保留"打印+记录"，但不能让 App 卡死**——改成打印后调用原 `abort()`。
