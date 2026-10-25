@@ -89,3 +89,53 @@ pthread_mutex_unlock(q+0x50);
 - 记录 `item[-8]` 的 type，即可判断该请求的完成通知由谁负责
 - 记录 `q+0xA4` 的实际值，确认回调是谁
 - 多个 worker（如 141/142/143）可能分属不同队列对象，堵一个不一定堵全部
+
+## 六、谁创建这些队列（`0x7D7D30`）
+
+**`0x7D7D30` 不是"等待完成"的函数，而是「按需创建两个队列（各含 worker）+ 等待」：**
+
+```c
+int sub_7D7D30(void *param)                     // r4 = param
+{
+    r8 = sub_7D7CD0(&local, param, 1, 0);       // 0x7D7D50
+    if (r8 != 0) return r8;                      // 非零 ⇒ 错误，直接返回
+
+    pthread_mutex_lock(&g_global);               // 0x7D7D74
+    if (*(u32 *)param != 0) goto already;        // "已创建"标志
+
+    r8 = sub_7D7780(q,  cb1); if (r8) goto err;  // 0x7D7D8A  ★ 队列1 + worker
+    r8 = sub_7D7780(q2, cb2); if (r8) goto err;  // 0x7D7D9E  ★ 队列2 + worker
+    ...
+}
+```
+
+**要点：**
+
+- **`sub_7D7780` 被调用两次 ⇒ 创建两个队列对象**（各自带一个 worker 线程）
+- `*(u32 *)param != 0` 是"已经创建过"的幂等标志
+- **把 `0x7D7D30` 入口补成 `return 0` 会跳过整个创建流程**，
+  结果是拿到没有对应 worker 的孤儿队列对象，后续"替换回调/接管 worker"都作用在错误对象上
+
+## 七、取项函数 `0x7D7BF0`（32 字节）
+
+```c
+void *dequeue(struct list *l)        // l = q + 0x98
+{
+    count = l->count;                // +0x00
+    head  = l->head;                 // +0x04
+    l->count = count - 1;
+    l->head  = *(void **)head;
+    return head;                     // 返回旧 head
+}
+```
+
+**链表：`struct list { u32 count; void *head; }`，位于 `q+0x98`。必须在 `q+0x04` 锁内调用。**
+
+**条目结构（基址 = 返回指针 − 8）：**
+
+| 偏移 | 字段 |
+|---:|---|
+| `+0x00` | type（`2` / `0x8001` / 其它）|
+| `+0x0C` | 回调参数（`item+4`）|
+
+`free()` 也以 `item−8` 为基址。
