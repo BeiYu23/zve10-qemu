@@ -6251,3 +6251,32 @@ libObj.so 里 0 处
 🟡 不跳则永不返回；跳过则因配置为空而崩
 ❓ 卡点确切位置：仍在 viewUnified2 的加载/初始化链中，但"哪个事件"未被可靠定位
 ```
+
+## ★★★★ 2026-10-25 22:10 新 goal 第 21 轮：libc 层面 cond 统计 —— 事件确实极少，且"完成 cond"从未被 signal
+### 方法（绕开"内部调用不可见"）
+```
+hook libc 的 pthread_cond_wait/signal（libMWF 内部最终也要走 PLT 到 libc）
+cond-8 = ObjSignal 对象；同时读 obj+0x3C 的 flag 与 caller LR
+```
+### 实测
+```
+整轮只有 7 次 signal（CS），目标分别是：
+  0x0005DF78 ×2 / 0x0005E7D8 ×2 / 0x00086AD0 / 0x00086C88 / 0x072E5C48
+其中 lr=0x058E4901 落在 libMWF 内 ⇒ 证实"libMWF 内部确实会 SetSignal"（假阴性已澄清）
+
+而等待端（CW）里有一个关键对象：
+  CW c=0x072E5C90  lr=0x06659E01 (= libObj+0x7D7E01，grm 请求方等"完成")
+  ⇒ ★ 0x072E5C90 整整一轮【从未出现在 CS 里】⇒ 完成通知从未发出
+```
+### 结论
+```
+· 事件系统是活的（libMWF 自己在 signal，flag 读到 1）
+· 但 grm 队列那条链的"完成 cond"从未被 signal ⇒ 请求方永远等
+· 这与我们之前的判断一致：worker 侧没有完成这次请求
+```
+### 下一步
+```
+1) 让我们的 worker 接管版本在"取到 item 后"必须 signal 0x72E5C90（即 q+0x68）
+   —— 之前我们 signal 的可能是另一个队列的 +0x68
+2) 用 CS/CW 日志验证：0x072E5C90 是否开始出现 CS
+```
