@@ -1325,3 +1325,57 @@ MWFI monctrl...  →  Mon Buf Size 再打一次  →  MWFI monctrl done   ← Mo
 1. **把 `MWF::Initialize()` 的调用从旁路线程挪到主线程**（现在是 eh 线程里调的，怀疑线程上下文/栈不对）；
 2. 若仍出现坏函数指针：GDB 断在崩溃点回看指针来源；
 3. 已向合作方索取 `MonDrv::Init` 的其余副作用（`Backup_read_4Byte` 读什么、还初始化哪些全局、那张函数指针表在哪）。
+
+---
+
+## 33. 第 46 轮：★ 监视器固定区在 QEMU 里本来映射不上 —— 我们把它接进了 DDR，队列成功建立
+
+### 33.1 合作方把 `MonDrv::Init` 388 字节全解开（关键顺序）
+
+```
+311aa: new(28)                     ; MonCtrl 对象
+311b8: ObjLock 构造
+311c6: str r5,[r3]                 ; ★ 先写全局（此后 MonCtrl 一定有效）
+311d0: Backup_read_4Byte(0xFA0028) ; FixedAreaTop
+311d8: Backup_read_4Byte(0xFA005D) ; FixedAreaSize
+311e2: open("/dev/mem", 0x1002)
+31230: mmap(0, size, RW, SHARED, fd, top)
+31244: base = mmap + 0x53400
+31294/312bc: MonQueue::MonQueue(base+4, +0x10, 0x400) / (base+8, +0xC, 0x7BF0)
+```
+
+且 `libbackup.so` 的 `Backup_read_4Byte` 是薄包装，**备份服务不在时返回 0xFFFFFFFF**。
+
+### 33.2 我们的实测：原本 `FixedAreaTop = 3E000000` ⇒ `/dev/mem` mmap 必然失败
+
+我们机器（bionz.c）DDR 在 **0x80000000（512MB）**，`0x3E000000` **根本没映射** ⇒ mmap 失败 ⇒ 监视器队列指针全废。
+
+**修法（已完成）**：在 preload 里 stub `Backup_read_4Byte`：
+
+| key | 原值 | 我们给 |
+|---|---|---|
+| 0x00FA0028 (FixedAreaTop) | 0x3E000000 | **0x8F000000**（落在 DDR 内）|
+| 0x00FA005D (FixedAreaSize) | 0x00080000 | 0x00080000 |
+
+实测（镜像 `ab_v2440`）：
+
+```
+FixedAreaTop  : 8F000000
+FixedAreaSize : 00080000
+Physical Addr : 8F053400
+Logical  Addr : 0x5b5d400        ← ★ 映射成功
+ Mon Buf Size  : 00008000
+```
+
+⇒ **监视器固定区 + 两条 MonQueue 真正建立起来了**（此前一直是"半初始化"）。
+
+### 33.3 现在的位置
+
+`MWF::Initialize` → `MonDrv::Init`（MonCtrl + 队列）都跑通后，崩溃点又后移到
+`libMWF+0x25CC0`（`MWF::ParamStd_Template<int,7>` 构造/相邻区），说明**已经进到 MWF 参数系统**。
+
+### 33.4 下一轮
+
+1. 看 `libMWF+0x25CC0` 具体崩在哪条指令（Param 模板对象构造）；
+2. 保持"把固定区接到 DDR"的做法（这对后面 NAND/CP 缓冲区同样适用）；
+3. 判据仍为 `GRM2 > 0` + `/dev/stream` 非均匀。
