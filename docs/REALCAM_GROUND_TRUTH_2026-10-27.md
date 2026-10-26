@@ -1182,3 +1182,41 @@ glibc 2.11 的动态链接器内部空指针（NULL+4）——**高度可疑是�
    （`Initialize = 基址 + 0x4275D`，Thumb 位）直接调用——完全避开 ld.so 的全局锁；
 2. 若仍崩在 ld.so：把初始化调用**改到主线程**（例如在拦到的某个 App 函数里顺手调用），避免跨线程 dlopen；
 3. 继续盯判据：`GRM2 > 0`、`/dev/stream` 由 `0x5A5A` 变非均匀。
+
+---
+
+## 29. 第 42 轮：修好 BizFw 日志管理器后，崩溃点一路后移，现在**已经在 libMWF 里跑框架代码**
+
+### 29.1 BizFw 日志表初始化 —— 用"lib 一被映射就补调"的办法彻底解决
+
+```c
+dlopen 拦截器里：real() 返回非空后 → map_base_for("libBizFw.so") → 调 base+0x4275C 的 Initialize()
+```
+
+实测：
+
+```
+BZI init at base=0x08a02000
+（此后 ConvertDef2Set(1..18) 全部返回有效指针）
+```
+
+⇒ `AvbbcLogManager::getInstance` 的 NULL 崩溃**消失**。
+
+（踩过的坑：① 起线程 `dlopen` + 调符号 → 崩在 `ld-2.11.2.so`；
+② 太早调（映射刚出现、重定位未完成）→ 崩在 `Initialize` 内部 `ldrb [r6]`；
+最终用"**dlopen 返回后再调**"这个时机，两个坑都避开。）
+
+### 29.2 崩溃点后移轨迹（都是前进）
+
+| 版本 | 崩溃点 | 说明 |
+|---|---|---|
+| 初始 | `mspace_malloc`（内核） | MA 不通 |
+| 修好内核 DMM 后 | `libBizFw + 0x427FC`（日志表未初始化）| 进入业务框架 |
+| 补 Initialize 后 | `ld-2.11.2.so + 0xA706`（并发 dlopen）| 去掉早期 dlopen |
+| **现在** | **`libMWF.so + 0x32332`（MonQueue）** | ★ **已经在跑 MWF 框架代码** |
+
+### 29.3 下一轮
+
+1. `MonQueue` 相关崩溃：看是哪条 monitor 没初始化（`IsEmpty` 里对空队列解引用）；
+2. 保持"不用 dlopen 抢跑、按需补初始化"的策略；
+3. 判据仍为 `GRM2 > 0` + `/dev/stream` 非均匀。
