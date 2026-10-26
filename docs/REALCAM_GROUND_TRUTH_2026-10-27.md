@@ -3480,3 +3480,53 @@ pc=0x0400A706 (ld.so + 0xA706) insn=685b686d
 1. 继续补库：把所有 `MISSSO` 清空（可能还有下一批）；
 2. 定位 ld.so+0xA706 的具象化原因（哪个库的 `.init_array`）；
 3. 注意磁盘：usr 分区仅剩 ~9MB，补库前先确认空间。
+
+---
+
+## 85. 第 98 轮：★★★ **可以跳过蓝牙/USB —— 而且已经证明有效**（libIMDB 清单打补丁）
+
+### 85.1 `libIMDB.so` 就是"模块清单表"
+
+`libIMDB.so`（37KB）导出的 `imdb_raw` 是**一张 44 字节步长的表**，每条记录含
+`name / init / exit / sus / res` 五个字符串指针：
+
+```
+entry+0x10 = 库名        ("libResourceBluetooth.so")
+entry+0x14 = init 符号   ("ResourceBluetooth_init")
+entry+0x18 = exit（多为空哨兵 0x6338）
+entry+0x1C = sus 符号
+entry+0x20 = res 符号
+```
+
+实测确认：`libResourceBluetooth.so` 的 name 指针在文件 0x73E0，其记录起点 0x73D0，
+下一条记录在 0x73FC（步长 0x2C ✓）。
+
+### 85.2 打补丁：把硬件模块**重定向**到已加载的 `libCoreSync`
+
+把三条记录的 name/init/sus/res 四个指针改写成 CoreSync 的对应符号
+（`libCoreSync.so / core_sync_user_init / _sus / _res`，本就在进程里）：
+
+| 记录 | 原库 |
+|---|---|
+| 0x73D0 | `libResourceBluetooth.so` |
+| 0x73FC | `libUsbBusPower.so` |
+| 0x7428 | `libInfraUsbCmn.so` |
+
+### 85.3 实测结果（`ab_v3460`）
+
+```
+libResourceBluetooth 出现次数 = 0        ← ★ 蓝牙模块**根本没被加载**
+（其余流程照旧：MonDrv ✓、BZREFILL added=256 ✓、BK 到 40）
+新崩溃点：pc=0x06422B84 → libObj + 0x335B84（ObjFaceRecorder_Destroy + 0x10465）
+```
+
+**⇒ 用户的判断成立：蓝牙/USB 这些"和虚拟机无关"的模块可以跳过，
+而且跳过之后 App 不再崩在那两个模块上，继续往前走。**
+
+### 85.4 下一步（同一思路推广）
+
+1. 继续按 IMDB 清单把**明显与 QEMU 无关**的条目重定向/禁用：
+   蓝牙类、USB 类、HDMI/CEC、EyeFi、Sircs（红外）、Dial、Hotshoe、Lanc 等；
+2. 每禁一批就观察崩溃点是否后移——这是**批量推进**的高效办法；
+3. 注意：`libIMDB.so` 里还有 `IMDB:qemu` 这个字符串，说明**厂商本来就有 QEMU 专用档位**，
+   后续值得找它的选档入口（若有，直接用官方档位比我们手工禁用更"真实"）。
