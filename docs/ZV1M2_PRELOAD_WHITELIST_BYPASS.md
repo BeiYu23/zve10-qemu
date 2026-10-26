@@ -1,4 +1,6 @@
-# `bootin.elf` 的 preload 白名单，以及如何合法绕过
+# `bootin.elf` 的 preload 白名单（历史方案，禁止直接部署）
+
+> **安全审计 NO-GO（2026-10-26）：** 前缀比较分支有离线依据，但下文构造顺序、fork race 无害、备用补丁可用和恢复保证已撤回。冒号支持不能证明部署安全；备用 libIMDB 补丁有错误 ABI 参数和绝对跳转。详见 [开机部署审计](ZVEGISK_PREDEPLOY_AUDIT.md)。
 
 > 反汇编 `bootin.elf`（15,336 B，`vaddr - file_off = 0x8000`）得到的结论。
 > 这是把 M2 的 `libIMDB.so` 塞进 `im.elf` 启动链的**唯一入口**。
