@@ -1421,3 +1421,42 @@ FixedAreaTop 8F000000 / FixedAreaSize 00080000 / Physical 8F053400 / Logical 0x5
 2. 若属主在 `InhInfo::Initialize / InhDP::Initialize / EventIdFactory::Initialize` 一带，
    考虑按需要补调（`MWF::Initialize` 里已含 `InhMcmd::Init`，但不一定含 `InhInfo/InhDP`）；
 3. 判据仍为 `GRM2 > 0` + `/dev/stream` 非均匀。
+
+---
+
+## 35. 第 48 轮：按合作方的"一次性令牌"假说改造 —— 取消提前调 `MWF::Initialize`，实测与预期有出入
+
+### 35.1 改动
+
+* **不再**在 preload 里提前调 `MWF::Initialize()`（也不再调 `MonDrv::Init`），
+  只保留：`Backup_read_4Byte` 两个 key 的 stub（把监视器固定区接到 DDR）+ BizFw 日志表初始化 + 观测；
+* 观测点：幂等令牌 `MWFBASE+0x442DB`、`RsrcDP::smp_monErr` `MWFBASE+0x4586C`。
+
+### 35.2 实测（`ab_v2460` / `ab_v2470`）
+
+```
+BR4 key=0x00fa0028 -> 0x8f000000
+BR4 key=0x00fa005d -> 0x00080000
+ FixedAreaTop 8F000000 …  Mon Buf Size : 00008000      ← App/框架自己触发的 MonDrv::Init 生效
+MWFI base=0x05ac2000 (no early Initialize; leave the once-token to the app)
+MWFI token=0 smp_monErr=0x000305d0                      ← 令牌仍是 0（未被消耗 ✓）
+崩溃 pc=0x05ae1164（实为 libMWF 的字面量池，insn=0xfffffc01）
+```
+
+**新情况**：`token=0`（符合预期，我们没提前消耗），但 `smp_monErr = 0x305D0` —— **不是 0，却是个小值**，
+和之前那些 `0x303F8 / 0x20A70 / 4` 一样，属于"指针字段里放着小整数"的形态。
+
+### 35.3 待确认 / 存疑
+
+1. `0x4586C` 是否真是 `RsrcDP::smp_monErr`（合作方给的偏移）——需要 GDB 直接核对；
+2. **App 到底有没有自己调用 `MWF::Initialize()`**：
+   本轮用轮询日志判断不可靠（串口与内核 probe 输出交错，`TOK` 行被撕碎）。
+   下一轮改用 **GDB 硬件写 watchpoint 盯 `MWFBASE+0x442DB`**（可靠，之前盯 `pViewManager` 用过这招）；
+3. 崩溃现在落在 `MWF::EventWrapper::Send` 附近（跳到字面量池 ⇒ 函数指针垃圾），
+   属于"某个虚表/回调没初始化"的表现。
+
+### 35.4 下一轮
+
+1. GDB watchpoint：`0x442DB`（令牌）+ `0x4586C`（smp_monErr）+ 几个 MonCtrl 全局，看**谁写、写了什么**；
+2. 若 App 从不调用 `MWF::Initialize`，再决定是"我们调 + 归还令牌"还是"逐叶子初始化"；
+3. 判据仍为 `GRM2 > 0` + `/dev/stream` 非均匀。
