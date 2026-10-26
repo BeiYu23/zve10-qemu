@@ -1379,3 +1379,45 @@ Logical  Addr : 0x5b5d400        ← ★ 映射成功
 1. 看 `libMWF+0x25CC0` 具体崩在哪条指令（Param 模板对象构造）；
 2. 保持"把固定区接到 DDR"的做法（这对后面 NAND/CP 缓冲区同样适用）；
 3. 判据仍为 `GRM2 > 0` + `/dev/stream` 非均匀。
+
+---
+
+## 34. 第 47 轮：否证"`.bss` 未清零"假说（实测干净）；`echo=1` 是运行期被置上的
+
+### 34.1 实测（preload 在 `dlopen("libMWF.so")` 返回后立即读）
+
+```
+MWFBASE=0x05ac2000
+BSS echo=0 q1=0x00000000 q2=0x00000000 pfx=0x00000000
+```
+* `echo` = `MonLib::isEchoBackOn`(0x476D0)
+* `q1/q2` = `MonDrv::mp_input / mp_ioBuffer`(0x46CA0 / 0x46CA4)
+* `pfx` = `Monitor::a_Prefix`(0x477F0)
+
+⇒ **固件自带的 `ld-2.11.2.so` 正常清零 .bss**；**`.bss` 未清零的假说不成立**。
+`isEchoBackOn == 1` 是**运行期**（MWF/MonLib 初始化后）置上的，且设备上 App 同样带 `debug` 参数，
+真机大概率也是 1。
+
+### 34.2 推论：MonCtrl 在真机上必有，且不是只有 `MonDrv::Init` 会建它
+
+搜索 `MonCtrl::MonCtrl(const char*,bool)` 的调用点，libMWF 内有 **5 处**：
+`0x1E910 / 0x1E9E8 / 0x1F238 / 0x1F252 / 0x1F26C`（都落在 0x1E–0x1F 的 `Inh*` 子系统区）。
+⇒ **MonCtrl 原本是由 `Inh*`（输出通道/继承）那条链建的**，我们没走到那里才导致全局为 0/垃圾。
+
+### 34.3 本轮已确证的修复（保留）
+
+`MonDrv::Init` 里 `Backup_read_4Byte(0xFA0028)` 在我们环境返回 `0x3E000000`，
+而本机型 DDR 在 `0x80000000` ⇒ `0x3E000000` **未映射** ⇒ `/dev/mem` mmap 必失败
+⇒ 缓冲区基址与两条 MonQueue（全局 3/4/5）永远为 0。
+**我们把这两个 key stub 成 `0x8F000000 / 0x80000`，映射成功**：
+
+```
+FixedAreaTop 8F000000 / FixedAreaSize 00080000 / Physical 8F053400 / Logical 0x5b5d400 / Mon Buf Size 00008000
+```
+
+### 34.4 下一轮
+
+1. 找出那 5 处 MonCtrl 构造的属主函数与调用链（已请合作方协助）；
+2. 若属主在 `InhInfo::Initialize / InhDP::Initialize / EventIdFactory::Initialize` 一带，
+   考虑按需要补调（`MWF::Initialize` 里已含 `InhMcmd::Init`，但不一定含 `InhInfo/InhDP`）；
+3. 判据仍为 `GRM2 > 0` + `/dev/stream` 非均匀。
