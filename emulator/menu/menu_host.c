@@ -454,7 +454,22 @@ int main(int argc,char **argv) {
         int (*pcreate)(unsigned long *, const void *, void *(*)(void *), void *) =
             (int(*)(unsigned long *, const void *, void *(*)(void *), void *))dlsym(pth, "pthread_create");
         unsigned long th = 0;
-        if(pcreate) { int rc = pcreate(&th, 0, app_thread, 0); printf("MENUHOST app thread rc=%d\n", rc); fflush(0); }
+        /* The firmware's own osal_create_waitable_thread always configures the
+         * thread stack explicitly. Use an explicit large stack here too: a
+         * default-sized stack may overflow inside the UX initialiser and
+         * corrupt the return chain (observed as an illegal instruction). */
+        static unsigned char attr[64];
+        int (*pa_init)(void *) = (int(*)(void*))dlsym(pth, "pthread_attr_init");
+        int (*pa_size)(void *, unsigned long) = (int(*)(void*,unsigned long))dlsym(pth, "pthread_attr_setstacksize");
+        void *pattr = 0;
+        if(pa_init && pa_size) {
+            if(pa_init(attr) == 0) {
+                int sr = pa_size(attr, 0x400000ul);
+                printf("MENUHOST stackattr init=ok size_rc=%d\n", sr); fflush(0);
+                if(sr == 0) pattr = attr;
+            }
+        }
+        if(pcreate) { int rc = pcreate(&th, pattr, app_thread, 0); printf("MENUHOST app thread rc=%d attr=%p\n", rc, pattr); fflush(0); }
     }
     /* Optional original entry points are disabled for this run: calling them in
      * this order faults on prerequisites the boot sequence would have created
