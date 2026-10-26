@@ -349,10 +349,31 @@ static void sample_threads(void)
     }
 }
 
+/* Observe semaphore waits/posts: dmp_allocator_lib_init blocks on osal_wai_sem_tmo
+ * with an infinite timeout, so the semaphore id and who posts it are decisive. */
+static void *uipc_handle;
+static int sem_n, sem_n2;
+int osal_wai_sem_tmo(unsigned sem, long tmo)
+{
+    static int (*real)(unsigned,long);
+    if(!real) real = (int(*)(unsigned,long))dlsym(uipc_handle, "osal_wai_sem_tmo");
+    if(sem_n < 12) { sem_n++; printf("MENUHOST WAITSEM tid=%u sem=%08x tmo=%ld\n", gettid_(), sem, tmo); fflush(0); }
+    int r = real ? real(sem, tmo) : -1;
+    if(sem_n <= 12) { printf("MENUHOST WAITSEM returned=%d sem=%08x\n", r, sem); fflush(0); }
+    return r;
+}
+int osal_sig_sem(unsigned sem)
+{
+    static int (*real)(unsigned);
+    if(!real) real = (int(*)(unsigned))dlsym(uipc_handle, "osal_sig_sem");
+    if(sem_n2 < 12) { sem_n2++; printf("MENUHOST SIGSEM tid=%u sem=%08x\n", gettid_(), sem); fflush(0); }
+    return real ? real(sem) : -1;
+}
+
 int main(int argc,char **argv) {
     (void)argc;(void)argv;
     mark("MENUHOST main: original im/IMDB main bypassed\n");
-    void *uipc=load("/usr/lib/libosal_uipc.so"); if(!uipc) return 10;
+    void *uipc=load("/usr/lib/libosal_uipc.so"); if(!uipc) return 10; uipc_handle = uipc;
     void *utm=load("/usr/lib/libosal_utm.so"); if(!utm) return 10; utm_handle = utm;
     void *backup=load("/usr/lib/libbackup.so"); if(!backup) return 10;
     void *mwf=load("/usr/lib/libMWF.so"); if(!mwf) return 11;

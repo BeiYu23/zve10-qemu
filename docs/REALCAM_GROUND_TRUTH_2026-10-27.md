@@ -4071,3 +4071,41 @@ tid=128  最终停在 0x04143146 = libpthread+0xd146（futex）
 以及它之后期待的那个事件（UIPC 接收队列）。
 
 `GRM2` 无记录、`/dev/dmpgles2` 未打开、`/dev/stream` 未变，**菜单未显示，目标未完成**。
+
+---
+
+## 97. 2026-10-26 信号量取证：`dmp_allocator_lib_init` 并没有阻塞（否证上一轮猜测）
+
+`dmp_allocator_lib_init`（`libObj+0x6bcb58`，1032 字节）开头确实是
+`osal_wai_sem_tmo(sem, -1)`（`ldr r0,[pc,#636]` → `0x018004b5`，`r1 = 0xffffffff`）。
+为确认它是否卡在这里，宿主导出 `osal_wai_sem_tmo` / `osal_sig_sem` 观测：
+
+```
+WAITSEM tid=130 sem=018004b5 tmo=-1  → returned=0     （立即返回，未阻塞）
+SIGSEM  tid=130 sem=018004b5                          （自己把它 post 了）
+WAITSEM tid=130 sem=01706009 tmo=0   → returned=0
+```
+
+⇒ **否证**：分配器初始化没有卡在信号量上，`-1` 超时也立刻返回。
+⇒ `dmp_allocator_lib_init` 顺利往下走，之后 App 线程转入 UIPC 接收等待。
+
+### 97.1 这一轮确认的完整事实链（按时间顺序，全部有日志）
+
+1. `Application_System_Init` 创建线程成功（返回新 tid 128/129/130）；
+2. 线程执行 App 自身代码：`libObj+0x78a620`（模型处理）、`libObj+0x6bd110`（DMP 分配器入口）；
+3. `dmp_allocator_lib_init` 的信号量立即返回，不阻塞；
+4. 之后 `pViewManager` 始终为 0，`GRM_*` 从未调用，`/dev/dmpgles2` 从未打开；
+5. 线程最终状态：两个在 pthread futex 等待、一个在 UIPC 接收 ioctl。
+
+### 97.2 判断
+
+App 的初始化链**确实跑起来了**（建模 + DMP 分配器都执行过），随后进入**空闲等待**。
+没有任何证据显示某个服务答错；缺的是**上层驱动**——按原厂设计，应有 boot/sequence 控制器
+发出"建屏/进入视图"的事件，而我们的环境里没有这个生产者。
+
+⇒ 下一步只能是二者之一：
+(a) 逆向并复现该事件生产者（工作量大、成功不确定）；
+(b) 用原厂生命周期入口 **直接驱动 App 自己的 run 函数**（`libObj+0x8a3104`），
+    但它的 `r0` 需要有效的 App 对象，否则会像此前一样空指针。
+
+`GRM2` 无记录、`/dev/dmpgles2` 未打开、`/dev/stream` 未变，**菜单未显示，目标未完成**。
