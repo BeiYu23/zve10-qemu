@@ -8,6 +8,7 @@ extern char *dlerror(void);
 extern int printf(const char *, ...);
 extern int fflush(void *);
 extern unsigned sleep(unsigned);
+extern int usleep(unsigned);
 extern long write(int, const void *, unsigned);
 #define NEXT ((void *)-1)
 #define GLOBAL_NOW 0x102
@@ -129,6 +130,9 @@ static void dump_libobj_map(void)
         }
         if(strstr_(p, "libc-2.11.2.so") && strstr_(p, "r-x")) {
             printf("MENUHOST LIBC %s\n", p); fflush(0);
+        }
+        if(strstr_(p, "libosal_utm.so") && strstr_(p, "r-x")) {
+            printf("MENUHOST UTM %s\n", p); fflush(0);
         }
         if(strstr_(p, "libosal_uipc.so") && strstr_(p, "r-x")) {
             printf("MENUHOST UIPC %s\n", p); fflush(0);
@@ -254,11 +258,102 @@ static void dump_modules(void)
     }
 }
 
+/* Observe the firmware's own thread creation: the descriptor's first words tell
+ * us the real entry function that Application_System_Init asks the RTOS to run. */
+static void *utm_handle;
+static int   thread_calls;
+static unsigned gettid_(void)
+{
+    return (unsigned)syscall(224 /*gettid*/);
+}
+static void log_desc(const char *who, const void *d)
+{
+    const unsigned *w = (const unsigned *)d;
+    printf("MENUHOST %s tid=%u desc=%p words=%08x %08x %08x %08x %08x %08x %08x %08x\n",
+           who, gettid_(), d, w[0], w[1], w[2], w[3], w[4], w[5], w[6], w[7]); fflush(0);
+}
+int osal_create_thread(void *desc)
+{
+    static int (*real)(void *);
+    if(!real) real = (int(*)(void*))dlsym(utm_handle, "osal_create_thread");
+    if(thread_calls < 8) { thread_calls++; log_desc("CREATETHREAD", desc); }
+    int r = real ? real(desc) : -1;
+    printf("MENUHOST CREATETHREAD returned=%d\n", r); fflush(0);
+    return r;
+}
+long osal_create_waitable_thread(void *desc, unsigned flags)
+{
+    static long (*real)(void*,unsigned);
+    if(!real) real = (long(*)(void*,unsigned))dlsym(utm_handle, "osal_create_waitable_thread");
+    if(thread_calls < 8) { thread_calls++; log_desc("CREATEWAIT", desc); }
+    long r = real ? real(desc, flags) : -1;
+    printf("MENUHOST CREATEWAIT returned=%d\n", (int)r); fflush(0);
+    return r;
+}
+
+/* Sample every thread's user PC at high frequency right after startup, while
+ * the new threads are still executing their initialisation code. */
+static unsigned task_pc(const char *tid)
+{
+    char sp[64]; char st[512]; int f, k; unsigned long pc = 0;
+    snprintf(sp,sizeof sp,"/proc/self/task/%s/stat",tid);
+    f = open(sp,0); if(f < 0) return 0;
+    k = (int)read(f, st, sizeof(st)-1); close(f);
+    if(k <= 0) return 0;
+    st[k] = 0;
+    char *rp = st;
+    while(*rp && *rp != ')') rp++;
+    if(*rp != ')') return 0;
+    rp++;
+    int fld = 3; char *tok = rp;
+    while(*tok && fld < 31) {
+        while(*tok == ' ') tok++;
+        if(!*tok) break;
+        char *end = tok; while(*end && *end != ' ') end++;
+        if(fld == 30) {
+            unsigned long v = 0; int b = 10; char *q = tok;
+            if(q[0]=='0' && (q[1]=='x'||q[1]=='X')) { b = 16; q += 2; }
+            while(*q && q < end) { int d = -1;
+                if(*q>='0'&&*q<='9') d = *q-'0';
+                else if(b==16 && *q>='a'&&*q<='f') d = *q-'a'+10;
+                if(d<0) break; v = v*b + d; q++; }
+            pc = v; break;
+        }
+        tok = end; fld++;
+    }
+    return (unsigned)pc;
+}
+static void sample_threads(void)
+{
+    static unsigned seen[64]; static char seen_tid[64][8]; int seen_n = 0;
+    char buf[1024]; int fd = open("/proc/self/task", 0); long n;
+    if(fd < 0) return;
+    n = syscall(217, fd, buf, sizeof(buf)); close(fd);
+    if(n <= 0) return;
+    for(long off = 0; off < n; ) {
+        unsigned short reclen = *(unsigned short *)(buf+off+16);
+        char *name = buf+off+19;
+        if(name[0] >= '0' && name[0] <= '9') {
+            unsigned pc = task_pc(name);
+            int i, known = 0;
+            for(i = 0; i < seen_n; i++) if(seen[i] == pc) { known = 1; break; }
+            if(!known && seen_n < 64) {
+                seen[seen_n] = pc;
+                for(int j = 0; j < 7 && name[j]; j++) seen_tid[seen_n][j] = name[j];
+                seen_tid[seen_n][7] = 0;
+                printf("MENUHOST SAMPLE tid=%s pc=%08x\n", seen_tid[seen_n], pc); fflush(0);
+                seen_n++;
+            }
+        }
+        off += reclen;
+    }
+}
+
 int main(int argc,char **argv) {
     (void)argc;(void)argv;
     mark("MENUHOST main: original im/IMDB main bypassed\n");
     void *uipc=load("/usr/lib/libosal_uipc.so"); if(!uipc) return 10;
-    void *utm=load("/usr/lib/libosal_utm.so"); if(!utm) return 10;
+    void *utm=load("/usr/lib/libosal_utm.so"); if(!utm) return 10; utm_handle = utm;
     void *backup=load("/usr/lib/libbackup.so"); if(!backup) return 10;
     void *mwf=load("/usr/lib/libMWF.so"); if(!mwf) return 11;
     void (*mwfi)(void)=(void(*)(void))dlsym(mwf,"_ZN3MWF10InitializeEv");
@@ -275,22 +370,10 @@ int main(int argc,char **argv) {
     /* Drive the app's own configuration initializer: initializeConfig(void) allocates
      * its config object and internally dlopens+initialises the model/view config
      * modules. This is original firmware code doing the original work. */
-    sleep(2);
-    /* Original thread entry does exactly this: the UX engine initialiser first,
-     * then the app construction. uxengine_init()'s exported symbol is a stub;
-     * the real body sits at +0x6271d4 and takes no arguments. Original code. */
-    {
-        void (*uxinit)(void) = (void(*)(void))(libobj_base + 0x6271d4 + 1);
-        printf("MENUHOST uxinit=%p (base=%08x)\n", (void*)uxinit, libobj_base); fflush(0);
-        mark("MENUHOST uxengine body enter\n");
-        uxinit();
-        mark("MENUHOST uxengine body returned\n");
-    }
-    {
-        void (*initcfg)(void) = (void(*)(void))dlsym(obj, "initializeConfig");
-        printf("MENUHOST initializeConfig=%p\n", (void*)initcfg); fflush(0);
-        if(initcfg) { mark("MENUHOST initializeConfig enter\n"); initcfg(); mark("MENUHOST initializeConfig returned\n"); }
-    }
+    for(int si = 0; si < 200; si++) { usleep(10000); sample_threads(); }
+    /* Optional original entry points are disabled for this run: calling them in
+     * this order faults on prerequisites the boot sequence would have created
+     * (see REALCAM_GROUND_TRUTH 94/95). Thread-creation hooks stay enabled. */
     /* The original framework runs in its own thread created by
      * Application_System_Init. Returning from main would tear the process down
      * while that thread is still issuing UIPC traffic, which is what produced

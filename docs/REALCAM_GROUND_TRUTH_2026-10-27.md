@@ -4021,3 +4021,53 @@ cfg_init = libObj+0x14be84  → 0 次
 一个环节都没启动。下一步应验证 `osal_create_thread` 在该调用中是否真的成功、线程是否被调度。
 
 `GRM2` 无记录、`/dev/dmpgles2` 从未打开、`/dev/stream` 未变，**菜单未显示，目标未完成**。
+
+---
+
+## 96. 2026-10-26 线程创建与运行取证：App 线程确实在跑自己的初始化（含 DMP 分配器）
+
+### 96.1 拦截 `osal_create_thread` 拿到的真实描述符
+
+宿主导出 `osal_create_thread` / `osal_create_waitable_thread`（转发真实实现），日志：
+
+```
+CREATEWAIT tid=121 desc=0x5efffc58 words=00026584 00000000 044149dd 00026568 00000097 00000000 00026568 00000000
+CREATEWAIT returned=126
+CREATETHREAD tid=121 desc=0x612df24 words=05d0bf63 00000004 0557a399 00000000 00000083 00000001 05d0bfa8 00000002
+CREATEWAIT tid=121 desc=0x612df24 words=(同上)
+CREATEWAIT returned=128
+CREATETHREAD returned=128
+```
+
+返回值 `126/128` 与本进程实际线程号一致（`126=mwf_monitor_inp`、`128/129/130=Appframework`），
+即**线程创建成功**。
+
+### 96.2 两次"找入口"的尝试都失败（记录，勿重试）
+
+* 描述符第 3 字 `0x0557a399` = `libObj+0x8a2399`（带 Thumb 位），但断在 `libObj+0x8a2398` **零命中**；
+* 断 `libosal_utm+0xb24`（蹦床里的 `blx r8`）**零命中**。
+
+⇒ 描述符字段不是"入口地址"的直接含义，蹦床路径也与推断不同。**入口仍未确定。**
+
+### 96.3 改用高频采样（每 10 ms 读 `/proc/self/task/*/stat` 的 kstkeip）
+
+`Application_System_Init` 返回后立刻采样 2 秒，抓到线程在**执行 App 自己的代码**：
+
+```
+tid=128  pc=0x05462620 = libObj+0x78a620   （ModelYuvSelect… 邻近的模型处理函数）
+tid=130  pc=0x05395110 = libObj+0x6bd110   （dmp_allocator_mmap_init）
+tid=130  pc=0x0442edaa                     （非 libObj 区域）
+tid=130  最终停在 0x040c817c = libc+0x9b17c（UIPC 接收 ioctl）
+tid=128  最终停在 0x04143146 = libpthread+0xd146（futex）
+```
+
+**关键**：`libObj+0x6bd110` 就是 `dmp_allocator_mmap_init` → `dmp_allocator_lib_init`。
+也就是说 App **确实在初始化 DMP（显存分配器）**，然后才停在 UIPC 接收上。
+
+### 96.4 与本会话早期结论的关系
+
+早期 §24/§25 记录的"`dmp_allocator_lib_init` 内 116 号断言"正是同一处。现在它不再崩（DMM 协议修正后），
+而是**跑完/跳过之后转入等待**。⇒ 下一步应确认 `dmp_allocator_lib_init` 的返回与副作用，
+以及它之后期待的那个事件（UIPC 接收队列）。
+
+`GRM2` 无记录、`/dev/dmpgles2` 未打开、`/dev/stream` 未变，**菜单未显示，目标未完成**。
