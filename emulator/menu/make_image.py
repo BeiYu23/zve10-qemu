@@ -14,6 +14,7 @@ def dfs(img, request):
 def main():
     p=argparse.ArgumentParser(); p.add_argument('--base',required=True); p.add_argument('--output',required=True)
     p.add_argument('--work',required=True); p.add_argument('--host',required=True); p.add_argument('--ref',default='/root/fw/ref_e10/root/lib')
+    p.add_argument('--module',help='replacement for usr:/kmod/grm_gles.ko')
     a=p.parse_args(); base=pathlib.Path(a.base).resolve(); out=pathlib.Path(a.output).resolve(); w=pathlib.Path(a.work).resolve()
     if out==base or out.exists(): raise SystemExit('output must be new and different from base')
     w.mkdir(parents=True,exist_ok=True)
@@ -32,11 +33,14 @@ def main():
     changes=[('root','/etc/ld.so.preload',empty),('usr','/bin/im.elf',pathlib.Path(a.host))]
     for name in ['libc-2.11.2.so','libpthread-2.11.2.so']:
         changes.append(('root','/lib/'+name,pathlib.Path(a.ref)/name))
+    if a.module:
+        changes.append(('usr','/kmod/grm_gles.ko',pathlib.Path(a.module)))
     for part,target,source in changes:
         image=parts[part][0]
         dfs(image,'rm '+target)
         dfs(image,'write '+str(source.resolve())+' '+target)
-        dfs(image,'set_inode_field '+target+' mode '+('0100644' if 'preload' in target else '0100755'))
+        mode='0100644' if ('preload' in target or target.endswith('.ko')) else '0100755'
+        dfs(image,'set_inode_field '+target+' mode '+mode)
         checked=w/('check-'+part+'-'+target.rsplit('/',1)[1])
         dfs(image,'dump '+target+' '+str(checked))
         if not checked.exists() or sha(checked)!=sha(source): raise RuntimeError('readback failed: '+target)

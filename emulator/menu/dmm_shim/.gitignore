@@ -1,0 +1,8 @@
+.fake_gles2*
+.fake_gles2.*.cmd
+.tmp_versions/
+*.ko
+*.o
+*.mod.c
+modules.order
+Module.symvers

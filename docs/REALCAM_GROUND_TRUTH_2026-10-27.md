@@ -3688,3 +3688,53 @@ cmdline: mem=1G@0 … mem=256M@0x80000000@1
 6. **阳性核验**：ab_v3050 的 usr 只读 e2fsck 返回 0；libObj/libMWF/libosal_uipc/libIMDB 与现有 ref_e10 四个对应文件 SHA-256 一致。限定于这些文件，不代表整镜像/模块/配置已验证。
 
 a7c2-re 的成功菜单依赖原管理器/事件泵已经运行，在原 UI 线程按生命周期一次性切菜单；它也没有完成正常拍摄冷启动。下一步先资产/ABI/服务契约闭合、再定位 loader 首次异常，不能继续随机填 Backup 表、补 init、按崩溃地址变化宣布前进。**App 菜单仍未显示；目标未完成。**
+
+---
+
+## 90. 2026-10-26 菜单专用宿主 + DMM 字段纠错：第一次拿到正确的 32MB 图形池，随后撞上供应商 BUG
+
+本轮只做一件事：绕开 IMDB/硬件启动链，用最小宿主直接驱动原厂框架，并修正已证实的 DMM 应答字段错位。未改基线镜像；实验镜像由 `emulator/menu/make_image.py` 生成，每个替换文件都读回校验 SHA-256，分区 `e2fsck -n` 通过。
+
+### 90.1 菜单专用宿主（新增 `emulator/menu/`）
+
+- `menu_host.c` + `start.S`：用固件自带 `libc-2.11.2.so`/`libdl` 链接（`-mfloat-abi=softfp`，Tag_EABI5），
+  自带 `_start` 调 `__libc_start_main`；**不进入原 `im.elf` 的 main**，因而不触发 IMDB 硬件初始化链。
+- 顺序：`libosal_uipc` → `libosal_utm` → `libbackup` → `libMWF`（`MWF::Initialize`）→ `libObj`（`RTLD_LAZY|RTLD_GLOBAL`）
+  → `Application_System_Init(NULL)`。
+- Backup 只应答 4 个已核实 key（监视器固定区 `0x8F000000/0x80000`、stream `0x20312000/0x100000`），
+  其余一律返回 `-1024`（明确失败，不再随机填表）。
+- `arch_phys_to_cache`：用真实 `/dev/mem` 固定映射 DDR0/DDR1 到 `0x60000000`/`0xA0000000` 后返回别名，
+  不是编造地址。此前缺失该符号导致 `dataflowInfraFramework.so` 加载失败。
+
+### 90.2 运行时证据（`menu-only-v5.img`，150 秒固定时长，非 idle 判据）
+
+```
+MENUHOST MWF Initialize returned
+MENUHOST API=0x557a409 pVMslot=0x616a21c
+MENUHOST Application_System_Init returned
+FAKEDMM req n=1 w0=00000001 seq=0
+QMMAP addr=0x0 len=0x2000000 off=0x20312000 prot=0x3 flags=0x1 fd=4 ret=0x81d9000 name=stream
+UIPCARG Appframework cmd=0x80000005 f0=0x14c0424 ... f10=0x81d9000 f11=0x2000000
+FAKEDMM req n=2 w0=00010004 seq=1
+kernel BUG at .../Guiengine_161H/driver/grm_ma/dmm_if.c:281!
+Unable to handle kernel NULL pointer dereference at virtual address 00000000
+```
+
+三点是新的、可复核的事实：
+
+1. **DMM 字段纠错生效**：`off=0x20312000 len=0x2000000` —— 正是文档记录的图形池（此前是 `len=0x20312000 off=0x2000000`
+   的荒谬值）。修正点：`reply+0x10` 放**物理地址**、`reply+0x14` 放**长度**（依据 `ma_dmm_open_send_recv → ma_dmm_open_impl
+   → ma_list_add → ma_create_mspace_wrapper`）。
+2. **原厂框架线程真的起来了**：`/usr/bin/im.elf(Appframework)` pid 130 自己发起 `grM_ma` 队列 `0x14c0424` 的调用，
+   并把 `0x2000000`(32MB) 交给 MA —— 这是 App 自身代码，不是探针代劳。
+3. **新卡点在供应商内核模块内部**：第二个 DMM 请求（op `0x0004`）触发 `grm_ma` 的 `BUG_ON`，随后 NULL 解引用 +
+   `__migrate_enable` Oops。即我们的 DMM 应答仍只对 alloc(1) 形状正确，op 4 的语义没实现。
+
+### 90.3 判据仍未满足
+
+`GRM2` 无绘制记录，`/dev/stream` 内容未变，无菜单像素。**目标未完成。**
+
+### 90.4 下一步（若要继续）
+
+按 `grm_ma` 反汇编补齐 op 4（以及后续 op）的应答语义与失败码，而不是所有 opcode 都回同一个 alloc 结构；
+每加一个 op 都用同一固定时长跑一次，观察是否越过 `dmm_if.c:281`。
