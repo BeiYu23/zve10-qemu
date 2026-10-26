@@ -74,6 +74,72 @@ int osal_snd_sync_msg(unsigned qid, void *msg) {
     if(!real) real=(int(*)(unsigned,void *))dlsym(NEXT,"osal_snd_sync_msg");
     return real?real(qid,msg):-1024;
 }
+/* Observe (never alter) the framework thread's blocking point. */
+static int rcv_seen[32];
+static int rcv_n;
+int osal_rcv_msg_tmo(unsigned qid, void **msg, long tmo)
+{
+    static int (*real)(unsigned,void**,long);
+    if(!real) real=(int(*)(unsigned,void**,long))dlsym(NEXT,"osal_rcv_msg_tmo");
+    int r = real ? real(qid,msg,tmo) : -1;
+    int i, known = 0;
+    for(i=0;i<rcv_n;i++) if((unsigned)rcv_seen[i]==qid) { known = 1; break; }
+    if(!known && rcv_n < 32) {
+        rcv_seen[rcv_n++] = (int)qid;
+        printf("MENUHOST RCV new qid=%08x tmo=%ld ret=%d\n",qid,tmo,r); fflush(0);
+    }
+    return r;
+}
+
+/* Dump where every thread of this process is blocked, using the kernel's
+ * /proc/self/task/<tid>/wchan. Read-only diagnosis; alters nothing. */
+extern long syscall(long, ...);
+extern int read(int, void *, unsigned long);
+extern int snprintf(char *, unsigned long, const char *, ...);
+#define AT_FDCWD_ 0
+static void dump_tasks(const char *when)
+{
+    char buf[2048];
+    int fd = open("/proc/self/task", 0);
+    if(fd < 0) { printf("MENUHOST TASKS %s: cannot open\n", when); fflush(0); return; }
+    long n = syscall(217 /*getdents64*/, fd, buf, sizeof(buf));
+    close(fd);
+    if(n <= 0) {
+        printf("MENUHOST TASKS %s: getdents failed, probing tids\n", when); fflush(0);
+        for(long t = 100; t < 400; ++t) {
+            char p[64]; int f, k; char comm[32];
+            snprintf(p,sizeof p,"/proc/self/task/%ld/comm",t);
+            f = open(p,0); if(f < 0) continue;
+            k = (int)read(f,comm,sizeof(comm)-1); close(f);
+            if(k <= 0) continue;
+            comm[k]=0; for(int j=0;j<k;j++) if(comm[j]=='\n') comm[j]=0;
+            char wchan[64]="?"; snprintf(p,sizeof p,"/proc/self/task/%ld/wchan",t);
+            f = open(p,0); if(f>=0){ k=(int)read(f,wchan,sizeof(wchan)-1); close(f); if(k>0){wchan[k]=0; for(int j=0;j<k;j++) if(wchan[j]=='\n') wchan[j]=0;} }
+            printf("MENUHOST   tid=%-6ld comm=%-16s wchan=%s\n", t, comm, wchan); fflush(0);
+        }
+        return;
+    }
+    printf("MENUHOST TASKS %s:\n", when); fflush(0);
+    for(long off = 0; off < n; ) {
+        unsigned long ino; long roff; unsigned short reclen; char *name;
+        ino = *(unsigned long *)(buf+off);
+        roff = *(long *)(buf+off+8);
+        reclen = *(unsigned short *)(buf+off+16);
+        name = buf+off+19;
+        (void)ino; (void)roff;
+        if(name[0] >= '0' && name[0] <= '9') {
+            char p[64]; int f; char comm[32] = "?"; char wchan[64] = "?";
+            int k;
+            snprintf(p,sizeof p,"/proc/self/task/%s/comm",name);
+            f = open(p,0); if(f>=0) { k = (int)read(f,comm,sizeof(comm)-1); if(k>0){comm[k]=0; for(int j=0;j<k;j++) if(comm[j]=='\n') comm[j]=0;} close(f); }
+            snprintf(p,sizeof p,"/proc/self/task/%s/wchan",name);
+            f = open(p,0); if(f>=0) { k = (int)read(f,wchan,sizeof(wchan)-1); if(k>0){wchan[k]=0; for(int j=0;j<k;j++) if(wchan[j]=='\n') wchan[j]=0;} close(f); }
+            printf("MENUHOST   tid=%-6s comm=%-16s wchan=%s\n", name, comm, wchan); fflush(0);
+        }
+        off += reclen;
+    }
+}
+
 int main(int argc,char **argv) {
     (void)argc;(void)argv;
     mark("MENUHOST main: original im/IMDB main bypassed\n");
@@ -90,6 +156,13 @@ int main(int argc,char **argv) {
     printf("MENUHOST API=%p pVMslot=%p\n",(void*)app,(void*)pvm); fflush(0);
     if(!app||!pvm) return 14;
     mark("MENUHOST Application_System_Init enter\n"); app(0); mark("MENUHOST Application_System_Init returned\n");
-    for(unsigned i=0;i<90;++i) { sleep(1); if((i==0)||(i==5)||(i==10)||(i==15)||(i==20)||(i==25)||(i==30)||(i==35)||(i==40)||(i==45)||(i==50)||(i==55)||(i==60)||(i==65)||(i==70)||(i==75)||(i==80)||(i==85)) {printf("MENUHOST tick=%u pVM=%08x\n",i,*pvm);fflush(0);} }
-    mark("MENUHOST experiment finished\n"); return 0;
+    /* The original framework runs in its own thread created by
+     * Application_System_Init. Returning from main would tear the process down
+     * while that thread is still issuing UIPC traffic, which is what produced
+     * the loader fault at the end of the previous run. Stay alive instead. */
+    for(unsigned i=0;;++i) {
+        sleep(1);
+        if((i % 5)==0) { printf("MENUHOST tick=%u pVM=%08x\n",i,*pvm); fflush(0); }
+        if(i==20 || i==45 || i==80) dump_tasks(i==20?"t20":(i==45?"t45":"t80"));
+    }
 }

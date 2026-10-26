@@ -148,29 +148,80 @@ extern int osal_snd_msg(unsigned id, void *msg);
 static void *dmm_h;
 static int dmm_n;
 
+/* DMM wire protocol, read from the vendor client (grm_ma.ko):
+ *   ma_dmm_open_send_recv  : req+0x00 u16 = 1 (open),  req+0x04 = dmm id,
+ *                            req+0x14 u16 = seq; reply+0x00 u16 must be 0x8001,
+ *                            reply+0x04 u16 = unit index, reply+0x06 u16 = seq,
+ *                            reply+0x10 u32 = physical base, reply+0x14 u32 = size.
+ *   ma_dmm_close_send_recv : req+0x00 u16 = 4 (close), req+0x02 u16 = handle,
+ *                            req+0x14 u16 = seq; reply+0x00 u16 must be 0x8004.
+ * The close path asserts (dmm_if.c:281) when this reply is rejected, which is
+ * what happened while every reply was hard-coded to 0x8001.
+ */
+#define DMM_OP_OPEN  1u
+#define DMM_OP_CLOSE 4u
+#define DMM_UNITS 2
+static struct {
+	unsigned phys;
+	unsigned size;
+	int in_use;
+} dmm_units[DMM_UNITS] = {
+	{ 0x20312000u, 0x02000000u, 0 },   /* VDF graphics pool documented for ZV-E10 */
+	{ 0x22312000u, 0x00400000u, 0 },   /* second stream window observed on the device */
+};
+
+static void fake_dmm_dump(const char *tag, const void *m)
+{
+	const unsigned *w = (const unsigned *)m;
+	printk(KERN_INFO "FAKEDMM %s w=%08x,%08x,%08x,%08x,%08x,%08x\n",
+	       tag, w[0], w[1], w[2], w[3], w[4], w[5]);
+}
+
 static int fake_dmm_cb(void *req, void *ctx)
 {
-	void *m = NULL; unsigned char *q; unsigned short seq = 0; int r;
+	void *m = NULL; unsigned char *q, *r; unsigned short seq = 0, op, handle;
+	unsigned index = 0, status = 0; int r4;
+	(void)ctx;
+	if (!req) return 0;
 	dmm_n++;
-	if (req) seq = *(unsigned short *)((unsigned char *)req + 0x14);
-	printk(KERN_INFO "FAKEDMM req n=%d w0=%08x seq=%u\n", dmm_n,
-	       req ? *(unsigned *)req : 0, seq);
-	r = osal_valloc_msg_wait(DMM_QID, &m, 24, 1);
-	if (r || !m) { printk(KERN_INFO "FAKEDMM valloc rc=%d\n", r); (void)ctx; return 0; }
+	r = (unsigned char *)req;
+	op = *(unsigned short *)(r + 0);
+	handle = *(unsigned short *)(r + 2);
+	seq = *(unsigned short *)(r + 0x14);
+	if (dmm_n <= 16) fake_dmm_dump("req", req);
+
+	if (op == DMM_OP_OPEN) {
+		for (index = 0; index < DMM_UNITS; index++)
+			if (!dmm_units[index].in_use) break;
+		if (index == DMM_UNITS) status = 1;      /* pool exhausted: report failure */
+	}
+	r4 = osal_valloc_msg_wait(DMM_QID, &m, 24, 1);
+	if (r4 || !m) { printk(KERN_INFO "FAKEDMM valloc rc=%d\n", r4); return 0; }
 	q = (unsigned char *)m;
 	memset(q, 0, 24);
-	*(unsigned *)(q + 0) = 0x8001u;
-	*(unsigned short *)(q + 4) = 1;
 	*(unsigned short *)(q + 6) = seq;
-	/* grm_ma client reads reply+0x10 as PHYSICAL and reply+0x14 as SIZE
-	 * (ma_dmm_open_send_recv -> ma_dmm_open_impl -> ma_list_add ->
-	 *  ma_create_mspace_wrapper).  The previous order produced the
-	 *  observed QMMAP len=0x20312000 off=0x2000000. */
-	*(unsigned *)(q + 0x10) = DMM_POOL_PHYS;
-	*(unsigned *)(q + 0x14) = DMM_POOL_SIZE;
-	r = osal_snd_msg(MA_QID, m);
-	printk(KERN_INFO "FAKEDMM reply seq=%u snd=%d\n", seq, r);
-	(void)ctx;
+	if (!status && op == DMM_OP_OPEN) {
+		unsigned idx = index + 1;
+		dmm_units[index].in_use = 1;
+		*(unsigned short *)(q + 0) = 0x8000u | DMM_OP_OPEN;
+		*(unsigned short *)(q + 4) = (unsigned short)idx;         /* unit index */
+		*(unsigned *)(q + 0x10) = dmm_units[index].phys;
+		*(unsigned *)(q + 0x14) = dmm_units[index].size;
+		printk(KERN_INFO "FAKEDMM open unit=%u phys=%08x size=%08x\n",
+		       idx, dmm_units[index].phys, dmm_units[index].size);
+	} else if (!status && op == DMM_OP_CLOSE) {
+		if (handle >= 1 && handle <= DMM_UNITS)
+			dmm_units[handle - 1].in_use = 0;
+		*(unsigned short *)(q + 0) = 0x8000u | DMM_OP_CLOSE;
+		printk(KERN_INFO "FAKEDMM close handle=%u\n", handle);
+	} else {
+		/* Unsupported or failed: echo the opcode without success flag so the
+		 * vendor client takes its own error path instead of reading garbage. */
+		*(unsigned short *)(q + 0) = 0x4000u | op;
+		printk(KERN_INFO "FAKEDMM unsupported op=%u handle=%u -> error reply\n", op, handle);
+	}
+	r4 = osal_snd_msg(MA_QID, m);
+	printk(KERN_INFO "FAKEDMM reply op=%u seq=%u snd=%d\n", op, seq, r4);
 	return 0;
 }
 

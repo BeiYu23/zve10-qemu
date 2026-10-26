@@ -3738,3 +3738,67 @@ Unable to handle kernel NULL pointer dereference at virtual address 00000000
 
 按 `grm_ma` 反汇编补齐 op 4（以及后续 op）的应答语义与失败码，而不是所有 opcode 都回同一个 alloc 结构；
 每加一个 op 都用同一固定时长跑一次，观察是否越过 `dmm_if.c:281`。
+
+---
+
+## 91. 2026-10-26 DMM 协议补齐 + 一个旧悬案被解释：巨型错误映射就是加载器崩溃的来源
+
+### 91.1 供应商 DMM 协议（逐条从 `grm_ma.ko` 反汇编读出，非推测）
+
+`ma_dmm_open_send_recv`（发到 `0x0061003C`，从 `0x014C0424` 收）：
+* 请求：`+0x00 u16 = 1`(open)、`+0x04 = dmm id`、`+0x14 u16 = seq`
+* 应答：`+0x00 u16` 必须 `== 0x8001`；`+0x06 u16 == seq`；`+0x04 u16` = 单元索引；
+  `+0x10 u32` = 物理基址；`+0x14 u32` = 长度
+
+`ma_dmm_close_send_recv`：
+* 请求：`+0x00 u16 = 4`(close)、`+0x02 u16 = handle`、`+0x14 u16 = seq`
+* 应答：`+0x00 u16` 必须 `== 0x8004`
+
+`ma_dmm_close_impl` 的三处断言中，`dmm_if.c:281` 正是"close 应答被拒后 `BUG_ON`"。
+此前我们把所有应答都硬编成 `0x8001`，close 校验必然失败 ⇒ 内核 BUG + Oops。
+把 `reply[0]` 改成 `0x8000 | opcode` 并按单元表返回 handle 后，该 BUG 消失。
+
+### 91.2 两条路径的实测（固定时长，非 idle 判据）
+
+| 运行 | 配置 | 结果 |
+|---|---|---|
+| run5/v5 | 菜单宿主 + **字段顺序已修**、opcode 未修 | open 通过，第 2 个请求(close)触发 `dmm_if.c:281` |
+| run6/v6 | + opcode 与 handle 语义 | 4 次 DMM 交互全通过（open/close/open/open），**无 BUG** |
+| run7/v7 | + 宿主不再 `return main` | 200 秒无崩溃；`pVM=0` 贯穿；框架线程停止在等队列 |
+| run11/v11 | **原厂启动路径** + 仅替换修正后的 `grm_gles.ko` | **180 秒零崩溃**，此前该路径会在 ~60 秒后随机崩在 ld.so |
+
+**旧悬案的解释**：第 87–101 轮记录的"不确定 ld.so 崩溃"（三个不同偏移、全是空指针）
+最可能由我们自己的错误映射造成——`len=0x20312000` 的 512MB 映射把 MA 空间放到错误位置，
+越界写会破坏加载器地址空间。修正后同一路径不再复现。这是**假说级结论**（该路径已稳定，
+但未做"故意恢复旧字段再崩一次"的对照），因此不写成已证明。
+
+### 91.3 两个否定结论（避免重复劳动）
+
+1. 宿主的退出竞态是自造的：App 框架线程由 `Application_System_Init` 创建，主线程 `return`
+   会在框架仍发 UIPC 时拆进程 ⇒ `ld.so+0x42796` 崩溃。宿主改为常驻后消失。
+2. `MISSSO //usr/lib/...` 的 33 个库（`libNVM`、`libWirelessPower`、`libInfraCacheMgr`…）
+   在真机 `nflasha15_unpacked/lib` 里**同样不存在**（该目录为 GCC 4.5.1 原厂构建，已核对）。
+   即 App 请求的是本机型没有的可选库，ENOENT 属正常分支，**不应再造桩**。
+   `THREAD_INFRA1/2` 以 `code=0` 正常退出，不是失败。
+
+### 91.4 当前精确卡点
+
+内核 `wchan` 显示（宿主内 `/proc/self/task/*/wchan`）：
+
+```
+tid=127 comm=mwf_monitor_inp  wchan=hrtimer_nanosleep
+tid=128 comm=Appframework     wchan=futex_wait_queue_me
+tid=129 comm=Appframework     wchan=futex_wait_queue_me
+tid=130 comm=Appframework     wchan=osal_rcv_msg_tmo
+```
+
+tid 130 的接收队列（来自内核 UIPC 打点，`cmd=0x80000005` 的 `f0`）是 **`0x014C0424`**，
+即 grm_ma 的 MA 应答队列：App 发了 MA 请求，等待的回应没到。
+`pViewManager` 始终为 0，`/dev/dmpgles2` 的 ioctl 计数为 0，**没有任何绘制发生**。
+
+⇒ 下一步唯一目标：**谁应当在 `0x014C0424` 上回答那条 MA 请求**。真机上是 `grm_ma.ko` 服务；
+需要确认它在我们环境里是否收到请求、是否因 DMM 应答之外的字段缺失而丢弃。
+
+### 91.5 判据状态
+
+`GRM2` 无绘制记录，`/dev/stream` 未变，无菜单像素。**目标未完成。**

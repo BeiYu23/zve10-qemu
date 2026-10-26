@@ -15,6 +15,7 @@ def main():
     p=argparse.ArgumentParser(); p.add_argument('--base',required=True); p.add_argument('--output',required=True)
     p.add_argument('--work',required=True); p.add_argument('--host',required=True); p.add_argument('--ref',default='/root/fw/ref_e10/root/lib')
     p.add_argument('--module',help='replacement for usr:/kmod/grm_gles.ko')
+    p.add_argument('--keep-app',action='store_true',help='keep the image original launcher and libc/pthread')
     a=p.parse_args(); base=pathlib.Path(a.base).resolve(); out=pathlib.Path(a.output).resolve(); w=pathlib.Path(a.work).resolve()
     if out==base or out.exists(): raise SystemExit('output must be new and different from base')
     w.mkdir(parents=True,exist_ok=True)
@@ -30,9 +31,11 @@ def main():
                 g.write(b); remain-=len(b)
         parts[name]=(path,off)
     empty=w/'empty-preload'; empty.write_text('\n')
-    changes=[('root','/etc/ld.so.preload',empty),('usr','/bin/im.elf',pathlib.Path(a.host))]
-    for name in ['libc-2.11.2.so','libpthread-2.11.2.so']:
-        changes.append(('root','/lib/'+name,pathlib.Path(a.ref)/name))
+    changes=[]
+    if not a.keep_app:
+        changes=[('root','/etc/ld.so.preload',empty),('usr','/bin/im.elf',pathlib.Path(a.host))]
+        for name in ['libc-2.11.2.so','libpthread-2.11.2.so']:
+            changes.append(('root','/lib/'+name,pathlib.Path(a.ref)/name))
     if a.module:
         changes.append(('usr','/kmod/grm_gles.ko',pathlib.Path(a.module)))
     for part,target,source in changes:
