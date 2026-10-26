@@ -3423,3 +3423,60 @@ r0=0x00000000 r1=0x0000cf20 r10=0x0000cf20 pc=0x00000000 lr=0x04004E03
    把崩溃前最后一次 mmap2 的参数打出来——**这是当前最能定性的单点数据**；
 2. 若参数正常（如 len=0x1000 off=0xcf20），则问题在内核 mmap 实现（我们改动过的机型/DDR 布局）；
 3. 若参数异常（len=0 或 off 巨大），则回到 App 侧。
+
+---
+
+## 84. 第 97 轮：★★ 发现并修复 **13 个缺失库**（App 需要的库根本没在镜像里）
+
+### 84.1 线索：内核 mmap 打点（新增 `QMMAPS`）
+
+给 `mm/mmap.c` 的 `mmap_pgoff` 加了"小尺寸 mmap + comm 匹配"的打点，看到崩溃前的最后动作是：
+
+```
+QMMAPS THREAD_INFRA2 addr=0x0 len=0xcf20 prot=0x5 flags=0x2 fd=9 ret=0x29c0d000 name=libUsbBusPower.so
+QMMAPS THREAD_INFRA2 addr=0x29c19000 len=0x1000 off=0x4000 prot=0x3 flags=0x12 fd=9 ret=0x29c19000 name=libUsbBusPower.so
+```
+
+⇒ 崩溃发生在**加载 `libUsbBusPower.so` 之时/之后**（`r1=0xcf20` 正是它的代码段长度）。
+
+### 84.2 真正的根因：**我们镜像里缺库**
+
+从日志里收集 `MISSSO`（dlopen 失败）清单，共 **13 个库**：
+
+```
+libAtn libbkdmn libI2CRight libi2cuipc libInfraCrypt libInfraError
+libInfraInterchipDatatrans libInfraSetupFile libInfraSystemAdjust
+libInfraSystemProperty libNVM libread_refresh libSaveLoadSettings
+```
+
+**这些库在固件树里全都有**（`/mnt/build/lfu/tree/lib/`，每个约 7.5KB，合计 95KB），
+只是**我们做镜像时没拷进去**（rootfs 只有 104 个 .so，固件树有 314 个）。
+
+⇒ App `dlopen` 失败 → 句柄 NULL → `dlsym` 得到 0 → 调用 → `pc=0` 崩溃。
+**这解释了近期"加载到某个库就崩"的一整类现象。**
+
+### 84.3 修复与验证
+
+把 13 个库写进 **usr 分区**的 `/lib/`（设备上即 `/usr/lib/`，正是 App 的搜索路径之一）：
+
+```
+IMOPEN OK //lib/libNVM.so
+QMMAPS im.elf.real addr=0x0 len=0x11030 prot=0x5 flags=0x2 fd=6 ret=0x52ce000 name=libNVM.so
+```
+
+**⇒ 新库确实被加载了**，App 继续往前走（BK 仍到 40，随后崩溃点改变）。
+
+### 84.4 新的崩溃点
+
+```
+pc=0x0400A706 (ld.so + 0xA706) insn=685b686d
+```
+
+这是**当年见过的 `DT_INIT_ARRAY` 处理崩溃**——现在因为多加载了几个库，又回到了这里。
+下一个要查的就是"哪个库的 init 数组有问题"。
+
+### 84.5 下一轮
+
+1. 继续补库：把所有 `MISSSO` 清空（可能还有下一批）；
+2. 定位 ld.so+0xA706 的具象化原因（哪个库的 `.init_array`）；
+3. 注意磁盘：usr 分区仅剩 ~9MB，补库前先确认空间。
