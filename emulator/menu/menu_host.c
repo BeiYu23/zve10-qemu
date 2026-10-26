@@ -436,8 +436,14 @@ int main(int argc,char **argv) {
                *(unsigned *)(libobj_base + 0x145ca64),
                *(unsigned *)(libobj_base + 0x13dcb78),
                *(unsigned *)(libobj_base + 0x145cbc4)); fflush(0);
+        {
+            unsigned *guard = (unsigned *)(libobj_base + 0x145ca6a);
+            printf("MENUHOST guard_before=%08x\n", *guard); fflush(0);
+            if(*guard) { *guard = 0; printf("MENUHOST guard cleared\n"); fflush(0); }
+        }
         uxfirst(name, 640, 480, 1, 0, 0x80000000u, 0);
-        printf("MENUHOST uxfirst returned rm=%08x ge=%08x p4=%08x\n",
+        printf("MENUHOST uxfirst returned guard=%08x rm=%08x ge=%08x p4=%08x\n",
+               *(unsigned *)(libobj_base + 0x145ca6a),
                *(unsigned *)(libobj_base + 0x145ca64),
                *(unsigned *)(libobj_base + 0x13dcb78),
                *(unsigned *)(libobj_base + 0x145cbc4)); fflush(0);
