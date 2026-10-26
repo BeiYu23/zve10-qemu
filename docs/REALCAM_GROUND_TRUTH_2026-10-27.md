@@ -2709,3 +2709,38 @@ RCVT qid=0x016F6089 tmo=-1 ret=0 w0=1 w1=0x08E01A1A w2=0x08E019EE
 1. 拦 `osal_snd_msg`（或 UIPC 写）找**谁在往 `0x016F6089` 发消息**、消息的 w1/w2 从哪来；
 2. 若发送方也是 App 自己（很可能），则说明**该队列的生产者需要先初始化**——找到那个初始化函数并补跑；
 3. 若发送方在内核/其它进程，则按服务方式补真实实现。
+
+---
+
+## 67. 第 80 轮：发送方找到了 —— **`IM_JIRITSU::CImJiritsu::req`（libJiritsu）**
+
+### 67.1 发送点
+
+```
+SEND 016f w0=1 w1=0x08E01A1A w2=0x08E019EE w3=0x08E21216  lr=0x08DFF317
+lr → libJiritsu.so +0x7316  =  IM_JIRITSU::CImJiritsu::req(...) 内部
+```
+
+反汇编 `CImJiritsu::req`（libJiritsu+0x72D0）：
+
+```
+72e8: osal_valloc_msg_wait(...)      ; 16B 消息
+72f0..7310: 把 r2/r3/r5/r6 等 4 个字填进消息（w0..w3）
+7312: osal_snd_msg(0x016F6089, msg)  ; ★ 发到回调队列
+```
+
+消息的 4 个字 = `req(cmd, IMJ_REQUEST*, const char*, const char*, unsigned)` 的参数
+（**w1/w2 就是调用者传入的回调/上下文**）。
+
+### 67.2 结论
+
+* `0x016F6089` 队列是 **Jiritsu（自发任务/“自助”子系统）的请求队列**；
+* `THREAD_INFRA2` 收到消息后调用 `w1/w2` ⇒ **参数里的回调在发送时就是坏的**；
+* 发送方 `CImJiritsu::req` 的**调用者**是谁 → 谁传了坏回调 → 那里就是缺初始化的地方。
+
+### 67.3 下一轮
+
+1. 反汇编 `libJiritsu` 内部对 `CImJiritsu::req` 的调用点（同库内 `bl 0x72D0`），
+   看**第一个调用者**是谁、它传的 `IMJ_REQUEST*` 从哪来；
+2. 该 `IMJ_REQUEST` 结构应由某个 `register` 类函数填充 —— 找到它并确认我们环境里**它是否被调用过**；
+3. 若它依赖 Jiritsu 子系统的初始化函数（如 `IM_Jiritsu_Init`），按已验证的"内联调用"方式补跑。
