@@ -2330,3 +2330,43 @@ API pVM1=0x00000000
 
 1. 修普查线程（换 tid 枚举方式），拿到 App 主线程的调用链；
 2. 在同一稳定环境里，按调用链找到"被跳过的那一步"，再决定补什么。
+
+---
+
+## 58. 第 71 轮：★ in-guest 线程普查**终于跑通**（带库名解析），拿到 App 真实形态
+
+### 58.1 修复过程（三个坑）
+
+1. 起线程做普查 → 线程自己卡住（`/proc/self/task` 的 `getdents` 不稳）⇒ **改为在 `bk_service` 里内联执行**；
+2. `/proc/<tid>/stat` 的字段解析错位（comm 里可能含空格）⇒ **改为从最后一个 `)` 之后开始数字段**；
+3. 只有 PC 没有库名 ⇒ **加 `name_of(pc)` 读 `/proc/self/maps` 反查所属库**。
+
+### 58.2 实测（`ab_v2990`，第 6 / 第 12 次 backup 请求时各普查一次）
+
+```
+CEN inline start n=6
+CEN tid=122 sp=0x5efffa80 pc=0x0407b5c4   (libgrmlog.so = 我们自己的 shim 内，即调用者线程)
+CEN tid=127 sp=0x04cb7d84 pc=0x0435b17c   (libc-2.11.2.so = futex 等待)
+CEN tid=128 …（同 127）
+CEN tid=129 …（同 127）
+CEN inline end
+
+CEN inline start n=12
+CEN obj=0x00000000 view=0x00000000          ← ★ 此刻 libObj 与 viewUnified2 都还没加载
+CEN tid=122 sp=0x5efffb20 pc=0x04108146     (libpthread-2.11.2.so) ← 主线程在 pthread 等待
+CEN tid=127/128/129 pc=0x0435b17c (libc)    ← 三个工作线程 futex 等待
+CEN tid=131 pc=0x0407b5c4 (libgrmlog)       ← 另一个调用我们的线程
+```
+
+### 58.3 结论（首次有实测支撑的"App 形态"）
+
+* **全进程只有 5 个线程**（122 主 + 127/128/129 + 131）；
+* 主线程**停在 libpthread 的等待**里，三个工作线程停在 **libc futex**；
+* **第 12 次 backup 请求时，libObj / viewUnified2 都还没被加载** ⇒ App 还停在"极早期"；
+* 这与"只创建 2 个 grm worker、ViewManager 从未创建"的旧结论一致，但现在**有了线程级实证**。
+
+### 58.4 下一轮
+
+1. 把普查点后移（例如第 40/80 次 backup，或等 `libObj` 已加载后），看**拿到 libObj 之后**主线程停在哪；
+2. 顺主线程的 libpthread 等待点，找出它在等哪个对象/谁该来 signal；
+3. 那个 signal 的缺失，就是"框架没启动"的直接原因。
