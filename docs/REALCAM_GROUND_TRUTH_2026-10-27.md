@@ -2562,3 +2562,44 @@ BKFULL 15 w0=4 w2=1 w6=0x00fa005d w7=0xA5A5A5A5 w8=0x00920111
 2. 用两个已知 key（`0x00FA0028/0x00FA005D`，MonDrv 用过）做 A/B：
    只填 `m[1]` vs 同时写 `w7` 缓冲区，看 `MonDrv` 的 `FixedAreaTop/Size` 打印是否变化 —— **这是可验证的判据**；
 3. 确认后再推广到 `0x005C00xx` 表读取。
+
+---
+
+## 63. 第 76 轮：payload 写入语义的 A/B 测试（结果：App 提前崩在 libMWF，MonDrv 判据未变）
+
+### 63.1 本轮实现
+
+按 `Backup_read_4Byte` 真实 ABI（反汇编：出参在栈槽、经 `backup_sync_msg` 发送）改写应答：
+
+* `cnt==1`：`m[7]=value`（payload 槽）、`m[1]=4`（字节数）；
+* `cnt==2`：`m[7]=value`、`m[1]=4`；
+* `cnt==3`（nread 型）：对未知 key 用 **`0x3F & (key+i)` 的确定性伪随机填充**整个缓冲区（自洽替代数据，非伪造成功），
+  `m[1]=len`；`0x005C0000 / 0x00BD0000` 区段给 `0x00010000 | key低位`。
+
+### 63.2 结果（`ab_v3120`）
+
+```
+BK1 cnt=3 key=0x0000003e
+BK2 cnt=3 key=0x00000094
+（随后）崩溃 pc=0x04065372 → libMWF+0x32372（MonQueue，this=NULL）
+Exception 计数=3
+```
+
+* App 在 **BK2 之后**（比旧版少了 50+ 条）就进入了 libMWF 的 MonQueue 崩溃；
+* `Mon Buf Size / FixedAreaTop` 判据**没有出现**（MonDrv 还没跑到打印那一步）；
+* 这与"纯固件 A 组"的崩溃点一致 ⇒ **新语义反而把 App 推得更快地撞上了那个更早的坑**
+  （说明 payload 里的值让 App 在更早的分支走了"继续启动"路径）。
+
+### 63.3 结论
+
+1. **应答语义的改动确实改变了 App 行为**（走到崩溃点更早/更晚、走的分支不同）—— 说明我们在正确的层面上工作；
+2. 但 `libMWF MonQueue` 崩溃是 **更上游**的问题（在 dmm/MA 之前）：没有它，App 到不了 `MonDrv`；
+3. 之前我们让 App "稳定运行"靠的是**旧语义 + 0 值**——那其实让 App 停在了安全但无用的地方。
+
+### 63.4 下一轮
+
+回到 **libMWF+0x32372（MonQueue，this=NULL）** 这个崩溃点本身：
+* 该点在 `MonDrv::Getchar`（读 `mp_input` 全局队列）；
+* `mp_input` 由 `MonDrv::Init` 建立 —— 上一轮我们已经能让它建立（FAKEDMM 时期 `Mon Buf Size` 打印过）；
+* 所以本轮的差异化尝试：**保留新 payload 语义 + 在 shim 里延迟到 MonDrv::Init 完成后再返回配置数据**
+  （即把"表数据"延后，让 MonDrv 先建立队列）——用 BK 计数器做门控（例如前 4 条给真值，后面才给表数据）。
