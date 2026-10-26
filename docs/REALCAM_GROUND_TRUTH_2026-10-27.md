@@ -1291,3 +1291,37 @@ BZI init at base=0x08a02000
    像 BizFw 那样**在合适时机补调一次**，让全局拿到有效对象；
 2. 若 MonCtrl 依赖监视器通道（CP 调试口），就提供最小实现（`ConPrintfMessage` 走 sink 即可）；
 3. 判据仍为 `GRM2 > 0` + `/dev/stream` 非均匀。
+
+---
+
+## 32. 第 45 轮：按合作方的 MonCtrl 分析实测 —— `MWF::Initialize` / `MonDrv::Init` 都能补调，崩溃点继续后移
+
+### 32.1 合作方的关键结论（已核对）
+
+* `MonDrv::Init`（libMWF+0x311A5，dynsym GLOBAL）**就是建 28 字节 MonCtrl 并把指针写全局的地方**（写全局在 +0x311C6，
+  **早于**可能失败的 `Backup_read_4Byte`）⇒ `r9==4` 是因为它没跑过；
+* `MWF::Initialize`（+0x20A09）**幂等**（守卫字节），内部依次跑
+  `MwfCommon::Init → Monitor::Init → ObjThread(64B)+StartThread → ObjLog_Mcmd/RsrcMcmd/InhMcmd/ObjIf_Mcmd/ObjIf::Init → EventIdFactory::Initialize(0x83e8,0x800)`，
+  但**不包含 `MonDrv::Init`**（全库无 bl 到 0x311A4 ⇒ 说明是函数指针表调用，而那张表在我们这里没走通）；
+* `SetEventSender` 里日志块由守卫字节控制（`+0x26326 cbz r2`），**守卫 = `MonLib::isEchoBackOn`(0x476D0)**；
+* 全库 **46 处** `ConPrintfMessage` ⇒ 只 patch 一处不够，应把 MonCtrl 建起来。
+
+### 32.2 我们的实测（镜像 ab_v2390 / ab_v2420 / ab_v2430，libMWF=0x05AC2000）
+
+```
+MWFI base=0x05ac2000 call 0x05ae2a09
+ Mon Buf Size  : 00008000        ← Monitor 子系统起来了
+MWFI done
+MWFI echo=1                      ← ★ 守卫确实是 1（46 处日志都开）
+MWFI monctrl...  →  Mon Buf Size 再打一次  →  MWFI monctrl done   ← MonDrv::Init 生效
+```
+
+置 `echo=0` 后：**MonCtrl 那处崩溃消失**，但崩点后移：
+`libSysDef.so+0xDAA`（sp=0x2a899cc0 异常，疑似栈/上下文不对）→ 再下一次 `ld-2.11.2.so` 边界 `pc=0x0400f000`（跳到坏函数指针）。
+内核还打出 `Exception Monitor: waiting for uninterruptible threads timedout`。
+
+### 32.3 下一轮
+
+1. **把 `MWF::Initialize()` 的调用从旁路线程挪到主线程**（现在是 eh 线程里调的，怀疑线程上下文/栈不对）；
+2. 若仍出现坏函数指针：GDB 断在崩溃点回看指针来源；
+3. 已向合作方索取 `MonDrv::Init` 的其余副作用（`Backup_read_4Byte` 读什么、还初始化哪些全局、那张函数指针表在哪）。
