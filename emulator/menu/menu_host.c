@@ -464,7 +464,7 @@ int main(int argc,char **argv) {
         void *pattr = 0;
         if(pa_init && pa_size) {
             if(pa_init(attr) == 0) {
-                int sr = pa_size(attr, 0x400000ul);
+                int sr = pa_size(attr, 0x100000ul);
                 printf("MENUHOST stackattr init=ok size_rc=%d\n", sr); fflush(0);
                 if(sr == 0) pattr = attr;
             }
