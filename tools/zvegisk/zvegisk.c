@@ -36,6 +36,11 @@
 #define SYS_getdents64 217
 #define SYS_reboot   88
 #define SYS_nanosleep 162
+#define SYS_setsid    66
+#define SYS_execve    11
+#define SYS_wait4    114
+#define SYS_kill     37
+#define SYS_getpid   20
 
 /* ---- 直接 syscall ---- */
 static inline int sy0(int n){register int r7 __asm__("r7")=n;register int r0 __asm__("r0");__asm__ volatile("svc #0":"=r"(r0):"r"(r7):"memory","cc");return r0;}
@@ -160,6 +165,290 @@ static int mount_sd(void)
     return 0;
 }
 
+/* ============================================================
+ * 模块框架
+ *
+ * 安全模型（四层）：
+ *   ① 进程隔离：模块在 fork+exec 的载体进程里 LD_PRELOAD，
+ *      模块崩了只死载体，im.elf 完全无感
+ *   ② 超时收割：载体 N 秒不退 ⇒ SIGKILL，标记失败
+ *   ③ 失败黑名单：失败模块写 <name>.failed，下次开机跳过
+ *   ④ 全局熔断：失败数 > MAX_FAIL ⇒ 之后全部跳过
+ * ============================================================ */
+
+#define MODDIR   "/log/zvegisk/mods"
+#define STATEDIR "/log/zvegisk/state"
+#define MAX_FAIL 3
+#define MAX_MODS 32
+
+/* 判断路径是否存在（文件或目录） */
+
+/* 睡 n 毫秒（用 nanosleep，精度足够） */
+static void msleep(int ms)
+{
+    int ts[2];
+    ts[0] = ms / 1000;
+    ts[1] = (ms % 1000) * 1000000;
+    sy2(SYS_nanosleep, (int)ts, 0);
+}
+
+/* 等子进程，最多 timeout_ms；超时则 SIGKILL。返回：
+ *   >=0  子进程退出码
+ *   -1   超时被杀
+ *   -2   wait4 出错 */
+static int wait_child(int pid, int timeout_ms)
+{
+    int st = 0;
+    int waited = 0;
+    for (;;) {
+        int r = sy4(SYS_wait4, pid, (int)&st, 1 /*WNOHANG*/, 0);
+        if (r == pid) {
+            if ((st & 0x7f) == 0) return (st >> 8) & 0xff;   /* 正常退出 */
+            return 128 + (st & 0x7f);                         /* 被信号杀 */
+        }
+        if (r < 0 && r != -11 /*EAGAIN*/) return -2;
+        if (waited >= timeout_ms) {
+            sy2(SYS_kill, pid, 9);          /* SIGKILL */
+            sy4(SYS_wait4, pid, (int)&st, 0, 0);
+            return -1;
+        }
+        msleep(50);
+        waited += 50;
+    }
+}
+
+/* 检查某 TCP 端口是否在 LISTEN（读 /proc/net/tcp）
+ * 用来验证"模块真的起来了"，而不是只看载体退出码 */
+static int port_listening(int port)
+{
+    static char buf[8192];
+    int n = readfile("/proc/net/tcp", buf, sizeof buf);
+    if (n <= 0) return 0;
+    char *p = buf;
+    /* 跳过表头行 */
+    while (*p && *p != '\n') p++;
+    while (*p) {
+        if (*p == '\n') p++;
+        if (!*p) break;
+        /* 每行: sl local_address rem_address st ...
+         * local_address 形如 "0100007F:1E61"（端口小端 hex） */
+        char *q = p;
+        int field = 0;
+        char *local = 0;
+        while (*q && *q != '\n') {
+            while (*q == ' ') q++;
+            if (field == 1) { local = q; break; }
+            while (*q && *q != ' ' && *q != '\n') q++;
+            field++;
+        }
+        if (local) {
+            char *colon = 0;
+            for (char *t = local; *t && *t != ' ' && *t != '\n'; t++)
+                if (*t == ':') colon = t;
+            if (colon) {
+                int v = 0;
+                for (char *t = colon + 1; *t && *t != ' ' && *t != '\n'; t++) {
+                    int d;
+                    if (*t >= '0' && *t <= '9') d = *t - '0';
+                    else if (*t >= 'A' && *t <= 'F') d = *t - 'A' + 10;
+                    else if (*t >= 'a' && *t <= 'f') d = *t - 'a' + 10;
+                    else break;
+                    v = v * 16 + d;
+                }
+                /* /proc/net/tcp 的端口是主机字节序的十六进制串 */
+                if (v == port) return 1;
+            }
+        }
+        while (*p && *p != '\n') p++;
+    }
+    return 0;
+}
+
+/* 读 module.prop 里的某个整数键，如 verify_port=7777
+ * 找不到返回 -1 */
+static int prop_int(const char *dir, const char *key)
+{
+    char path[160];
+    static char buf[512];
+    scpy(path, dir, sizeof path);
+    scat(path, "/module.prop", sizeof path);
+    if (readfile(path, buf, sizeof buf) <= 0) return -1;
+    int klen = slen(key);
+    for (char *p = buf; *p; ) {
+        /* 逐行 */
+        char *e = p;
+        while (*e && *e != '\n') e++;
+        /* 该行是否以 key= 开头 */
+        int i = 0;
+        while (i < klen && p[i] == key[i]) i++;
+        if (i == klen && p[i] == '=') {
+            int v = 0, any = 0;
+            for (char *t = p + i + 1; t < e && *t >= '0' && *t <= '9'; t++) {
+                v = v * 10 + (*t - '0'); any = 1;
+            }
+            if (any) return v;
+        }
+        p = e;
+        if (*p == '\n') p++;
+    }
+    return -1;
+}
+
+/* 载入一个代码模块：fork 出载体进程，LD_PRELOAD 模块 .so
+ * 返回 0 成功，<0 失败 */
+static int run_code_module(const char *name, const char *so, int verify_port, int timeout_ms)
+{
+    lg("  load "); lg(name);
+    lg(" verify_port="); lgd(verify_port);
+    lg("\n");
+
+    int pid = sy0(SYS_fork);
+    if (pid < 0) { lg("  fork FAIL\n"); return -1; }
+    if (pid == 0) {
+        /* ---- 载体进程：崩了也只死这里 ---- */
+        sy0(SYS_setsid);
+        static char env[256];
+        scpy(env, "LD_PRELOAD=", sizeof env);
+        scat(env, so, sizeof env);
+        static char a0[] = "busybox";
+        static char a1[] = "true";
+        static char *argv[] = { a0, a1, 0 };
+        static char *envp[] = { env, 0 };
+        /* 先试 /bin/busybox，再试 /usr/bin/busybox */
+        sy3(SYS_execve, (int)"/bin/busybox", (int)argv, (int)envp);
+        sy3(SYS_execve, (int)"/usr/bin/busybox", (int)argv, (int)envp);
+        sy3(SYS_execve, (int)"/bin/true", (int)argv, (int)envp);
+        sy1(SYS_exit, 127);
+        for (;;) {}
+    }
+
+    int rc = wait_child(pid, timeout_ms);
+    if (rc < 0) {
+        lg(rc == -1 ? "  TIMEOUT -> killed\n" : "  wait4 error\n");
+        return -1;
+    }
+    lg("  carrier exit="); lgd(rc); lg("\n");
+    if (rc != 0) {
+        lg("  NONZERO -> fail\n");
+        return -1;
+    }
+    /* 载体正常退出。若声明了 verify_port，确认服务真的起来了 */
+    if (verify_port > 0) {
+        int ok = 0;
+        for (int i = 0; i < 20; i++) {          /* 最多等 2 秒 */
+            if (port_listening(verify_port)) { ok = 1; break; }
+            msleep(100);
+        }
+        if (!ok) { lg("  verify_port NOT listening -> fail\n"); return -1; }
+        lg("  verify_port OK\n");
+    }
+    return 0;
+}
+
+/* 标记失败（黑名单） */
+static void mark_failed(const char *name)
+{
+    char path[200];
+    scpy(path, STATEDIR, sizeof path);
+    scat(path, "/", sizeof path);
+    scat(path, name, sizeof path);
+    scat(path, ".failed", sizeof path);
+    writefile(path, "1\n", 2);
+}
+
+/* 是否上次失败过 */
+static int is_failed(const char *name)
+{
+    char path[200];
+    scpy(path, STATEDIR, sizeof path);
+    scat(path, "/", sizeof path);
+    scat(path, name, sizeof path);
+    scat(path, ".failed", sizeof path);
+    return exists(path);
+}
+
+/* 加载全部模块 */
+static void load_modules(void)
+{
+    lg("--- modules ---\n");
+    sy2(SYS_mkdir, (int)MODDIR, 0755);
+    sy2(SYS_mkdir, (int)STATEDIR, 0755);
+
+    /* ---- ① agent 永远第一个，独立于模块目录 ----
+     * 这样即使后面的模块搞坏系统，agent 也已经起来了，可远程排查。 */
+    if (exists("/log/zvegisk/agent.so")) {
+        int en = 0;
+        static char b[16];
+        if (readfile("/log/zvegisk/agent_enable", b, sizeof b) > 0 && shas(b, "true")) en = 1;
+        if (!en && readfile("/setting/zvegisk/agent_enable", b, sizeof b) > 0 && shas(b, "true")) en = 1;
+        if (en) {
+            if (is_failed("agent")) lg("  agent SKIPPED (blacklisted)\n");
+            else if (run_code_module("agent", "/log/zvegisk/agent.so", 7777, 8000) < 0) {
+                lg("  agent FAIL -> blacklist\n");
+                mark_failed("agent");
+            } else lg("  agent OK\n");
+        } else lg("  agent disabled\n");
+    } else lg("  no agent.so\n");
+
+    /* ---- ② 模块目录 ---- */
+    int dfd = sy4(SYS_open, (int)MODDIR, 0x10000 /*O_DIRECTORY*/, 0, 0);
+    if (dfd < 0) { lg("  no mods dir\n"); return; }
+
+    static char dbuf[4096];
+    int n;
+    int fails = 0;
+    int count = 0;
+    while ((n = sy3(217 /*getdents64*/, dfd, (int)dbuf, sizeof dbuf)) > 0) {
+        for (int off = 0; off < n; ) {
+            /* struct linux_dirent64 { u64 ino; s64 off; u16 reclen; u8 type; char name[] } */
+            unsigned short reclen = *(unsigned short *)(dbuf + off + 16);
+            unsigned char dtype = *(unsigned char *)(dbuf + off + 18);
+            char *nm = dbuf + off + 19;
+            if (reclen == 0) break;
+            if (nm[0] != '.') {
+                lg("mod: "); lg(nm); lg("\n");
+                count++;
+                if (count > MAX_MODS) { lg("  too many, stop\n"); break; }
+                if (fails >= MAX_FAIL) { lg("  BREAKER open, skip rest\n"); off += reclen; continue; }
+
+                char dir[200];
+                scpy(dir, MODDIR, sizeof dir);
+                scat(dir, "/", sizeof dir);
+                scat(dir, nm, sizeof dir);
+
+                /* disabled 文件存在 ⇒ 跳过 */
+                char dp[220];
+                scpy(dp, dir, sizeof dp); scat(dp, "/disabled", sizeof dp);
+                if (exists(dp)) { lg("  disabled\n"); off += reclen; continue; }
+                if (is_failed(nm)) { lg("  blacklisted\n"); off += reclen; continue; }
+
+                /* lib/<name>.so ⇒ 代码模块 */
+                char so[240];
+                scpy(so, dir, sizeof so); scat(so, "/lib/", sizeof so); scat(so, nm, sizeof so); scat(so, ".so", sizeof so);
+                if (exists(so)) {
+                    int vp = prop_int(dir, "verify_port");
+                    if (run_code_module(nm, so, vp, 8000) < 0) {
+                        lg("  FAIL -> blacklist\n");
+                        mark_failed(nm);
+                        fails++;
+                    } else lg("  OK\n");
+                    off += reclen;
+                    continue;
+                }
+                /* system/ ⇒ 资源模块（Phase 2 才实现） */
+                char sys[220];
+                scpy(sys, dir, sizeof sys); scat(sys, "/system", sizeof sys);
+                if (exists(sys)) lg("  overlay (Phase2 未实现)\n");
+                else lg("  empty module, ignore\n");
+            }
+            off += reclen;
+        }
+        if (count > MAX_MODS) break;
+    }
+    sy1(SYS_close, dfd);
+    lg("--- modules done, fails="); lgd(fails); lg(" ---\n");
+}
+
 /* 立刻卸载 SD 卡，把冲突窗口压到毫秒级 */
 static void unmount_sd(void)
 {
@@ -251,7 +540,14 @@ static void work(void)
         return;
     }
 
-    /* ③ 挂 SD 卡 */
+    /* ③ ★★ 加载模块（agent 最先行）
+     *   放在挂 SD 之前：模块都在 /log（内部），不依赖 SD 是否插着。
+     *   这样即使没 SD 卡、或 SD 挂了，agent 依然能起来，
+     *   保证"出问题时你有远程通道"。 */
+    load_modules();
+    flushlog();
+
+    /* ④ 挂 SD 卡 */
     if(mount_sd()!=0){ lg("sd_unavailable -> nothing\n"); flushlog(); return; }
 
     /* ④ 读 boot_mode */
