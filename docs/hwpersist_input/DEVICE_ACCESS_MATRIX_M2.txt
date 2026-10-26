@@ -1,0 +1,574 @@
+# 按库的设备/持久化路径访问（来源 /mnt/build/fw/ref_m2/lib/*.so）
+# ★ 这是字符串级证据: 只证明该串存在于该库, 未证明调用点/时序/是否写入
+
+AdjChkConfig.so
+    /dev/mem
+CameraOnDemandSaver.so
+    /dev/mem
+    /dev/mmca
+    /dev/mmcb
+    /dev/ms
+    /setting/psd.bin
+appFw.so
+    /dev/mem
+    /dev/mmca
+    /dev/mmcb
+    /dev/nflasha23
+    /dev/nflasha30
+    /dev/random
+    /dev/urandom
+    /setting.bin
+    /setting/acctime1.bin
+    /setting/acctime2.bin
+    /setting/facedmy.bin
+    /setting/facerec
+    /setting/sen/smode
+    /setting/sig.txt
+libCertificateManager.so
+    /dev/nflasha12
+libGetLog.so
+    /dev/mem
+    /dev/mmca
+    /dev/mmca/log
+    /dev/mmca/log/errorlog.txt
+    /dev/mmca/log/logdata.dat
+    /dev/stream
+    /dev/urandom
+    /setting/kemco.txt
+libInfraAccessLog.so
+    /dev/stream
+libInfraAppRemoteBoard.so
+    /dev/mem
+libInfraBluetoothCore.so
+    /dev/ttyBT
+libInfraCCPF.so
+    /dev/mem
+    /dev/stream
+    /dev/stream2
+    /dev/urandom
+    /device/code
+    /device/registration
+    /device/token
+    /devices/
+libInfraCCPFStatic.so
+    /dev/mem
+    /dev/stream
+    /dev/stream2
+    /dev/urandom
+libInfraCryptCore.so
+    /dev/
+    /dev/block/
+    /dev/disk/by-uuid
+    /dev/shm
+    /dev/spidev0.0
+    /dev/urandom
+    /device/uevent
+libInfraDlnaControl.so
+    /dev/ms
+    /deviceInfo/deviceFile.bin
+    /deviceInfo/deviceNumber.bin
+libInfraFsys.so
+    /dev/dma330
+    /dev/mem
+    /dev/mmca
+    /dev/mmca/test
+    /dev/mmca/test0.dat
+    /dev/mmca1
+    /dev/mmcaa
+    /dev/mmcab
+    /dev/mmcac
+    /dev/mmcad
+    /dev/mmcb
+    /dev/mmcba
+    /dev/mmcbb
+    /dev/mmcbc
+    /dev/mmcbd
+    /dev/mmcc
+    /dev/mmcca
+    /dev/mmccb
+    /dev/mmccc
+    /dev/mmccd
+    /dev/mmcd
+    /dev/mmcda
+    /dev/mmcdb
+    /dev/mmcdc
+    /dev/mmcdd
+    /dev/mmce
+    /dev/mmcea
+    /dev/mmceb
+    /dev/mmcec
+    /dev/mmced
+    /dev/ms
+    /dev/mssdadp0
+    /dev/mssdadp1
+    /dev/nflasha15
+    /dev/nflasha23
+    /dev/nflasha24
+    /dev/nflasha25
+    /dev/nflasha27
+    /dev/nflasha28
+    /dev/nflasha29
+    /dev/nvme0n1
+    /dev/nvme1n1
+    /dev/nvme2n1
+    /dev/sata
+    /dev/sataa
+    /dev/satab
+    /dev/satac
+    /dev/satad
+    /dev/satassd
+    /dev/satauhs
+    /dev/satauhsa
+    /dev/satauhsb
+    /dev/sda
+    /dev/sdb
+    /dev/sdc
+    /dev/sdd
+    /dev/stream
+    /dev/sxs_blk0
+    /dev/sxs_blk1
+    /dev/usb_ext0
+libInfraHdmi.so
+    /dev/hdmi
+    /dev/mem
+libInfraIPTC.so
+    /setting/
+    /setting/IPTC_001.XMP
+libInfraKikiLogGenerator.so
+    /dev/stream
+    /dev/usb/kikilog
+libInfraMFi.so
+    /dev/urandom
+libInfraMediaCommon.so
+    /dev/
+    /dev/all
+    /dev/dma330
+    /dev/ioexp
+    /dev/mcmn
+    /dev/mem
+    /dev/mmca
+    /dev/mmca-char
+    /dev/mmca1
+    /dev/mmcaa
+    /dev/mmcab
+    /dev/mmcac
+    /dev/mmcad
+    /dev/mmcb
+    /dev/mmcb-char
+    /dev/mmcb1
+    /dev/mmcba
+    /dev/mmcbb
+    /dev/mmcbc
+    /dev/mmcbd
+    /dev/mmcc
+    /dev/mmcc-char
+    /dev/mmcc1
+    /dev/mmcca
+    /dev/mmccb
+    /dev/mmccc
+    /dev/mmccd
+    /dev/mmcd
+    /dev/mmcd-char
+    /dev/mmcda
+    /dev/mmcdb
+    /dev/mmcdc
+    /dev/mmcdd
+    /dev/mmce
+    /dev/mmce-char
+    /dev/mmcea
+    /dev/mmceb
+    /dev/mmcec
+    /dev/mmced
+    /dev/ms
+    /dev/ms-char
+    /dev/ms1
+    /dev/ms2
+    /dev/ms3
+    /dev/ms4
+    /dev/ms5
+    /dev/ms6
+    /dev/ms7
+    /dev/msa
+    /dev/msb
+    /dev/mssdadp0
+    /dev/mssdadp1
+    /dev/nflasha1
+    /dev/nflasha10
+    /dev/nflasha11
+    /dev/nflasha12
+    /dev/nflasha13
+    /dev/nflasha14
+    /dev/nflasha15
+    /dev/nflasha16
+    /dev/nflasha17
+    /dev/nflasha18
+    /dev/nflasha19
+    /dev/nflasha2
+    /dev/nflasha20
+    /dev/nflasha21
+    /dev/nflasha22
+    /dev/nflasha23
+    /dev/nflasha24
+    /dev/nflasha25
+    /dev/nflasha26
+    /dev/nflasha27
+    /dev/nflasha28
+    /dev/nflasha29
+    /dev/nflasha3
+    /dev/nflasha30
+    /dev/nflasha31
+    /dev/nflasha4
+    /dev/nflasha5
+    /dev/nflasha6
+    /dev/nflasha7
+    /dev/nflasha8
+    /dev/nflasha9
+    /dev/nvme
+    /dev/nvme0n1
+    /dev/nvme1n1
+    /dev/nvme2n1
+    /dev/sata
+    /dev/sataa
+    /dev/satab
+    /dev/satac
+    /dev/satad
+    /dev/satassd
+    /dev/satauhs
+    /dev/satauhsa
+    /dev/satauhsb
+    /dev/sda
+    /dev/sdb
+    /dev/sdc
+    /dev/sdd
+    /dev/sr0
+    /dev/sr1
+    /dev/stream
+    /dev/stream2
+    /dev/sxs_blk0
+    /dev/sxs_blk1
+    /dev/urandom
+    /dev/usb_ext0
+    /device/device/remove
+    /setting/mode
+    /setting/mode/cmode
+    /setting/sen/smode
+libInfraMediaDetect.so
+    /setting/mode/cmode
+libInfraMtpServer.so
+    /dev/dma330
+    /dev/mem
+    /dev/stream
+libInfraNetworkCommon.so
+    /dev/urandom
+libInfraPtpControl.so
+    /dev/stream2
+    /dev/usb/sicd_core
+    /dev/usb/sicd_data
+    /dev/usb/sicd_event
+libInfraRemote.so
+    /dev/dma330
+    /dev/mem
+    /dev/stream
+    /device
+    /deviceFile.bin
+    /deviceNumber.bin
+    /deviceType
+    /setting/sen/smode
+libInfraSKD.so
+    /dev/
+    /dev/block/
+    /dev/disk/by-uuid
+    /dev/lxssclient
+    /dev/shm
+    /dev/spidev0.0
+    /dev/urandom
+    /dev/vboxguest
+    /dev/vboxuser
+    /device/uevent
+    /devices
+    /devices/system/clocksource/clocksource0/available_clocksource
+    /devices/system/cpu/hotplug/status
+libInfraStreamingUsb.so
+    /dev/dma330
+    /dev/mem
+libInfraUsbCmn.so
+    /dev/dv
+    /dev/gpio
+    /dev/ha
+    /dev/hd
+    /dev/hrd
+    /dev/hrdb
+    /dev/mm
+    /dev/mmca
+    /dev/mmcab
+    /dev/mmcb
+    /dev/mmcbb
+    /dev/mmccb
+    /dev/ms
+    /dev/msb
+    /dev/msbb
+    /dev/nf
+    /dev/pafl
+    /dev/paflb
+    /dev/sata
+    /dev/satauhs
+    /dev/sda
+    /dev/sdb
+    /dev/sdc
+    /dev/sdd
+    /dev/sr0
+    /dev/sr1
+    /dev/ssd
+    /dev/usb/adb
+    /dev/usb/audio
+    /dev/usb/cur
+    /dev/usb/event
+    /dev/usb/gadgetcore
+    /dev/usb/massstorage
+    /dev/usb/otgcore
+    /dev/usb/portmon
+    /dev/usb/scsi
+    /dev/usb/sen
+    /dev/usb/sicd_core
+    /dev/usb/ter
+    /dev/usb/usbcore
+    /dev/usb/usbg_bspwr
+    /dev/usb/video
+    /setting/sen/smode
+libInfraUsbHostStorage.so
+    /dev/sd
+    /dev/sr
+libJiritsu.so
+    /dev/mem
+    /dev/nflasha6
+libMWF.so
+    /dev/mem
+libNetCommon.so
+    /device
+    /deviceType
+libNetService.so
+    /dev/mmca1
+    /dev/nflasha17
+    /dev/null
+    /dev/urandom
+libObj.so
+    /dev/blog_compass
+    /dev/cec
+    /dev/compass
+    /dev/dmpgles2
+    /dev/fb0
+    /dev/gpio
+    /dev/ldec
+    /dev/loop
+    /dev/mem
+    /dev/mmca
+    /dev/mmcaa
+    /dev/mmcab
+    /dev/mmcb
+    /dev/mmcba
+    /dev/mmcbb
+    /dev/mmcbc
+    /dev/mmcbd
+    /dev/mmcc
+    /dev/mmcca
+    /dev/mmccb
+    /dev/mmccc
+    /dev/mmccd
+    /dev/ms
+    /dev/msa
+    /dev/msb
+    /dev/mssdadp0
+    /dev/mssdadp1
+    /dev/nflasha
+    /dev/nflasha1
+    /dev/nflasha10
+    /dev/nflasha11
+    /dev/nflasha12
+    /dev/nflasha13
+    /dev/nflasha14
+    /dev/nflasha15
+    /dev/nflasha16
+    /dev/nflasha17
+    /dev/nflasha18
+    /dev/nflasha19
+    /dev/nflasha2
+    /dev/nflasha20
+    /dev/nflasha21
+    /dev/nflasha22
+    /dev/nflasha23
+    /dev/nflasha24
+    /dev/nflasha25
+    /dev/nflasha26
+    /dev/nflasha27
+    /dev/nflasha28
+    /dev/nflasha29
+    /dev/nflasha3
+    /dev/nflasha30
+    /dev/nflasha31
+    /dev/nflasha4
+    /dev/nflasha5
+    /dev/nflasha6
+    /dev/nflasha7
+    /dev/nflasha8
+    /dev/nflasha9
+    /dev/null
+    /dev/sata
+    /dev/sataa
+    /dev/satab
+    /dev/satac
+    /dev/satad
+    /dev/satassd
+    /dev/satauhs
+    /dev/satauhsa
+    /dev/satauhsb
+    /dev/sda
+    /dev/sdb
+    /dev/sdc
+    /dev/sdd
+    /dev/sr0
+    /dev/sr1
+    /dev/stream
+    /dev/sxs_blk0
+    /dev/sxs_blk1
+    /dev/tp
+    /dev/ttyAM1
+    /dev/usb_ext0
+    /setting
+    /setting/.hasp
+    /setting/gps
+    /setting/gps/assistme.dat
+    /setting/mode
+    /setting/mode/cmode
+    /setting/sen
+    /setting/sen/
+    /setting/sen/smode
+    /setting/updater
+    /setting/updater/dat4
+    /setting/updater/mode
+    /setting/updater/mode1
+    /setting/updater/mode3
+    /setting/updater/mode6
+    /tmp_updater
+    /tmp_updater/root/IAMSIGNDISABLED
+    /tmp_updater/root/IAMSIGNENABLED
+    /tmp_updater/version.txt
+libOnDemandLoader.so
+    /dev/mem
+    /dev/mmca
+    /dev/mmcb
+    /dev/ms
+    /dev/ms1
+    /dev/stream
+libResourceBluetooth.so
+    /dev/gpio
+libRsrcHotshoe.so
+    /dev/gpio
+    /dev/mem
+libUsbBusPower.so
+    /dev/usb/buspwr
+libUsbChargingApp.so
+    /dev/usb/buspwr
+libUsbControl.so
+    /dev/gpio
+    /dev/mem
+    /dev/usb/buspwric
+libWlanAdjust.so
+    /dev/nflasha23
+    /dev/nflasha23/INFO
+    /dev/nflasha23/INFO/WIFI_INF.TXT
+    /dev/nflasha23/INFO/WPS_PIN.TXT
+    /dev/urandom
+libWlanControlCommon.so
+    /dev/gpio
+    /dev/mem
+libWlanResource.so
+    /dev/gpio
+    /dev/mmca1
+libcom_err.so
+    /dev/tty
+libcrypto.so
+    /dev/hwrng
+    /dev/random
+    /dev/srandom
+    /dev/tty
+    /dev/urandom
+libexpat.so
+    /dev/urandom
+libkvsWebrtcClient.so
+    /dev/urandom
+libmintx.so
+    /device
+    /deviceList
+    /deviceType
+libmpr.so
+    /dev/dma330
+    /dev/dmac
+    /dev/mem
+    /dev/stream
+    /dev/stream2
+libosal_uipc.so
+    /dev/uipc
+libosal_ulogio.so
+    /dev/mem
+    /dev/ttyAM0
+libpcap.so
+    /dev/usbmon
+libprocps.so
+    /dev/
+    /dev/3270/tty
+    /dev/iseries/vtty
+    /dev/pts/
+    /dev/tty
+    /dev/ttyACM
+    /dev/ttyB
+    /dev/ttyC
+    /dev/ttyCH
+    /dev/ttyD
+    /dev/ttyE
+    /dev/ttyEQ
+    /dev/ttyF
+    /dev/ttyH
+    /dev/ttyI
+    /dev/ttyL
+    /dev/ttyM
+    /dev/ttyMX
+    /dev/ttyP
+    /dev/ttyR
+    /dev/ttyS
+    /dev/ttySI
+    /dev/ttySR
+    /dev/ttyT
+    /dev/ttyU
+    /dev/ttyUB
+    /dev/ttyUSB
+    /dev/ttyV
+    /dev/ttyW
+    /dev/ttyX
+    /dev/ttyY
+libsencore.so
+    /dev
+    /dev/gpio
+    /dev/mem
+    /dev/mode
+    /dev/nflasha5
+    /setting
+    /setting/.etools
+    /setting/.hasp
+    /setting/sen/
+    /setting/sen/smode
+libssp.so
+    /dev/tty
+    /dev/urandom
+libul_GpioCtrl.so
+    /dev/gpio
+libupdaterufp.so
+    /dev/mem
+    /dev/nflasha1
+    /setting/updater/dat4
+    /tmp_updater
+    /tmp_updater/Firm.dat
+    /tmp_updater/updater/update/accsy/ACCYFIRM.BIN
+libupdaterufunc.so
+    /dev/mem
+libusbcmd.so
+    /dev/usb/usb_extcmd
