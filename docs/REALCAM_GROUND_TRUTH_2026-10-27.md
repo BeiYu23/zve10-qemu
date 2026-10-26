@@ -1138,3 +1138,47 @@ pc=0x08a397fc  →  映射到 libBizFw.so 偏移 0x427FC
 1. 查 `AvbbcLogManager::getInstance` 的 NULL 来源（很可能是日志实例未初始化 → 与 `0x8F013A` 日志服务应答是否完整有关）；
 2. 继续用"内核态服务"这一招补其它缺的服务（比用户态稳）；
 3. 关注判据：`GRM2 > 0` 且 `/dev/stream` 从均匀 `0x5A5A` 变非均匀。
+
+---
+
+## 28. 第 41 轮：MA 通之后的两个新卡点，逐个拆
+
+### 28.1 `AvbbcLogManager::getInstance` 的 NULL 已定位并可绕过
+
+```
+0x427ec: ldr r5,[r5,r3]            ; 取静态 map<string,AVBBC_SET*> 表地址
+0x427ee: ldr r6,[r5,r4,lsl #2]     ; 取实例
+0x427f2: cmp r6,#0 ; bne 使用
+0x427f8: blx ConvertDef2Set(id)    ; ★ 未命中返回 NULL
+0x427fc: ldrh r3,[r0,#0]           ; ★ 崩溃点（r0=0）
+```
+
+`ConvertDef2Set` 是 `std::map<u32, DefAvbbcLog::AVBBC_SET*>::find` 查表 —— 表**没被填充**才会返回 NULL。
+填充函数是 `AvbbcLogManager::Initialize()`（`0x4275C`，循环 `SetDef2Set(…, 12 字节表项)`，无文件 IO）。
+
+**实测**：在 preload 里 `dlopen("//lib/libBizFw.so", RTLD_NOW|RTLD_GLOBAL)` 后直接调用
+`_ZN15AvbbcLogManager10InitializeEv`：
+
+```
+BF h=0x000229a0  BF ini=0x08c3975d  BF ini done     ← 成功
+```
+
+⇒ **这个 NULL 崩溃消失了**（说明就是"表没初始化"）。
+
+### 28.2 紧接着的新崩溃：在 `ld-2.11.2.so` 内部
+
+```
+[current task] im.elf.real (THREAD_INFRA1)
+address: 00000004  trap_no 0xe
+pc=0x0400a706  →  ld-2.11.2.so +0xA706
+```
+
+glibc 2.11 的动态链接器内部空指针（NULL+4）——**高度可疑是我们这个 preload 里
+"另起线程 dlopen + 调符号"与 App 自己的 dlopen 争用 ld.so 状态**（2.11 的 ld.so 对并发 dlopen 并不健壮）。
+
+### 28.3 下一轮
+
+1. **不用 dlopen**：从 `/proc/self/maps` 拿到 `libBizFw.so` 已映射的基址，按偏移
+   （`Initialize = 基址 + 0x4275D`，Thumb 位）直接调用——完全避开 ld.so 的全局锁；
+2. 若仍崩在 ld.so：把初始化调用**改到主线程**（例如在拦到的某个 App 函数里顺手调用），避免跨线程 dlopen；
+3. 继续盯判据：`GRM2 > 0`、`/dev/stream` 由 `0x5A5A` 变非均匀。
