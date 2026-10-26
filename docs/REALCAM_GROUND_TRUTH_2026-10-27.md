@@ -1734,3 +1734,35 @@ a706: ldr r5,[r5,#4]        ; ★ r5 非法 ⇒ 崩
    `readelf -d libgrmlog.so | grep -E "INIT"`，并与一个正常库对照；
 2. 若确实异常：改成**不用构造器**（把初始化放到第一次被拦截调用时惰性执行），再跑对照；
 3. 这一步若通过，libMWF 就能被我们安全地提前加载，`libObj` 的 MWF 模板符号绑定也不会再失败。
+
+---
+
+## 42. 第 55 轮：把 "undefined symbol" 的性质查清（WEAK 定义 vs GLOBAL 引用）+ 确认镜像内库一致
+
+### 42.1 事实核对
+
+| 项 | 结果 |
+|---|---|
+| 镜像内 `/usr/lib/libObj.so` 与固件 dump 的 libObj | **md5 完全一致**（12cf982d…），没被我们改坏 |
+| 镜像内 `/usr/lib/libMWF.so`（247,776 B）是否定义 `ParamStd_Template<u16,6>::ctor` | **定义**，但是 **WEAK** |
+| libObj 里同一符号 | **GLOBAL, UND** |
+| libObj 的 `DT_NEEDED` | **包含 `libMWF.so`** ✓ |
+| rootfs `/lib/libMWF.so` | 是指向 `/usr/lib/libMWF.so` 的**符号链接** ✓ |
+
+⇒ 定义存在、依赖声明也存在，那么运行期报 "undefined symbol" 只剩两种解释：
+1. **该次调用发生在 libMWF 尚未被加载的时刻**（时序）；
+2. glibc 2.11 在某种 scope 组合下（我们 `LD_PRELOAD` 介入）没把 WEAK 定义纳入查找。
+
+### 42.2 另一个重要线索
+
+任何"我们自己提前把 libMWF 加载进来"的做法（构造器 dlopen / 线程 dlopen / LD_PRELOAD），
+都会在 **ld.so 处理 `DT_INIT_ARRAY`** 时崩（`ld.so +0xA706: ldr r5,[r5,#4]`，r5 非法）。
+
+而我们自己的 `libgrmlog.so` 的 INIT_ARRAY 段是规范的（`INIT_ARRAY=0x1ff54, INIT_ARRAYSZ=4`，与 libCoreSync 同形态）。
+
+### 42.3 下一轮（精确的 4 组对照）
+
+1. **只用 LD_PRELOAD 加载 libMWF（不带我们的探针）** → 验证 ld.so 的 INIT_ARRAY 崩溃是否由"预加载 libMWF 本身"引起；
+2. 只用我们的探针（不预加载 libMWF）→ 已知会报 MWF 符号 UND；
+3. 探针 + 在拦截 `dlopen("libObj.so")` 时**先同步加载 libMWF 再放行**（顺序化，避免嵌套）；
+4. 若 3 仍不通，改用 **`/etc/ld.so.preload`**（rootfs 里本来就有这个文件）注入，排除 `LD_PRELOAD` 次序因素。
