@@ -17,7 +17,20 @@
     .thumb_func
 _start:
     push    {r4-r11, lr}
+    /* Nine saved registers are 36 B; pad to keep SP mod 8 == 0 at BL. */
+    sub     sp, #4
+
+    /* .bss lives in eSRAM that previous stage-2 runs have used; clear it. */
+    ldr     r0, =__bss_start
+    ldr     r1, =__bss_end
+    movs    r2, #0
+1:  cmp     r0, r1
+    bhs     2f
+    str     r2, [r0], #4
+    b       1b
+2:
     bl      stage2_main
+    add     sp, #4
     pop     {r4-r11, pc}
     .ltorg
     .size _start, .-_start

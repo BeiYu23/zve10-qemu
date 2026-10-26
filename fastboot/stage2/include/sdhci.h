@@ -1,13 +1,12 @@
-#ifndef ZVE10_STAGE2_SDHCI_H
-#define ZVE10_STAGE2_SDHCI_H
+#ifndef ZVE10_SDHCI_H
+#define ZVE10_SDHCI_H
 
 #include "io.h"
 
 /*
- * ZV-E10 eMMC0: Arasan SD Host Controller at 0xF0304000, 4 KB window.
- * arch/arm/mach-cxd900x0/udif/platform.c:258 (EMMC0_IO_BASE) is the
- * authoritative source; the register layout is standard SDHCI and matches the
- * CXD90057 payload's include/sdhci.h.
+ * ZV-E10 eMMC0: Arasan SD Host Controller at 0xF0304000, 4 KB window
+ * (arch/arm/mach-cxd900x0/udif/platform.c:258 EMMC0_IO_BASE).
+ * Register layout is standard SDHCI, same as the CXD90057 payload's header.
  */
 
 #define SDHCI_BASE              0xF0304000u
@@ -50,6 +49,7 @@
 #define SDHCI_INT_BUF_READ_RDY  BIT(5)
 #define SDHCI_INT_ERROR         BIT(15)
 
+#define SDHCI_TRNS_DMA          BIT(0)
 #define SDHCI_TRNS_BLK_CNT_EN   BIT(1)
 #define SDHCI_TRNS_AUTO_CMD12   BIT(2)
 #define SDHCI_TRNS_READ         BIT(4)
@@ -64,23 +64,42 @@
 #define SDHCI_CMD_DATA_PRESENT  BIT(5)
 #define SDHCI_MAKE_CMD(idx, f)  (u16)(((idx) << 8) | (f))
 
-#define MMC_CMD_GO_IDLE_STATE       0
-#define MMC_CMD_SEND_OP_COND        1
-#define MMC_CMD_ALL_SEND_CID        2
-#define MMC_CMD_SET_RELATIVE_ADDR   3
-#define MMC_CMD_STOP_TRANSMISSION   12
-#define MMC_CMD_SELECT_CARD         7
-#define MMC_CMD_SEND_CSD            9
-#define MMC_CMD_SEND_STATUS         13
-#define MMC_CMD_READ_SINGLE_BLOCK   17
-#define MMC_CMD_READ_MULTIPLE_BLOCK 18
-#define MMC_CMD_WRITE_SINGLE_BLOCK  24
+/* MMC commands */
+#define MMC_CMD_GO_IDLE_STATE        0
+#define MMC_CMD_SEND_OP_COND         1
+#define MMC_CMD_ALL_SEND_CID         2
+#define MMC_CMD_SET_RELATIVE_ADDR    3
+#define MMC_CMD_SWITCH               6
+#define MMC_CMD_SELECT_CARD          7
+#define MMC_CMD_SEND_EXT_CSD         8
+#define MMC_CMD_SEND_CSD             9
+#define MMC_CMD_SEND_STATUS          13
+#define MMC_CMD_READ_SINGLE_BLOCK    17
+#define MMC_CMD_READ_MULTIPLE_BLOCK  18
+#define MMC_CMD_WRITE_BLOCK          24
 #define MMC_CMD_WRITE_MULTIPLE_BLOCK 25
 
-/* R1 status bits */
+/* EXT_CSD byte indices */
+#define EXT_CSD_PARTITION_CONFIG     179
+#define EXT_CSD_BUS_WIDTH            183
+#define EXT_CSD_HS_TIMING            185
+#define EXT_CSD_BOOT_SIZE_MULT       226
+
+#define MMC_BUS_WIDTH_1              0
+#define MMC_BUS_WIDTH_4              1
+#define MMC_BUS_WIDTH_8              2
+
+/* R1 status */
 #define MMC_R1_READY_FOR_DATA   BIT(8)
 #define MMC_R1_STATE(r)         (((r) >> 9) & 0xf)
 #define MMC_STATE_TRAN          4
+
+#define MMC_ERR_RESET           (-7)
+#define MMC_ERR_CLOCK           (-8)
+#define MMC_ERR_CARD_STATUS     (-9)
+#define MMC_ERR_ADDRESSING      (-10)
+#define MMC_ERR_TABLE           (-11)
+#define MMC_R1_ERROR_MASK       0xFDFFA080u
 
 #define MMC_OK                  0
 #define MMC_ERR_INHIBIT         (-1)
@@ -88,35 +107,23 @@
 #define MMC_ERR_CMD_ERROR       (-3)
 #define MMC_ERR_XFER            (-4)
 #define MMC_ERR_DATA_TIMEOUT    (-5)
+#define MMC_ERR_WRITE_TIMEOUT   (-6)
 
-/* 0xFE308000: outside the stage-2 image, readable with `oem peek`. */
-#define STAGE2_RESULT           0xFE308000u
-#define STAGE2_DATA             0xFE310000u
-/* [0]=block, [1]=count, [2]=mode: 0/other=read, 1=write (data is at STAGE2_DATA) */
-#define STAGE2_PARAMS           0xFE320000u
-#define STAGE2_DATA_MAX         0x10000u    /* 0xFE310000..0xFE320000: 128 blocks */
-#define STAGE2_MAGIC            0x3031455Au     /* "ZE10" little-endian */
+extern u16 mmc_last_error;
+extern u32 mmc_ocr, mmc_rca;
+extern int mmc_ready;
+extern u32 mmc_last_cmd, mmc_last_r1;
 
-struct stage2_result {
-    u32 magic;
-    u32 step;
-    u32 status;
-    u32 ocr;
-    u32 cid[4];
-    u32 csd[4];
-    u32 rca;
-    u32 r1;
-    u32 host_control;
-    u32 clock_control;
-    u32 caps;
-    u32 host_version;
-    u32 read_status;
-    u32 read_block;
-    u32 write_status;
-    u32 write_block;
-    u32 data_clk_div;
-};
+int mmc_init(void);
+int mmc_read_blocks(u32 start_block, void *buf, u32 nblocks);
+int mmc_write_blocks(u32 start_block, const void *buf, u32 nblocks);
 
-int stage2_main(void);
+/* Reads the 512-byte EXT_CSD; `buf` must be 4-byte aligned. */
+int mmc_read_ext_csd(u8 *buf);
+/* Size of boot0/boot1 in 512-byte sectors, from EXT_CSD[226]; 0 on failure. */
+u32 mmc_boot_partition_sectors(void);
+/* access: 0 = user area, 1 = boot0, 2 = boot1. Preserves BOOT_PARTITION_ENABLE
+ * and BOOT_ACK in EXT_CSD[179]; a no-op when the area is already selected. */
+int mmc_select_partition(u32 access);
 
-#endif /* ZVE10_STAGE2_SDHCI_H */
+#endif /* ZVE10_SDHCI_H */

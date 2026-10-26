@@ -1,21 +1,20 @@
-# Stage 2: eMMC identification, loaded over the main payload's USB link.
-# Linked at 0xFE300000 and entered with `oem call:0xfe300001`.
-
 CC      := clang
 LD      := arm-none-eabi-ld
 OBJCOPY := arm-none-eabi-objcopy
-OBJDUMP := arm-none-eabi-objdump
 SIZE    := arm-none-eabi-size
 
-TARGET  := stage2
-BUILD   := build
+TARGET  := stage2-fastboot-flash
+BUILD   ?= build-flash
+EXTRA_DEFS ?= -DHAVE_FLASH=1
 
 CFLAGS  := --target=armv7a-none-eabi -march=armv7-a -mthumb -mfloat-abi=soft \
            -mno-unaligned-access -ffreestanding -fno-builtin \
            -fno-stack-protector -fno-pic -fno-common \
            -fno-asynchronous-unwind-tables -fno-unwind-tables \
            -ffunction-sections -fdata-sections \
-           -Os -g -std=gnu11 -Wall -Wextra -Wno-unused-parameter -Iinclude
+           -Os -g -std=gnu11 -Wall -Wextra -Werror -Wno-unused-parameter -Iinclude \
+           -DHAVE_FETCH \
+           $(EXTRA_DEFS)
 
 LDFLAGS := -T link.ld -nostdlib --gc-sections -Map=$(BUILD)/$(TARGET).map \
            --build-id=none
@@ -25,18 +24,16 @@ SRCS_S := $(wildcard src/*.S)
 OBJS   := $(patsubst src/%.S,$(BUILD)/%.o,$(SRCS_S)) \
           $(patsubst src/%.c,$(BUILD)/%.o,$(SRCS_C))
 
-.PHONY: all clean disasm size
-
-all: $(BUILD)/$(TARGET).bin
+all: check-abi $(BUILD)/$(TARGET).bin
 
 $(BUILD)/$(TARGET).bin: $(BUILD)/$(TARGET).elf
 	$(OBJCOPY) -O binary $< $@
-	@echo "=== $@: $$(wc -c < $@) bytes (staging region 0xFE300000-0xFE307FFF) ==="
+	@echo "=== $@: $$(wc -c < $@) bytes ==="
 
 $(BUILD)/$(TARGET).elf: $(OBJS) link.ld
 	$(LD) $(LDFLAGS) -o $@ $(OBJS)
 
-$(BUILD)/%.o: src/%.c | $(BUILD)
+$(BUILD)/%.o: src/%.c $(wildcard include/*.h) | $(BUILD)
 	$(CC) $(CFLAGS) -c -o $@ $<
 
 $(BUILD)/%.o: src/%.S | $(BUILD)
@@ -48,9 +45,16 @@ $(BUILD):
 size: $(BUILD)/$(TARGET).elf
 	$(SIZE) -A $<
 
-disasm: $(BUILD)/$(TARGET).elf
-	$(OBJDUMP) -d $< > $(BUILD)/$(TARGET).disasm.txt
-	@echo $(BUILD)/$(TARGET).disasm.txt
-
 clean:
 	rm -rf $(BUILD)
+
+PYTHON ?= python3
+.PHONY: check-abi test
+check-abi:
+	$(PYTHON) -B ../tools/check_abi.py --build
+test:
+	sh tests/run.sh
+
+.PHONY: check-image
+check-image: all
+	$(PYTHON) -B ../tools/check_abi.py --build --image

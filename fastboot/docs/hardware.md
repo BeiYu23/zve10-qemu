@@ -57,7 +57,7 @@ Note: **if A6/A7 do not work, try B6/B7.**
 From the repository root:
 
 ```sh
-python3 fastboot/pico/reset_only.py --port /dev/cu.usbmodemXXXX
+python3 bootrom/pico/reset_only.py --port /dev/cu.usbmodemXXXX
 ```
 
 One GP27 reset, carrier off, and the camera returns to normal boot without

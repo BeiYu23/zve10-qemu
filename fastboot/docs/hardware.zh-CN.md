@@ -52,7 +52,7 @@ USB-C 公头（24pin 小板，A/B 两面都引出）
 从仓库根目录：
 
 ```sh
-python3 fastboot/pico/reset_only.py --port /dev/cu.usbmodemXXXX
+python3 bootrom/pico/reset_only.py --port /dev/cu.usbmodemXXXX
 ```
 
 发一次 GP27 复位、关闭载波，相机回到正常启动，不用拆电池。也可以直接断电/取电池：

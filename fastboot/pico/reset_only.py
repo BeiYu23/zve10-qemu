@@ -4,7 +4,7 @@ Use it to stop the 1L7S blink and return the camera to normal boot without
 removing the battery. Requires the v15 firmware.
 """
 import argparse
-from inspect_pico import Link
+from pico_link import Link
 
 VERSION = b'zve10_uart_od 15'
 

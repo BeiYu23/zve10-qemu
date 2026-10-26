@@ -1,11 +1,10 @@
 """Inject an arbitrary ARMv7 payload through the ZV-E10 BootROM serial boot.
 
-Same record group and v15 reset flow as the earlier injectors, but the payload comes
-from a file instead of being generated. The payload is loaded at 0xFE020000
+Uses the v15 sender reset flow and loads a payload from a file. The payload is loaded at 0xFE020000
 and entered at 0xFE020001 (Thumb).
 
     python inject_payload.py --port /dev/cu.usbmodemXXXX \
-        --file ../build/fastboot.bin --duration 90
+        --file prebuilt/stage1.bin --duration 90
 """
 import argparse
 import hashlib
@@ -15,7 +14,7 @@ import time
 import zlib
 from pathlib import Path
 
-from inspect_pico import Link
+from pico_link import Link
 
 VERSION = b'zve10_uart_od 15'
 V = 0x8CB102DC

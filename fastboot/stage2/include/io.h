@@ -3,7 +3,7 @@
 
 /*
  * ZV-E10 (CXD90045, ARMv7-A / Cortex-A9) bare-metal I/O helpers.
- * Derived from the ILCE-7M4-RE fastboot payload; addresses here are 32-bit.
+ * Peripheral addresses are 32-bit.
  */
 
 typedef unsigned char      u8;
