@@ -2744,3 +2744,41 @@ lr → libJiritsu.so +0x7316  =  IM_JIRITSU::CImJiritsu::req(...) 内部
    看**第一个调用者**是谁、它传的 `IMJ_REQUEST*` 从哪来；
 2. 该 `IMJ_REQUEST` 结构应由某个 `register` 类函数填充 —— 找到它并确认我们环境里**它是否被调用过**；
 3. 若它依赖 Jiritsu 子系统的初始化函数（如 `IM_Jiritsu_Init`），按已验证的"内联调用"方式补跑。
+
+---
+
+## 68. 第 81 轮：全队列发送序列拿到 —— Jiritsu 的坏消息是**唯一一条**非日志队列消息
+
+### 68.1 发送序列（`ab_v3190`，前 40 条 async send）
+
+```
+AS qid=0x011006E9  lr=0x054C5167          ← 早期（一个 UI/事件队列）
+AS qid=0x008F013A ×N  lr=0x040537EF / 0x05F88141 / 0x08DFFE1F   ← 日志队列（大量）
+AS qid=0x016F6089  lr=0x08DFF317          ← ★ 唯一一条 Jiritsu 请求（坏回调）
+AS qid=0x008F013A ×N  …                   ← 继续日志
+AS qid=0x008F013A  lr=0x299F8693 / 0x29A046E1   ← libBTUtils（蓝牙）在刷日志
+```
+
+⇒ **除日志外，App 只发过一条"真"异步消息 —— 就是那条坏回调的 Jiritsu 请求。**
+
+### 68.2 关于 `0x011006E9`（另一条队列）
+
+只出现一次（lr=0x054C5167，位于某个早期库）。它可能是**输入/事件队列**。
+值得下一轮确认：若它是 `osal_snd_sync_msg` 之外的主事件通道，那"投递框架启动事件"应该走它。
+
+### 68.3 Jiritsu 是什么（反汇编+字符串）
+
+* `libJiritsu.so` 只有 **9.4KB**，导出 `CImJiritsu::init/req/act/release/get_status`、`jiritsu_init/exit`；
+* `CImJiritsu::init` 里调 `osal_dynamic_id(42, 0x16F)` 申请动态队列 id（**0x016F6089** 就是这么来的）
+  然后用 `osal_create_waitable_thread` 起自己的线程；
+* **没有任何库 import 它**（`grep CImJiritsu` 只在 libJiritsu 自身命中）⇒
+  它是通过 **`jiritsu_init` 这类 C 导出被 dlsym/弱链接调用** 的；
+* 名字"Jiritsu"（自律）⇒ Sony 的**自管理任务子系统**。
+
+### 68.4 下一轮
+
+1. 在极简 shim 里 **拦 `dlsym`**：记录 App 对 `jiritsu_init` / `CImJiritsu` 系列符号的查询，
+   确认"谁在初始化 Jiritsu、何时"；
+2. 若 `CImJiritsu::init` **从未被调用**（而 `req` 被调了）⇒ 那就是根因：
+   队列没建好、消息结构没初始化就被使用；
+3. 若 init 被调了但失败（`osal_dynamic_id` 返回 0？），按其失败分支继续追。
