@@ -1035,3 +1035,49 @@ HIT RET116 (0x6BCC1E)  r0=0xFFFFFFFD(-3)                ← 判定失败，走�
 * 下一轮在 `0x768510`（读 obj->[16]）和 `0x767B22` 入口布点，看：
   1. obj->[16] 当时是多少；
   2. arg 是谁算出来的（回溯 `[r7+60]` 的赋值处），为什么是 NULL。
+
+---
+
+## 26. 第 39 轮：又一条 ABI 维度核对完毕（thread_info）；并记录两个"没跑通"的工具
+
+### 26.1 `thread_info` 与厂商模块一致（已验证）
+
+厂商 `osal_uipc.ko::osal_lock/osal_unlock` 直接裸操作 thread_info：
+
+```
+1ec: bic r3, sp, #8128 ; bic r3, r3, #63     ; r3 = current_thread_info()
+1f4: ldr r2, [r3, #4]      ; preempt_count
+1f8: sub r2, r2, #1
+1fc: str r2, [r3, #4]
+200: ldr r3, [r3, #0]      ; flags
+204: tst r3, #2            ; TIF_NEED_RESCHED
+208: beq → 返回;  否则 bl preempt_schedule
+```
+
+我们内核：
+
+```c
+struct thread_info { unsigned long flags; int preempt_count; ... struct task_struct *task; }
+#define preempt_count() (current_thread_info()->preempt_count)   /* include/linux/preempt.h:28 */
+```
+
+* `flags` @0、`preempt_count` @4、`task` @0xC —— **与厂商模块的假设完全一致** ✓
+* `CONFIG_THREAD_INFO_INDIRECT` **未开启**（若开启会把 task 挪到 +0x10，那才是灾难）
+* 结论：`thread_info` 不是问题源；`__migrate_enable` 的 WARN 另有原因。
+
+### 26.2 两个没跑通的工具（记录，避免重复踩）
+
+1. **in-guest qid 普查线程**：`pthread_create` 成功、打印了 `CENSUS started`，
+   但 10s 后应打印的 `QDUMP` 没出现（进程输出在 ~20s 就停了）⇒ 需要在**主机侧**做统计，
+   不要依赖 guest 内的延时线程；
+2. **GDB 断点在 0x7684DC / 0x7684F8 / 0x767B22 上"不命中"**，而 0x6BCC1E（返回点）能命中
+   ⇒ 说明失败路径不走这些函数（与上一轮结论一致：**这次连 MA 请求都没发**）。
+
+### 26.3 下一轮（转向内核侧，绕开 RT 用户态交付路径）
+
+用户态 DMM 应答会触发 RT 断言，最干净的做法是**内核态应答**（不走用户态交付）。
+上一轮 `init_module` 被拒（rc=-20），下一轮先把它搞定：
+
+1. 试 `init_module` 的不同姿势（可写缓冲、4 字节对齐、先 `delete_module` 冲突名、检查 `-20` 到底对应哪条错误路径）；
+2. 或用**现有已加载模块的接口**注册队列（例如让 `fake_gles` 里加 DMM 应答逻辑，随开机 insmod 加载，完全避免运行时加载）；
+3. 成功后再看内核 MA 是否能拿到合法 mspace，从而让 App 的 dmp_allocator 走通。
