@@ -156,7 +156,11 @@ static int mount_sd(void)
     lg("sd=");lgd(maj);lg(":");lgd(min);lg("\n");
 
     sy2(SYS_mkdir,(int)"/tmp/zdev",0755);
-    if(sy5(SYS_mount,(int)"tmpfs",(int)"/tmp/zdev",(int)"tmpfs",0,0)){lg("tmpfs_fail\n");return -1;}
+    /* ★ tmpfs 可能已被 check_loop() 挂好；重复挂会失败，但那不是错误。
+     *   判据：挂上失败后只要目录可用就继续。 */
+    if(sy5(SYS_mount,(int)"tmpfs",(int)"/tmp/zdev",(int)"tmpfs",0,0)){
+        lg("tmpfs already? -> continue\n");
+    }
 
     sy1(SYS_unlink,(int)"/tmp/zdev/p1");
     /* dev_t: (major<<8)|minor（小号够用） */

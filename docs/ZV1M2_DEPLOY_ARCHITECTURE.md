@@ -152,3 +152,77 @@ hybrid 镜像      = 300 MB
 
 **★★★ 第 0 步是**唯一的前置风险**：如果 loop 不可用，整套方案要退回
 "目录级符号链接农场"（432 个链接），复杂度高一个数量级。**
+
+---
+
+## 八、自检机制（让一次开机拿到两个关键答案）
+
+**在两处未知上用"自检 + 日志"替代"反复试错"：**
+
+### ① `check_preload()` —— libIMDB 从哪加载的
+
+```c
+读 /proc/self/maps
+找含 "libIMDB" 的行 → 打印整行（含路径）
+再检查 libObj / appFw 是否已加载（启动早期应为"未加载"）
+```
+
+**判读：**
+- **路径是 `/log/zvegisk/m2/libIMDB.so` ⇒ preload 三条目生效 ✓**
+- **路径是 `/usr/lib/libIMDB.so` ⇒ preload 没生效（仍是老引擎）**
+- **找不到 ⇒ 根本没加载**
+
+**★ 这个判读比"数 ld.so 报错条数"可靠 —— 因为 stderr 走 `console=ttynull` 被丢弃，看不到错误信息。**
+
+### ② `check_loop()` —— loop 设备是否可用
+
+```c
+mkdir /tmp/zdev
+mount tmpfs → /tmp/zdev           (因为 /tmp 是 vfat，不能 mknod)
+mknod /tmp/zdev/loop0 b 7 0
+open(loop0, O_RDWR)
+if (/log/zvegisk/m2usr.img 存在):
+    open image O_RDONLY
+    ioctl(loop0, LOOP_SET_FD=0x4C00, image_fd)
+    mount(loop0, /tmp/m2usr, "ext2", MS_RDONLY, 0)
+```
+
+**判读：**
+- **`loop_chk: mount ext2 OK => loop USABLE` ⇒ 整个方案成立**
+- **`mknod FAIL` ⇒ 权限问题**
+- **`LOOP_SET_FD FAIL` ⇒ loop 驱动不可用 ⇒ 退回符号链接农场方案**
+- **`m2usr.img absent -> basic test only` ⇒ 镜像还没传，只测了基础**
+
+### ⚠️ 顺带修掉一个自己引入的 bug
+
+**`check_loop()` 挂了 tmpfs 到 `/tmp/zdev`，而 `mount_sd()` 后面还要挂一次
+⇒ 第二次失败 ⇒ 误报 `sd_unavailable`。**
+
+**⇒ `mount_sd()` 改成容忍 tmpfs 已挂载：**
+
+```c
+if (sy5(SYS_mount, "tmpfs", "/tmp/zdev", "tmpfs", 0, 0)) {
+    lg("tmpfs already? -> continue\n");   // 不是错误
+}
+```
+
+### ⚠️ 部署时的顺序注意
+
+**`unmount_sd()` 会卸 `/tmp/zdev` ⇒ loop0 设备节点消失（但 loop 设备本身仍有效）。
+⇒ **实际的 bind 必须在 `unmount_sd()` 之前完成**，或者部署时不要卸 `/tmp/zdev`。**
+
+---
+
+## 九、内存影响（128MB 设备）
+
+```
+.text    30,116 B
+.rodata   2,684 B
+.data        48 B
+.bss     63,680 B   ← 自检的 32KB maps 缓冲
+─────────────────────
+RW 总计  ~64 KB = 128MB 的 0.05%   ✅ 可接受
+```
+
+**★ `.bss` 从 30KB 涨到 63KB（maps 缓冲 32KB）。
+`/proc/self/maps` 对 im.elf（97 个库）实测约 10KB，32KB 有充足余量。**
