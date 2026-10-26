@@ -407,6 +407,16 @@ int main(int argc,char **argv) {
      * its config object and internally dlopens+initialises the model/view config
      * modules. This is original firmware code doing the original work. */
     for(int si = 0; si < 200; si++) { usleep(10000); sample_threads(); }
+    /* Create the UX graphics engine with its own original creator:
+     * libObj+0x613134 does malloc(0x240) -> ctor 0x612b34 -> store into the
+     * GraphicsEngine singleton slot. We read the slot before/after to prove it. */
+    {
+        unsigned *slot = (unsigned *)(libobj_base + 0x13dcb78);
+        void (*create_engine)(void) = (void(*)(void))(libobj_base + 0x613134 + 1);
+        printf("MENUHOST engine slot before=%08x creator=%p\n", *slot, (void*)create_engine); fflush(0);
+        create_engine();
+        printf("MENUHOST engine slot after=%08x\n", *slot); fflush(0);
+    }
     {
         void *pth = load("/usr/lib/libpthread-2.11.2.so");
         int (*pcreate)(unsigned long *, const void *, void *(*)(void *), void *) =
