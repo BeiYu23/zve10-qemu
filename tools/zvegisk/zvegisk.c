@@ -42,6 +42,8 @@
 #define SYS_kill     37
 #define SYS_getpid   20
 #define SYS_lseek    19
+#define SYS_fsync   118
+#define SYS_sync     36
 #define PATHMAX     192
 #define MS_BIND     4096      /* 0x1000 */
 #define MNT_DETACH  2
@@ -194,6 +196,26 @@ static int mount_sd(void)
 #define MAX_OVL  32
 
 static int g_ovl_cnt;          /* 本次已挂载的覆盖层数量 */
+
+/* ★ 关键写入 + 落盘
+ *   vfat 的 close() 不保证数据已写入 flash。
+ *   如果系统在写完的下一秒就 panic 重启，数据会丢 ——
+ *   而那正是"连续失败计数"最需要可靠的时候。
+ *   ⇒ 关键文件（boot_count / safemode）必须 fsync。 */
+static int writefile_sync(const char *path, const char *data, int len)
+{
+    int fd = sy3(SYS_open, (int)path, 0x241 /*O_WRONLY|O_CREAT*/, 0644);
+    if (fd < 0) return -1;
+    int o = 0;
+    while (o < len) {
+        int r = sy3(SYS_write, fd, (int)(data + o), len - o);
+        if (r <= 0) break;
+        o += r;
+    }
+    sy1(SYS_fsync, fd);        /* ★ 刷到 flash */
+    sy1(SYS_close, fd);
+    return o;
+}
 
 /* 判断路径是否存在（文件或目录） */
 
@@ -659,6 +681,60 @@ static int apply_overlay_tree(const char *modroot, const char *rel, int *applied
     return 0;
 }
 
+/* ============================================================
+ * ★★★ 快速循环检测（针对"1 秒重启一次"这种场景）
+ *
+ * 思路：不能只靠 boot_count 数到 4 —— 万一系统在写完之前就 panic，
+ * 计数永远加不上去。
+ *
+ * 改为检测【上次启动有没有走完】：
+ *   开工时写 "RUNNING"，收工时写 "DONE"
+ *   ⇒ 下次开机如果读到 "RUNNING"，说明上次死在半路
+ *   ⇒ 连续 2 次死在半路 ⇒ 立刻删 preload 自救
+ *
+ * 这个信号不依赖计数累加，只要我们的代码能跑起来一次就能测出来。
+ * ============================================================ */
+
+#define PHASE_FILE "/setting/zvegisk/phase"
+#define RAPID_FILE "/setting/zvegisk/rapid_fail"
+
+static void phase_set(const char *v)
+{
+    writefile_sync(PHASE_FILE, v, slen(v));
+}
+
+/* 读一个小整数文件 */
+static int read_small_int(const char *path)
+{
+    static char b[16];
+    int v = 0, any = 0;
+    if (readfile(path, b, sizeof b) <= 0) return 0;
+    for (char *q = b; *q >= '0' && *q <= '9'; q++) { v = v * 10 + (*q - '0'); any = 1; }
+    return any ? v : 0;
+}
+
+static void write_small_int(const char *path, int v)
+{
+    char t[8]; int m = 0, l = 0;
+    if (v <= 0) t[m++] = '0';
+    while (v > 0) { t[m++] = (char)('0' + (v % 10)); v /= 10; }
+    char o[8];
+    while (m > 0) o[l++] = t[--m];
+    writefile_sync(path, o, l);
+}
+
+/* 立刻把自己从 preload 摘掉 */
+static void self_disable(const char *why)
+{
+    lg("SELF-DISABLE ("); lg(why); lg(")\n");
+    writefile_sync("/setting/zvegisk/safemode", "1\n", 2);
+    flushlog();
+    sy1(SYS_unlink, (int)"/setting/mode/preload");
+    sy0(SYS_sync);
+    lg("preload removed -> stock boot next time\n");
+    flushlog();
+}
+
 /* 立刻卸载 SD 卡，把冲突窗口压到毫秒级 */
 static void unmount_sd(void)
 {
@@ -721,7 +797,7 @@ static void watchdog(void)
 }
 
 /* 主工作（子进程） */
-static void work(void)
+static void work_inner(void)
 {
     LP=0;
     lg("zvegisk start\n");
@@ -744,19 +820,10 @@ static void work(void)
       if(!v) o[l++]='0';
       else for(int k=0;k<5;k++){int d=0;while(v>=pw[k]){v-=pw[k];d++;}if(d||started){o[l++]=(char)('0'+d);started=1;}}
       o[l++]='\n';
-      writefile("/setting/zvegisk/boot_count",o,l); }
+      writefile_sync("/setting/zvegisk/boot_count",o,l); }
 
     if(cnt>3){
-        lg("SELF-DISABLE: "); lgd(cnt); lg(" fails -> remove preload\n");
-        writefile("/setting/zvegisk/safemode","1\n",2);
-        /* ★★★ 终极自愈：把自己从 preload 摘掉
-         *   下次开机 bootin 读不到 preload ⇒ 干脆不加载我们
-         *   ⇒ 纯原厂启动，不需要任何外部工具。
-         *   ★ 先把日志刷盘，再摘 —— 否则事后看不到原因。 */
-        flushlog();
-        sy1(SYS_unlink,(int)"/setting/mode/preload");
-        lg("preload removed, rebooting to stock next time\n");
-        flushlog();
+        self_disable("boot_count over limit");
         return;
     }
 
@@ -813,6 +880,32 @@ static void work(void)
         lg("not armed -> no watchdog\n");
         flushlog();
     }
+}
+
+/* ★ 包装：开工前检测上次是否死在半路，收工后标记 DONE */
+static void work(void)
+{
+    int incomplete = 0;
+    { static char b[16];
+      if (readfile(PHASE_FILE, b, sizeof b) > 0 && shas(b, "RUNNING")) incomplete = 1; }
+
+    phase_set("RUNNING");
+
+    if (incomplete) {
+        int rc = read_small_int(RAPID_FILE) + 1;
+        write_small_int(RAPID_FILE, rc);
+        lg("!! last boot did NOT finish (rapid_fail="); lgd(rc); lg(")\n");
+        if (rc >= 2) {                 /* ★ 连续 2 次死在半路 ⇒ 立刻自救 */
+            self_disable("2 incomplete boots");
+            return;
+        }
+    }
+
+    work_inner();
+
+    phase_set("DONE");                 /* ★ 走完了 */
+    sy1(SYS_unlink, (int)RAPID_FILE);  /* 清掉快速失败计数 */
+    flushlog();
 }
 
 /* ★★★ 构造函数：第一件事就是 fork，父进程立刻返回 ★★★ */
