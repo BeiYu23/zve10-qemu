@@ -226,3 +226,83 @@ RW 总计  ~64 KB = 128MB 的 0.05%   ✅ 可接受
 
 **★ `.bss` 从 30KB 涨到 63KB（maps 缓冲 32KB）。
 `/proc/self/maps` 对 im.elf（97 个库）实测约 10KB，32KB 有充足余量。**
+
+---
+
+## 十、四项自检（一次开机拿全答案）
+
+| # | 自检 | 数据源 | 判据 |
+|---|---|---|---|
+| **①** | **libIMDB 路径** | `/proc/self/maps` | 是 `/log/zvegisk/m2/libIMDB.so` ⇒ preload 生效 |
+| **②** | **loop 可用性** | mknod + LOOP_SET_FD + mount | `mount ext2 OK => loop USABLE` |
+| **③** | **bind 是否做成** | `/proc/mounts` | 出现 `/usr/lib` / `/usr/share/app` 的新挂载行 |
+| **④** | **libObj 最终路径** | 30 秒后第二次 maps | 来自 `/tmp/m2usr/...` ⇒ bind 生效 |
+
+### ★ ①和④为什么必须分开看
+
+**`libIMDB` 是 preload 直接提供的，跟 bind 无关；
+而 `libObj` 是运行时 dlopen，走 `/usr/lib` 解析 ⇒ 只有 bind 成功才会来自新镜像。**
+
+| ① libIMDB 路径 | ④ libObj 路径 | 结论 |
+|---|---|---|
+| `/log/.../libIMDB.so` | `/usr/lib/libObj.so` | **preload 生效，bind 未生效** |
+| `/log/.../libIMDB.so` | `/tmp/m2usr/...libObj.so` | **两者都生效 ✅** |
+| `/usr/lib/libIMDB.so` | `/usr/lib/libObj.so` | **preload 完全没生效** |
+
+**⇒ 这张表能一次开机定位所有情况。**
+
+### ⚠️ ④ 的时机问题
+
+**`libObj` 是运行时 dlopen 的，构造函数跑时还没加载 ⇒ maps 里看不到。
+⇒ 单独 fork 一个小进程，睡 30 秒后**再拍一次** maps，此时它应已加载。**
+
+```c
+if (sy0(SYS_fork) == 0) { check_delayed(); sy1(SYS_exit, 0); }
+```
+
+**★ 代价：一个 fork（约 700 KB 页表）活 30 秒。可接受。**
+
+---
+
+## 十一、★ 日志降级链（防止"看不到日志"这种最难受的情况）
+
+```c
+static const char *LOG_PATHS[] = {
+    "/log/zvegisk.log",        // 首选（500 MB 分区）
+    "/tmp/zvegisk.log",        // 次选（12 MB vfat）
+    "/setting/zvegisk.log",    // 兜底（20 MB，独立分区，最可靠）
+    0
+};
+```
+
+**首次成功写入后固定路径；**全失败则静默丢弃，绝不阻塞启动**。**
+
+**★ 为什么需要：vfat 若被挂成 `ro`、或早期挂载点还没建好，`/log` 会写不进去。
+降级链成本极低，但能排除"开了机却看不到任何信息"。**
+
+## 十二、日志格式（不分文件，用启动分隔）
+
+**每次开机在日志开头插一条：**
+
+```
+===== boot uptime=12s =====
+zvegisk start
+preload_chk: ...
+loop_chk: ...
+boot_count=1
+...
+```
+
+**★ 不分多个文件 —— 500 MB 的 `/log` 虽大，但每 30 秒一个文件会失控。
+用 `uptime` 做分隔，既能区分开机，又能在 vfat 时间戳不可靠时仍可辨认。**
+
+## 十三、内存占用（最终）
+
+```
+.text    30,116 B
+.rodata   2,684 B
+.data        48 B
+.bss     72,208 B    ← 32KB maps + 8KB mounts + 其它
+────────────────────
+RW 总计  ~72 KB = 128MB 的 0.055%   ✅
+```

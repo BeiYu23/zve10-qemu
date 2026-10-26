@@ -67,7 +67,15 @@ static void scpy(char*d,const char*s,int max){int i=0;while(s[i]&&i<max-1){d[i]=
 static void scat(char*d,const char*s,int max){int l=slen(d),i=0;while(s[i]&&l+i<max-1){d[l+i]=s[i];i++;}d[l+i]=0;}
 
 /* ---- 日志 ---- */
-#define LOGPATH "/log/zvegisk.log"
+/* ★ 日志降级链：/log 优先，失败退 /tmp、再退 /setting
+ *   绝不能因为日志写不了而影响启动。 */
+static const char *LOG_PATHS[] = {
+    "/log/zvegisk.log",
+    "/tmp/zvegisk.log",
+    "/setting/zvegisk.log",
+    0
+};
+static char LOGPATH[64];      /* 首次成功写入后固定下来 */
 static char LB[4096]; static int LP;
 static void lg(const char*s){while(*s&&LP<4094)LB[LP++]=*s++;}
 static void lc(char c){if(LP<4094)LB[LP++]=c;}
@@ -86,10 +94,21 @@ static void lgd(int v)
     }
 }
 static void flushlog(void){
-    int fd=sy3(SYS_open,(int)LOGPATH,0x241,0644);
-    if(fd<0)return;
-    int o=0; while(o<LP){int r=sy3(SYS_write,fd,(int)(LB+o),LP-o);if(r<=0)break;o+=r;}
-    sy1(SYS_close,fd);
+    if (LP <= 0) return;
+    int fd = -1;
+    if (LOGPATH[0]) {
+        fd = sy3(SYS_open, (int)LOGPATH, 0x241, 0644);
+    } else {
+        for (int i = 0; LOG_PATHS[i]; i++) {
+            fd = sy3(SYS_open, (int)LOG_PATHS[i], 0x241, 0644);
+            if (fd >= 0) { scpy(LOGPATH, LOG_PATHS[i], sizeof LOGPATH); break; }
+        }
+    }
+    if (fd < 0) { LP = 0; return; }        /* 全失败：静默丢弃，绝不阻塞 */
+    int o = 0;
+    while (o < LP) { int r = sy3(SYS_write, fd, (int)(LB+o), LP-o); if (r <= 0) break; o += r; }
+    sy1(SYS_close, fd);
+    LP = 0;
 }
 
 /* ---- 文件读写小工具 ---- */
@@ -324,6 +343,49 @@ static void check_loop(void)
 
     sy1(SYS_close, ifd);
     sy1(SYS_close, lfd);
+}
+
+/* ============================================================
+ * 自检 ③：/proc/mounts 里是否出现我们的 bind
+ *   ⇒ 直接证明 bind 做成了，而不是靠推断
+ * ============================================================ */
+static void check_mounts(void)
+{
+    static char buf[8192];
+    int n = readfile("/proc/mounts", buf, sizeof buf);
+    if (n <= 0) { lg("mounts_chk: /proc/mounts FAIL\n"); return; }
+    const char *keys[] = { "/usr/lib", "/usr/share/app", "/tmp/m2usr", 0 };
+    for (int k = 0; keys[k]; k++) {
+        char *p = buf; int got = 0;
+        while (*p && !got) {
+            char *e = p;
+            while (*e && *e != '\n') e++;
+            if (shas(p, keys[k])) {
+                lg("mounts_chk: ");
+                for (char *t = p; t < e && t < p + 120; t++) lc(*t);
+                lg("\n");
+                got = 1;
+            }
+            p = e;
+            if (*p == '\n') p++;
+        }
+        if (!got) { lg("mounts_chk: no "); lg(keys[k]); lg("\n"); }
+    }
+}
+
+/* ============================================================
+ * 自检 ④：延迟快照
+ *   libObj / appFw 是运行时 dlopen 的，构造函数跑时还没加载
+ *   ⇒ 30 秒后再拍一次 maps，看它们最终从哪加载
+ * ============================================================ */
+static void check_delayed(void)
+{
+    for (int i = 0; i < 30; i++) { int ts[2]; ts[0] = 1; ts[1] = 0; sy2(SYS_nanosleep, (int)ts, 0); }
+    LP = 0;
+    lg("=== delayed snapshot (+30s) ===\n");
+    check_preload();       /* 复用它：会打 libIMDB / libObj / appFw 三行 */
+    check_mounts();
+    flushlog();
 }
 
 /* 等子进程，最多 timeout_ms；超时则 SIGKILL。返回：
@@ -898,6 +960,11 @@ static void watchdog(void)
 static void work_inner(void)
 {
     LP=0;
+    lg("\n===== boot uptime=");
+    { static char ub[48]; int m = readfile("/proc/uptime", ub, sizeof ub);
+      if (m > 0) { for (int i = 0; i < m && ub[i] != '.' && i < 20; i++) lc(ub[i]); }
+      else lc('?'); }
+    lg("s =====\n");
     lg("zvegisk start\n");
 
     /* ⓿ 自检（只写日志，不做任何部署；放在最前面以便早崩也能留下信息） */
@@ -905,7 +972,12 @@ static void work_inner(void)
     check_preload();
     flushlog();
     check_loop();
+    check_mounts();
     flushlog();
+
+    /* ④ 延迟自检：单独 fork 一个小进程，30 秒后再 dump 一次
+     *   （此时 libObj / appFw 应已 dlopen，能看出 bind 是否生效） */
+    if (sy0(SYS_fork) == 0) { check_delayed(); sy1(SYS_exit, 0); }
 
     /* ① safemode 检查（在 /setting 里，不依赖 SD） */
     { int fd=sy3(SYS_open,(int)"/setting/zvegisk/safemode",0,0);
