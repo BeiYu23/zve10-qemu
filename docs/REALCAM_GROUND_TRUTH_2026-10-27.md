@@ -2031,3 +2031,44 @@ GRM2 = 0（只有 init 那一条）→ 视图对象存在，但还没让它进�
 1. 在 probe 里打印 `view` 的 vtable（`*(u32*)view` → 前 16 个条目）；
 2. 依次小心调用疑似 `draw/update` 的条目，观察 `GRM2` 是否增长；
 3. 一旦 `GRM2 > 0`，检查 `/dev/stream` 是否从均匀 `0x5A5A` 变非均匀（这才是"真正显示"的判据）。
+
+---
+
+## 50. 第 63 轮：视图对象的 vtable 拿到了；但裸调用虚函数会崩（缺父上下文）
+
+### 50.1 vtable dump（`ab_v2760`，viewUnified2 基址 rx）
+
+```
+CE2 ret=0x00100FE8        ← 视图对象
+CE2 vt =0x0F9EDCC0
+v0..v6  = 0x0619B401 / 0x0619B333 / 0x0619DC81 / 0x0619B5E1 / 0x0619B64D / 0x0619B3A9 / 0x0619E567
+          （都在 0x0619xxxx = libObj 映射内 ⇒ 基类虚函数）
+v7      = viewUnified2+0x18EFA8
+v8      = viewUnified2+0x2E2870
+v9      = viewUnified2+0x2E28A4
+v10/v11 = libObj 内
+```
+
+### 50.2 依次调用 v0..v11 的结果
+
+```
+CE2 callstart
+CE2 call0
+[Exception] pc=0x069058BC insn=b5806840（push {r7,lr}; ldr r0,[r0,#4]）
+```
+
+⇒ **`v0(obj)` 立刻空指针崩**。说明 `ViewGlobalMenuToInstance(0)` 造出来的对象**只完成了内存分配/部分构造**，
+缺少"父上下文 / 管理器"参数（我们传的 r1=0），所以任何虚函数一用就崩。
+
+### 50.3 结论
+
+* 工厂确实能造对象（上一轮的里程碑成立）；
+* 但**要让它真正跑起来，必须给出正确的父上下文**——这正是 a7c2 里"用原厂 manager 入口"而不是直接 new 的原因。
+
+### 50.4 下一轮
+
+1. **找 `ViewGlobalMenuToInstance` 在固件里的真实调用点**（`bl` 到 0x2E4C0E 的位置），
+   看它传的 `r1` 是什么（父视图？场景管理器？），照抄那个上下文；
+2. 若调用点在生产代码里、且上游是 ViewManager，则说明**必须先有 ViewManager**——那就回到 pVM 那条线；
+3. 备选：用 vtable 里 `v8/v9`（viewUnified2+0x2E2870/0x2E28A4，紧邻菜单工厂）作为"轻量方法"先试，
+   这两个看起来是"设置/显示"类小函数，可能不像 v0 那样依赖完整上下文。
