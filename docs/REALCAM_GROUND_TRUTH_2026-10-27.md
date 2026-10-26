@@ -4468,3 +4468,47 @@ guard 早被置位，函数直接返回，从未真正执行初始化体。
 ### 105.4 判据状态
 
 `GRM2` 无记录、`/dev/dmpgles2` 未打开、`/dev/stream` 未变，**菜单未显示，目标未完成**。
+
+---
+
+## 106. 2026-10-27 清零 guard 后隔离运行 UX 初始化：它真的开始创建对象了
+
+### 106.1 隔离实验（不启动 app 线程，只跑 UX 初始化体）
+
+```
+MENUHOST ux thread: guard=00010000
+MENUHOST ux thread: guard cleared
+MENUHOST ux thread: calling 0x52e8f75        ; libObj+0x610f74
+MENUHOST SLOTS t=0ms rm=00030390 ge=06134ab8 p4=00000000 pVM=00000000
+→ 之后崩在 libc+0x15796（syscall 蹦床，r7=0x10c=268）
+```
+
+两条新事实：
+
+1. **`ResourceManager` 槽被写入了**（`00000000 → 00030390`）——证明 guard 清零后，
+   初始化体**确实执行了创建动作**。这与 §102 的"从未创建"并不矛盾：
+   此前正是被 guard 挡住，所以从未走到创建。
+2. `GraphicsEngine` 槽仍是 `0x06134ab8`（静态对象，未变），`p4` 仍为 0。
+
+### 106.2 新的失败点：libc 的通用 syscall 蹦床
+
+```
+pc = libc+0x15796   （push {r7,lr}; mov r7,ip; svc 0; pop {r7,pc} 的 pop）
+r7 = 0x10c (268)
+lr = libc+0x51d8f
+```
+
+`0x15796` 正是这段蹦床的 `pop {r7,pc}`：svc 返回后从栈上取回的返回地址无效。
+即**初始化体执行到某次系统调用时，返回链被破坏**，与 §105.2 是同一现场。
+
+### 106.3 与"app 线程一起跑"时的差别
+
+若同时启动 app 线程，崩溃会停在 `libObj+0x63d506`（读 `p4` 的空指针）而不是 libc；
+两者都会发生，先到先崩。说明 **UX 初始化与 app 主体初始化是两条独立的失败路径**：
+
+* UX 初始化：能创建 ResourceManager → 随后在 syscall 蹦床栈损坏；
+* app 主体：`0x627164` 需要 `p4`，而 `p4` 无人创建。
+
+### 106.4 判据状态
+
+`GRM2` 无记录、`/dev/dmpgles2` 未打开、`/dev/stream` 未变，**菜单未显示，目标未完成**。

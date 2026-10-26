@@ -379,10 +379,18 @@ static unsigned *slot_rm, *slot_ge, *slot_p4;
 void *ux_thread_body(void *arg)
 {
     (void)arg;
-    void (*body)(void) = (void(*)(void))(libobj_base + 0x6271d4 + 1);
-    printf("MENUHOST ux body enter %p\n", (void*)body); fflush(0);
-    body();
-    printf("MENUHOST ux body returned\n"); fflush(0);
+    unsigned *guard = (unsigned *)(libobj_base + 0x145ca6a);
+    printf("MENUHOST ux thread: guard=%08x\n", *guard); fflush(0);
+    if(*guard) { *guard = 0; printf("MENUHOST ux thread: guard cleared\n"); fflush(0); }
+    unsigned lit = *(unsigned *)(libobj_base + 0x627298);
+    const char *name = (const char *)(libobj_base + lit + 0x6271dc);
+    void (*uxfirst)(const char *, unsigned, unsigned, unsigned,
+                    unsigned, unsigned, unsigned) =
+        (void(*)(const char *, unsigned, unsigned, unsigned,
+                 unsigned, unsigned, unsigned))(libobj_base + 0x610f74 + 1);
+    printf("MENUHOST ux thread: calling %p\n", (void*)uxfirst); fflush(0);
+    uxfirst(name, 640, 480, 1, 0, 0x80000000u, 0);
+    printf("MENUHOST ux thread: returned\n"); fflush(0);
     return 0;
 }
 
@@ -421,41 +429,15 @@ int main(int argc,char **argv) {
     /* Run the firmware's own UX initialiser body and watch whether it actually
      * instantiates the engine singletons (ResourceManager slot 0x145ca64,
      * GraphicsEngine slot 0x13dcb78, private#4 slot 0x145cbc4). */
-    /* Call the UX initialiser's first step with the exact arguments the
-     * firmware's own thread body passes (see libObj+0x6271d4), then read the
-     * engine singleton slots to see what actually gets created. */
     {
-        unsigned lit = *(unsigned *)(libobj_base + 0x627298);
-        const char *name = (const char *)(libobj_base + lit + 0x6271dc);
-        void (*uxfirst)(const char *, unsigned, unsigned, unsigned,
-                        unsigned, unsigned, unsigned) =
-            (void(*)(const char *, unsigned, unsigned, unsigned,
-                     unsigned, unsigned, unsigned))(libobj_base + 0x610f74 + 1);
-        printf("MENUHOST uxfirst=%p name=%s rm_before=%08x ge_before=%08x p4_before=%08x\n",
-               (void*)uxfirst, name,
-               *(unsigned *)(libobj_base + 0x145ca64),
-               *(unsigned *)(libobj_base + 0x13dcb78),
-               *(unsigned *)(libobj_base + 0x145cbc4)); fflush(0);
-        {
-            unsigned *guard = (unsigned *)(libobj_base + 0x145ca6a);
-            printf("MENUHOST guard_before=%08x\n", *guard); fflush(0);
-            if(*guard) { *guard = 0; printf("MENUHOST guard cleared\n"); fflush(0); }
-        }
-        uxfirst(name, 640, 480, 1, 0, 0x80000000u, 0);
-        printf("MENUHOST uxfirst returned guard=%08x rm=%08x ge=%08x p4=%08x\n",
-               *(unsigned *)(libobj_base + 0x145ca6a),
-               *(unsigned *)(libobj_base + 0x145ca64),
-               *(unsigned *)(libobj_base + 0x13dcb78),
-               *(unsigned *)(libobj_base + 0x145cbc4)); fflush(0);
+        void *pth0 = load("/usr/lib/libpthread-2.11.2.so");
+        int (*pc0)(unsigned long *, const void *, void *(*)(void *), void *) =
+            (int(*)(unsigned long *, const void *, void *(*)(void *), void *))dlsym(pth0, "pthread_create");
+        unsigned long th0 = 0;
+        if(pc0) { int rc = pc0(&th0, 0, ux_thread_body, 0); printf("MENUHOST ux thread rc=%d\n", rc); fflush(0); }
     }
-    {
-        void *pth = load("/usr/lib/libpthread-2.11.2.so");
-        int (*pcreate)(unsigned long *, const void *, void *(*)(void *), void *) =
-            (int(*)(unsigned long *, const void *, void *(*)(void *), void *))dlsym(pth, "pthread_create");
-        unsigned long th = 0;
-        printf("MENUHOST launch app body via pthread_create=%p\n", (void*)pcreate); fflush(0);
-        if(pcreate) { int rc = pcreate(&th, 0, app_thread, 0); printf("MENUHOST pthread_create rc=%d th=%lu\n", rc, th); fflush(0); }
-    }
+    /* app_thread intentionally NOT launched in this run: only the UX
+     * initialiser is exercised so its own behaviour can be observed. */
     /* Optional original entry points are disabled for this run: calling them in
      * this order faults on prerequisites the boot sequence would have created
      * (see REALCAM_GROUND_TRUTH 94/95). Thread-creation hooks stay enabled. */
