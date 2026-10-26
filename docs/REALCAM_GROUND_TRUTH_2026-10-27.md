@@ -4544,3 +4544,53 @@ HIT#1 r0=0x0 r1=0xa4d7cc0 r2=0x0 r3=0x8 r7=0xaf lr=0x4051f23
 ### 107.4 判据状态
 
 `GRM2` 无记录、`/dev/dmpgles2` 未打开、`/dev/stream` 未变，**菜单未显示，目标未完成**。
+
+---
+
+## 108. 2026-10-27 解读崩溃类型：trap 6 = 非法指令；并发现我们自己的信号日志字段取错
+
+### 108.1 内核里 trap_no 的含义（查源码确认）
+
+`arch/arm/kernel/exception.c` 的 switch：
+
+```
+case 6:  em_dump_write("Illeagle Instruction at 0x%08lx\n", em_regs->ARM_pc);
+case 14: /* data abort */
+```
+
+⇒ 我们看到的 `trap_no=00000006` **不是数据访问异常，而是"非法指令"**，
+故障地址 `0x04042796` 是**偶数地址**。而该处字节 `80 bd` 是 Thumb 的 `pop {r7,pc}`。
+**Thumb 字节按 ARM 态执行 ⇒ 必然非法指令**，即嫌疑是 **Thumb 位丢失**。
+
+### 108.2 我们自己的 ZZSIG 日志有缺陷（重要，勿再据此推断）
+
+`arch/arm/kernel/signal.c` 里我们加的打印：
+
+```
+printk("[ZZSIG] sig=%d code=%d kpid=%d kuid=%d ...",
+       signr, info.si_code,
+       info._sifields._kill._pid, info._sifields._kill._uid, ...)
+```
+
+`_kill` 联合体**只在 `si_code <= 0`（SI_USER 类）时有效**；
+而 SIGILL 是硬件异常（`si_code > 0`），此时应读 `_sigfault`。
+所以日志里的 `kpid/kuid` 是**垃圾值**（实测出现 `kpid=130161534` 这类数）。
+
+⇒ 这些字段不能当证据；`pc/lr/sp` 取自 `regs`，仍然可信。
+
+### 108.3 信号序列（可用的部分）
+
+`g3` 运行中 SIGILL 被投递 10 次，`pc` 集中在 `0x07c21b66–0x07c21b7e`（某个库内的一段连续地址），
+形态像**刻意的 CPU 特性探测**（执行非法指令 → 捕获 SIGILL → 判定不支持）。
+这与"信号返回时丢了 Thumb 位"的怀疑相互印证：探测器本身在 Thumb/ARM 之间切换，
+一旦返回态错误，就会在 Thumb 代码上以 ARM 态取指 → 非法指令。
+
+### 108.4 下一步（明确、但不便宜）
+
+需要确认内核 `setup_return`（`arch/arm/kernel/signal.c:419-489`）在本内核里是否真的按
+`handler & 1` 正确设置 `PSR_T_BIT`，以及 `elf_hwcap & HWCAP_THUMB` 是否非零
+（该分支被跳过时会沿用被中断时的 CPSR，若被中断在 ARM 态则影响返回态）。
+
+### 108.5 判据状态
+
+`GRM2` 无记录、`/dev/dmpgles2` 未打开、`/dev/stream` 未变，**菜单未显示，目标未完成**。
