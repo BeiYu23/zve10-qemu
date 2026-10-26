@@ -44,6 +44,9 @@
 #define SYS_lseek    19
 #define SYS_fsync   118
 #define SYS_sync     36
+#define SYS_ioctl    54
+#define LOOP_SET_FD  0x4C00
+#define MS_RDONLY    1
 #define PATHMAX     192
 #define MS_BIND     4096      /* 0x1000 */
 #define MNT_DETACH  2
@@ -226,6 +229,97 @@ static void msleep(int ms)
     ts[0] = ms / 1000;
     ts[1] = (ms % 1000) * 1000000;
     sy2(SYS_nanosleep, (int)ts, 0);
+}
+
+/* ============================================================
+ * 自检 ①：libIMDB 到底从哪里加载的
+ *   ⇒ 判断 preload 三条目方案是否生效，不需要串口
+ * ============================================================ */
+static void check_preload(void)
+{
+    static char buf[32768];
+    int n = readfile("/proc/self/maps", buf, sizeof buf);
+    if (n <= 0) { lg("preload_chk: /proc/self/maps FAIL\n"); return; }
+
+    char *p = buf;
+    int found = 0;
+    while (*p && !found) {
+        char *e = p;
+        while (*e && *e != '\n') e++;
+        int hit = 0;
+        for (char *t = p; t + 7 <= e; t++) {
+            if (t[0]=='l'&&t[1]=='i'&&t[2]=='b'&&t[3]=='I'&&t[4]=='M'&&t[5]=='D'&&t[6]=='B') { hit = 1; break; }
+        }
+        if (hit) {
+            lg("preload_chk: libIMDB -> ");
+            for (char *t = p; t < e && t < p + 160; t++) lc(*t);
+            lg("\n");
+            found = 1;
+        }
+        p = e;
+        if (*p == '\n') p++;
+    }
+    if (!found) lg("preload_chk: libIMDB NOT in maps\n");
+
+    /* 顺便看 libObj / appFw 是否已加载（在启动早期应该是【没有】的） */
+    const char *names[] = { "libObj", "appFw", 0 };
+    for (int k = 0; names[k]; k++) {
+        char *q = buf; int got = 0;
+        while (*q && !got) {
+            char *e2 = q;
+            while (*e2 && *e2 != '\n') e2++;
+            if (shas(q, names[k])) {
+                lg("preload_chk: "); lg(names[k]); lg(" -> ");
+                for (char *t = q; t < e2 && t < q + 130; t++) lc(*t);
+                lg("\n");
+                got = 1;
+            }
+            q = e2; if (*q == '\n') q++;
+        }
+        if (!got) { lg("preload_chk: "); lg(names[k]); lg(" not yet loaded\n"); }
+    }
+}
+
+/* ============================================================
+ * 自检 ②：loop 设备是否可用
+ *   只在 /log/zvegisk/m2usr.img 存在时做完整测试
+ * ============================================================ */
+static void check_loop(void)
+{
+    /* /tmp 是 vfat，不能 mknod ⇒ 必须先挂 tmpfs */
+    sy2(SYS_mkdir, (int)"/tmp/zdev", 0755);
+    if (sy5(SYS_mount, (int)"tmpfs", (int)"/tmp/zdev", (int)"tmpfs", 0, 0) != 0)
+        lg("loop_chk: tmpfs mount FAIL\n");
+
+    sy1(SYS_unlink, (int)"/tmp/zdev/loop0");
+    int r = sy3(SYS_mknod, (int)"/tmp/zdev/loop0", 060660, (7 << 8) | 0);
+    if (r != 0) { lg("loop_chk: mknod FAIL (errno-ish "); lgd(r); lg(")\n"); }
+    else        lg("loop_chk: mknod OK\n");
+
+    int lfd = sy3(SYS_open, (int)"/tmp/zdev/loop0", 2 /*O_RDWR*/, 0);
+    if (lfd < 0) { lg("loop_chk: open loop0 FAIL\n"); return; }
+    lg("loop_chk: open loop0 OK\n");
+
+    if (!exists("/log/zvegisk/m2usr.img")) {
+        lg("loop_chk: m2usr.img absent -> basic test only\n");
+        sy1(SYS_close, lfd);
+        return;
+    }
+
+    int ifd = sy3(SYS_open, (int)"/log/zvegisk/m2usr.img", 0 /*O_RDONLY*/, 0);
+    if (ifd < 0) { lg("loop_chk: open image FAIL\n"); sy1(SYS_close, lfd); return; }
+
+    r = sy3(SYS_ioctl, lfd, LOOP_SET_FD, ifd);
+    if (r != 0) { lg("loop_chk: LOOP_SET_FD FAIL "); lgd(r); lg("\n"); sy1(SYS_close, ifd); sy1(SYS_close, lfd); return; }
+    lg("loop_chk: LOOP_SET_FD OK\n");
+
+    sy2(SYS_mkdir, (int)"/tmp/m2usr", 0755);
+    r = sy5(SYS_mount, (int)"/tmp/zdev/loop0", (int)"/tmp/m2usr", (int)"ext2", MS_RDONLY, 0);
+    if (r != 0) { lg("loop_chk: mount ext2 FAIL "); lgd(r); lg("\n"); }
+    else        lg("loop_chk: mount ext2 OK => loop USABLE\n");
+
+    sy1(SYS_close, ifd);
+    sy1(SYS_close, lfd);
 }
 
 /* 等子进程，最多 timeout_ms；超时则 SIGKILL。返回：
@@ -801,6 +895,13 @@ static void work_inner(void)
 {
     LP=0;
     lg("zvegisk start\n");
+
+    /* ⓿ 自检（只写日志，不做任何部署；放在最前面以便早崩也能留下信息） */
+    flushlog();          /* 先刷掉构造期可能残留的日志 */
+    check_preload();
+    flushlog();
+    check_loop();
+    flushlog();
 
     /* ① safemode 检查（在 /setting 里，不依赖 SD） */
     { int fd=sy3(SYS_open,(int)"/setting/zvegisk/safemode",0,0);
