@@ -198,6 +198,13 @@ def cmd_write(d, a):
     if a.expect_lba is not None and a.lba != a.expect_lba:
         raise SystemExit('lba 0x%x is not the expected 0x%x' % (a.lba, a.expect_lba))
 
+    wanted = None
+    if getattr(a, 'chunks_file', None):
+        idx = [int(x) for x in Path(a.chunks_file).read_text().split() if x.strip()]
+        wanted = set(idx)
+        print('delta mode: %d chunks listed in %s (%.1f MiB)'
+              % (len(wanted), a.chunks_file, len(wanted) * CHUNK_BYTES / 1048576))
+
     done_chunks = 0
     if a.resume_file:
         rf = Path(a.resume_file)
@@ -234,6 +241,8 @@ def cmd_write(d, a):
     t0 = time.time()
     written_this_run = 0
     for i in range(done_chunks, total_chunks):
+        if wanted is not None and i not in wanted:
+            continue
         block = a.lba + i * CHUNK_BLOCKS
         chunk = img[i * CHUNK_BYTES:(i + 1) * CHUNK_BYTES]
         do_rb = a.verify_every and ((i + 1) % a.verify_every == 0)
@@ -333,6 +342,10 @@ def main(argv):
                         'to prove the LBA is where you think it is.')
     p.add_argument('--target-offset', type=lambda x: int(x, 0), default=0,
                    help='byte offset inside --verify-target that corresponds to --lba')
+    p.add_argument('--chunks-file', default=None,
+                   help='only write the chunk indices listed in this file '
+                        '(one per line); used to write just the delta against '
+                        'the current partition contents')
     p.add_argument('--resume-file', default=None,
                    help='progress file: skip chunks already written, so a '
                         'session that dies can be continued after re-injection')
