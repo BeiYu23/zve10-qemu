@@ -2294,3 +2294,39 @@ Mon Buf Size : 00008000           ← MonDrv::Init 正常
 1. 在极简 shim 里**用 `dlopen("//lib/libObj.so")` 拿句柄再 dlsym**（极简 shim 已证明不会破坏加载器）；
 2. 拿到后再做"内联 `Application_System_Init` + 观察 `pViewManager`"，这次环境是干净的；
 3. 若 pVM 仍未建立，就在**这条稳定环境**里重做 vtable/事件泵实验（之前都被加载期崩溃打断，做不了）。
+
+---
+
+## 57. 第 70 轮：在**稳定环境**里重做内联初始化（dlopen 句柄解析成功），并尝试线程普查
+
+### 57.1 内联 `Application_System_Init`（句柄解析版）
+
+极简 shim 里用 `dlopen("//lib/libObj.so", 0)` 拿句柄再 `dlsym`：
+
+```
+API base=0x06084000 pVM0=0x00000000
+API ret=0x00000004
+API pVM1=0x00000000
+```
+
+* 符号解析这次成功了（`RTLD_DEFAULT` 拿不到，句柄可以）；
+* 调用安全（无崩溃），但 `pViewManager` 依旧为 0 —— 与前面结论一致：它只投事件。
+
+### 57.2 线程普查（在稳定环境里的第一次尝试）
+
+在极简 shim 的 `osal_snd_sync_msg` 第 20 次调用时起一个线程，12 秒后读
+`/proc/self/task/*/stat`（取 sp/pc）并扫栈找 libObj/viewUnified2 返回地址。
+
+结果：`CEN started` 打印了，但**没有后续输出**（无 CEN go / 无逐线程行，也无异常）。
+⇒ 普查线程本身在某处卡住（最可能是 `op("/proc/self/task",0)` + `getdents` 这条路径），下一轮需换成
+"遍历 `/proc/self/task/<tid>` 目录用 stat 直接试 tid 1..N" 的笨办法，或直接用 `/proc/self/stat` + 逐个已知 tid。
+
+### 57.3 本轮的意义
+
+**我们终于有了稳定的注入环境**（极简 shim + 无加载期崩溃），
+后面所有实验（普查/受控入口/事件投递）都可以在这个基线上反复做，不必再和加载器搏斗。
+
+### 57.4 下一轮
+
+1. 修普查线程（换 tid 枚举方式），拿到 App 主线程的调用链；
+2. 在同一稳定环境里，按调用链找到"被跳过的那一步"，再决定补什么。
