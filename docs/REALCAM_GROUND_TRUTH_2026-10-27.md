@@ -3530,3 +3530,56 @@ libResourceBluetooth 出现次数 = 0        ← ★ 蓝牙模块**根本没被�
 2. 每禁一批就观察崩溃点是否后移——这是**批量推进**的高效办法；
 3. 注意：`libIMDB.so` 里还有 `IMDB:qemu` 这个字符串，说明**厂商本来就有 QEMU 专用档位**，
    后续值得找它的选档入口（若有，直接用官方档位比我们手工禁用更"真实"）。
+
+---
+
+## 86. 第 99 轮：批量禁用 11 个硬件模块（全部生效）+ 一次磁盘事故
+
+### 86.1 批量禁用（用同一套 IMDB 打补丁法）
+
+禁用了 11 条记录（全部重定向到已驻留的 `libCoreSync`）：
+
+```
+libResourceBluetooth  libUsbBusPower  libInfraUsbCmn
+libInfraEyeFiControl  libInfraSircs    libInfraDial
+libInfraHotshoe       libRsrcHotshoe   libInfraLanc
+libInfraTp            libInfraIndctr
+```
+
+实测（`ab_v3490` 系列）：**这 11 个库在运行中出现次数全部为 0** ⇒ 确实一个都没加载。
+
+### 86.2 崩溃点随禁用批次移动
+
+| 配置 | 崩溃点 |
+|---|---|
+| 13 库 + 仅禁 BT/USB | `libObj + 0x335B84` |
+| 13 库 + 禁 11 个硬件模块 | `ld.so + 0xA706`（`ldr r5,[r5,#4]`，初始化数组处理） |
+| 再去掉 `libInfraSystemAdjust.so` | `ld.so + 0xF000` |
+
+⇒ **禁用更多模块会让流程走到更后面的 loader 阶段**，说明方向正确；
+剩下的崩溃集中在 **ld.so 处理某个库的 `DT_INIT/DT_INIT_ARRAY`** 时（`l_info[]` 里某项为 NULL 却被解引用）。
+
+### 86.3 磁盘事故（重要，需记住）
+
+清理磁盘后（释放 ~245GB），运行中出现一次 **USB 磁盘重新枚举**（`sde/sdd attached`），
+导致正在写的 `ab_v3470.img` **写坏**（`dd ... I/O error`）。
+
+处理：删除损坏文件，从完好的 `ab_v3460.img` 重新生成；其余镜像校验（`dd of=/dev/null`）全部通过。
+**以后写镜像前先确认 `/mnt/build` 挂载正常、且不要在磁盘活动剧烈时大批量删除。**
+
+### 86.4 当前镜像资产（清理后只保留 5 个）
+
+```
+ab_v1660.img  poke 路线老底座
+ab_v3050.img  极简 shim 基线
+ab_v3420.img  +13 个补库
+ab_v3460.img  +IMDB 禁 BT/USB
+ab_v3490.img  +IMDB 禁 11 个硬件模块（当前最佳）
+```
+
+### 86.5 下一轮
+
+1. 查 `ld.so+0xA706` 是**哪个 link_map** 的 `l_info[]` 为 NULL（用 GDB 断点读 r0）；
+2. 若指向我们新补的 13 个"stub 库"之一 ⇒ 说明这些 stub 与当前 glibc/固件版本不匹配，
+   需要换用**同版本**的库（或自己按 IMDB 期望的符号表造一个最小实现）；
+3. 继续按 IMDB 清单禁用其余无关模块（HDMI/CEC 等）。
