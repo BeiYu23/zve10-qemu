@@ -1593,3 +1593,56 @@ ARMED
    让"App 自己的代码"先画出第一帧，再回头打通菜单；
 3. 走 a7c2 的"受控入口"变体：直接 new 一个 View 对象（`ViewGlobalMenuToInstance`）并调用它的绘制，
    绕过 ViewManager（需人工准备好上下文结构）。
+
+---
+
+## 39. 第 52 轮：★ 找到"App 静默退出"的真因 —— **`libObj` 解析 `MWF::ParamStd_Template<bool,1>` 失败，ld.so 直接以 127 退出**
+
+### 39.1 现场
+
+自然路线（干净探针 + 内核 MA，`ab_v2540`）里 App 不崩、不 oops，但**进程整体退出**：
+
+```
+EXIT im.elf.real pid=122 code=32512   (= 127)
+EXIT THREAD_INFRA0 / 1 / 2 / mwf_monitor_inp / ACCESSLOG_MAIN  全部 code=32512
+```
+紧挨着的串口信息：
+
+```
+/usr/bin/im.elf.real: symbol lookup error: /usr/lib/libObj.so: undefined symbol:
+    _ZN3MWF17ParamStd_TemplateIbLNS_5Param4TypeE1EEC1Eb
+```
+
+⇒ **不是崩溃，是动态链接失败导致 ld.so 以 127 终止**（这也解释了之前多轮"App 突然不动了"）。
+
+### 39.2 该符号其实就在我们镜像的 libMWF.so 里
+
+```
+libMWF.so dynsym: … ParamStd_TemplateIbLNS_5Param4TypeE1EEC1Eb   (存在)
+```
+
+⇒ 是**作用域/加载顺序**问题：`libObj` 绑定该符号时，`libMWF` 还没进全局作用域。
+
+### 39.3 三种"提前把 libMWF 弄进全局"的尝试与结果
+
+| 做法 | 结果 |
+|---|---|
+| 构造器里直接 `dlopen("//lib/libMWF.so", RTLD_NOW\|RTLD_GLOBAL)` | 崩溃 `pc=0x04011000`（ld.so 内，insn 乱码）|
+| 另起线程 sleep 200ms 后 dlopen | 同样崩 `pc=0x04007012` |
+| 把 libMWF 放进 `LD_PRELOAD`（`LD_PRELOAD=/lib/libMWF.so /lib/libgrmlog.so`）| 同样崩 `pc=0x04007012` |
+
+反汇编 ld.so 该偏移：
+
+```
+7008: ldr.w r0,[r5],#4     ; r0 = 依赖表里的 link_map
+7012: ldr   r3,[r0,#20]    ; ★ r0 非法 ⇒ 崩
+```
+
+⇒ **崩溃发生在 ld.so 处理依赖映射（`_dl_map_object_deps` 一带）时**，与我们"何时加载 libMWF"关系不大，
+更像是**依赖解析本身**出了问题（某个 NEEDED 在我们环境里解析到错误对象/缺失）。
+
+### 39.4 下一轮
+
+1. 用 `LD_DEBUG=libs,reloc` 之类的调试输出（或 `dlopen` 前后打印 `dlerror()`）确认真实的依赖错误；
+2. 若确属 NEEDED 缺失：把缺失的库（如 `libmwf_mcore.so`/`libux*.so`）从固件里补齐到镜像；
+3. 这一步打通后，`libObj` 才能正常完成绑定，App 才可能继续走到"创建 ViewManager"。
