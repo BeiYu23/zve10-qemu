@@ -1502,3 +1502,52 @@ LEAF done token=0 smp_monErr=0x00027508      ← ★ 仍是"小值"，不是堆�
    再 `x` 该地址确认内容 —— 这是唯一可靠的办法；
 2. 拿到真地址后，用写 watchpoint 抓写入者；若无人写，就在 preload 里直接调用"能建 MonCtrl 的那个叶子"；
 3. 目标不变：让 `SetEventSender` 的日志路径拿到有效 MonCtrl，从而通过这一关，继续向 `pVM/View` 推进。
+
+---
+
+## 37. 第 50 轮：两条路线的现状对比 + pViewManager 依然从未被写
+
+### 37.1 自然路线（不 poke）
+
+`ab_v2490`（叶子初始化版）：
+```
+LEAF RsrcMcmd/ObjLog_Mcmd/InhMcmd/ObjIf_Mcmd/ObjIf/EventIdFactory 全部 ok
+LEAF done token=0 smp_monErr=0x00027508（小值）
+崩溃 pc=0x05AEE002（libMWF 数据区，lr=0 ⇒ 调到空/坏指针）
+```
+
+### 37.2 poke 路线（Y9 + Application_System_Init，MA 交给内核）
+
+`ab_v2500`（c1820 = menuc1300 去掉 MA 拦截 + GRM shim，基于真 grm_ma + 内核 DMM 模块）：
+
+```
+Y9 worker → rm_init=1 → appinit → returned
+INITCFG_ENTER tid=188
+W5 call init → W5 init returned
+之后 IMNANOSLEEP 轮询（无崩溃）
+GRM2 init fb=0x472d000（只有 init，没有一次绘制）
+PV i=36 pVM=0 inst=0 ida=0
+```
+
+⇒ **poke 路线不崩、能跑到 `initializeConfig` 与 `viewUnified2` 的 init，但 pVM 仍为 0、GRM2 无绘制。**
+
+### 37.3 关键否证：`pViewManager` 在这条更靠前的路线上**也没被写**
+
+用 GDB 写 watchpoint 盯 `libObj+0x149221C`（本轮 libObj=0x6184000），poke 路线跑 60 秒：
+
+```
+ARMED
+（零次写入）
+```
+
+⇒ **App 在这两种路线下都不会创建 ViewManager**，所以 `openView` 一定崩（我们早前实测 `address 0x10`）。
+
+### 37.4 下一轮（把 pVM 的真实地址钉死）
+
+我怀疑 `0x149221C` 只是"指向 pVM 的槽"，而不是 pVM 本身（`openView` 里是 `ldr r6,[got]; ldr r9,[r6]` 两级）。
+
+**做法**：让 preload 主动调用一次 `viewManagerIf::openView("view/SCALAR",0)`（必然在 `ldr r9,[r6]` 之后的解引用崩），
+用 GDB 断在 `libObj+0x1410BC`（`ldr r9,[r6]` 之后），**打印 r6** —— 那就是真正的 pVM 槽地址；
+然后：
+1. 对该槽下写 watchpoint，看**谁在正常流程里写它**；
+2. 若无人写，就查 `viewManagerIf` 的实现方（应该是 viewUnified2 里的 `ViewManager` 实体）为什么没被实例化。
