@@ -2370,3 +2370,57 @@ CEN tid=131 pc=0x0407b5c4 (libgrmlog)       ← 另一个调用我们的线程
 1. 把普查点后移（例如第 40/80 次 backup，或等 `libObj` 已加载后），看**拿到 libObj 之后**主线程停在哪；
 2. 顺主线程的 libpthread 等待点，找出它在等哪个对象/谁该来 signal；
 3. 那个 signal 的缺失，就是"框架没启动"的直接原因。
+
+---
+
+## 59. 第 72 轮：★ 普查工具真正可用 —— 拿到 App **后期**（10 个线程）的实况
+
+### 59.1 关键修复
+
+普查线程之前"起来了但没输出"：**`pthread_create` 成功（`pr=0`）但 body 里 `sleep` 的方式有问题**。
+改成"线程入口先打印，再用 `nanosleep(200ms)×10`"后一切正常：
+
+```
+CEN2 start
+CEN2 created pr=0 tid=0x04cb8460
+CEN2 bodyenter
+CEN2 go
+```
+
+### 59.2 后期实况（普查在 App 已跑一段时间后触发）
+
+```
+CEN tid=122 sp=0x5efff6c0 pc=0x04008f30
+CEN tid=127 sp=0x04cb7d00 pc=0x0407b5c8
+CEN tid=128/129/130/132/134/135/136  pc=0x0435b17c (libc)
+CEN2 end
+```
+
+* **线程数从 5 增到 10**（122 主 + 127..136）⇒ App 确实在继续创建线程；
+* 主线程 `pc=0x04008f30`、tid=127 `pc=0x0407b5c8`（正是我们 shim 的地址，说明它在调用我们）；
+* 其余 7 个线程都在 `libc`（`0x0435B17C`，futex/等待）。
+
+### 59.3 顺带发现的内核 BUG（新线索）
+
+上一轮（更长的运行）末尾出现：
+
+```
+<2>kernel BUG at kernel/rtmutex.c:738!
+```
+
+对应我们内核源码：
+
+```c
+static void noinline __sched rt_spin_lock_slowlock(struct rt_mutex *lock) {
+    ...
+    BUG_ON(rt_mutex_owner(lock) == self);     /* ← 738 行 */
+```
+
+即 **RT 自旋锁被同一个任务重入**。结合之前 `__migrate_enable` 的 WARN，
+说明厂商 .ko 的 RT 语义假设与我们内核仍不一致（**这是内核侧待解问题，不是 App 侧**）。
+
+### 59.4 下一轮
+
+1. 把普查加密（每 200ms 一次、连续 20 次），看**线程数随时间的变化曲线**，找出"卡在哪一步不再增长"；
+2. 用 `name_of(pc)` 给所有 tid 标注库名，得到"谁在等、谁在跑"的完整图；
+3. 同时记录 `kernel BUG` 是否稳定复现（若是，需回到内核 RT 配置对齐）。
