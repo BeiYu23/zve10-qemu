@@ -98,3 +98,77 @@ _ZN6MonLib11cmdLineModeE    0x476CC   4 字节
   表项 108 字节/条，名字在 `+5`，名字上限 50 字符。
   ⇒ 可用来确认某个 ObjIf 是否注册成功。**
 - **`MonCtrl` ctor `_ZN7MonCtrlC2EPKcb` @+0x30C95（32 B）也导出。**
+
+---
+
+## 六、`MonDrv::Init` 完整路径（388 字节全解）
+
+```asm
+MonDrv::Init:                                     ; libMWF+0x311A5
+  311aa: r0 = 28
+  311b0: blx operator new(28)                     ; ① 分配 MonCtrl（28 B）
+  311b8: blx MWF::ObjLock::ObjLock()              ; ② 构造锁
+  311c6: str r5, [r3, #0]                         ; ③ ★★★ 写 MonCtrl 全局（最先！）
+  311cc: str r8, [r3]  (r8=0)                     ; ④ 另一全局 = 0
+  311d0: Backup_read_4Byte(0x00FA0028) → r6       ; FixedAreaTop（物理偏移）
+  311d8: Backup_read_4Byte(0x00FA005D) → r9       ; FixedAreaSize（长度）
+  311e2: open("/dev/mem", 0x1002)                 ; ⑤
+  3120c: if (fd == -1) → printf → return          ; 失败点 A
+  31230: mmap(0, r9, RW, SHARED, fd, r6)          ; ⑥
+  31234: if (ret == -1) → printf → return         ; 失败点 B
+  31244: r9 = 映射基址 + 0x53400                  ; ⑦ 监视器缓冲区基址
+  3127a: 写全局 = 基址
+  31294: MonQueue(base+4, base+0x10, 0x400)       ; 入队 1 KB
+  312bc: MonQueue(base+8, base+0xC, 0x7BF0)       ; 出队 31,728 B
+  312c6: close(fd) → return
+```
+
+**★★★ MonCtrl 全局在 `+0x311C6` 写入，早于 open/mmap
+⇒ 后续任何失败都不影响它的有效性。**
+
+### 诊断字符串
+
+```
+ FixedAreaTop  : %.8X\r\n
+ FixedAreaSize : %.8X\r\n
+ Physical Addr : %.8X\n
+ Logical  Addr : %p\n
+ Mon Buf Size  : %.8X\n\n
+ERROR : Failed to open stream driver!
+ERROR : Failed to mmap!
+```
+
+### 为什么在 QEMU 里 mmap 必然失败（且无害）
+
+**`Backup_read_4Byte` @ libbackup+0x1234（48 B，薄包装）：**
+
+```asm
+  123e: r2 = 0xFFFFFFFF          ; ★ 默认值
+  1244: str r2, [r3,#-4]!        ; 先写输出变量
+  ...   → backup_sync_msg(...)   ; 232 B 同步消息
+```
+
+**★ `libbackup.so` 全部 API 都是 44~52 字节的薄包装，
+真正的消息往返在 `backup_sync_msg`(228 B) / `backup_async_msg`(300 B)。**
+
+**⇒ 备份服务不存在 ⇒ 返回 0xFFFFFFFF ⇒ mmap 长度/偏移非法 ⇒ 失败 ⇒ 提前返回
+⇒ **但 MonCtrl 已建好 ⇒ SetEventSender 不再崩。**
+
+### 若要让监视器队列也建立
+
+**stub `Backup_read_4Byte`：**
+
+| key | 含义 | 建议值 | 依据 |
+|---|---|---|---|
+| **0x00FA0028** | **FixedAreaTop** | **0x035A5000** | cmdline `klog.addr` |
+| **0x00FA005D** | **FixedAreaSize** | **0x20000** | cmdline `klog.size`，≥ 需要的 0x8000 |
+
+**★ 队列共需 `0x410 + 0x7BF0 = 0x8000`（32 KB）。**
+**★ 备选：`boottime=0x20000@0x03585000`。**
+
+### 附：`/setting/Backup.bin` 已完整提取
+
+**位置：nflasha2 偏移 0xAE0 目录项，FAT12，起始簇 0x14，1,235,836 字节。**
+**★ 文件里**不含** 0xFA0028/0xFA005D 字面量
+⇒ ID→偏移映射在备份服务端，不在文件里
+⇒ 只能靠 stub `Backup_read_4Byte` 改这两个值。**
