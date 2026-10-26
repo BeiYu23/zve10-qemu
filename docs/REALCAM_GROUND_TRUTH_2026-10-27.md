@@ -1220,3 +1220,39 @@ BZI init at base=0x08a02000
 1. `MonQueue` 相关崩溃：看是哪条 monitor 没初始化（`IsEmpty` 里对空队列解引用）；
 2. 保持"不用 dlopen 抢跑、按需补初始化"的策略；
 3. 判据仍为 `GRM2 > 0` + `/dev/stream` 非均匀。
+
+---
+
+## 30. 第 43 轮：`MonQueue` 崩溃定位到 `MonDrv::Getchar`（监视器/调试口驱动）
+
+### 30.1 现场与调用链
+
+```
+崩溃 pc=libMWF+0x32332 = MonQueue::IsEmpty
+   3232a: ldmia r0,{r2,r3}      ; r2 = this->[0]，r3 = this->[1]
+   32332: ldr   r0,[r2,#0]      ; ★ r2 == 0 → 崩
+调用者 lr = libMWF+0x3133B = MonDrv::Getchar
+   31334: ldr r0,[r4,#0]        ; r4 = libMWF 数据段里的全局
+   31336: bl  MonQueue::IsEmpty
+```
+
+**关键**：崩溃时 `this`(r0 in IsEmpty) = **0x000303F8** —— 这不是堆指针（堆在 0x09xxxxxx），
+说明**全局里存的是垃圾值**，`MonDrv::Init` 正常构造的两个队列（0x31294 / 0x312BC 两处 ctor，
+参数分别是 `fixedArea+0x53400/4/16, 0x400` 与 `+0x53408/C/410, 0x7BF0`）**没有生效**，
+或者 Getchar 跑在了 Init 之前的另一个上下文。
+
+（`MonDrv::Init` 确实跑过：串口里有它打印的
+`FixedAreaTop 3E000000 / FixedAreaSize 00080000 / Physical 3E053400 / Logical 0x5951400 / Mon Buf Size 00008000`）
+
+### 30.2 判断
+
+`MonDrv` 是**监视器/调试口驱动**（连 CP 的调试通道）。这条崩溃很可能是：
+* 应用侧"监视器线程/调试接口"被拉起（因为我们把设备节点/共享区做出来了），
+  但对应的 **CP 通道**不存在 ⇒ 队列指针没被正确建立 ⇒ 一旦被读就崩。
+
+### 30.3 下一轮
+
+1. 用 GDB 断在 `0x31334`（Getchar 读全局处），读 `r4` 指向的全局值 + 该全局的写入点（watchpoint），
+   确认谁写了这个垃圾值；
+2. 若是"没有 CP 才走到的调试路径"，考虑**提供最小 CP 通道**或让该路径不被触发（比 patch 更符合 a7c2 做法）；
+3. 判据仍为 `GRM2 > 0` + `/dev/stream` 非均匀。
