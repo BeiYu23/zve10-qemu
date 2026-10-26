@@ -41,6 +41,10 @@
 #define SYS_wait4    114
 #define SYS_kill     37
 #define SYS_getpid   20
+#define SYS_lseek    19
+#define PATHMAX     192
+#define MS_BIND     4096      /* 0x1000 */
+#define MNT_DETACH  2
 
 /* ---- 直接 syscall ---- */
 static inline int sy0(int n){register int r7 __asm__("r7")=n;register int r0 __asm__("r0");__asm__ volatile("svc #0":"=r"(r0):"r"(r7):"memory","cc");return r0;}
@@ -52,6 +56,7 @@ static inline int sy5(int n,int a,int b,int c,int d,int e){register int r7 __asm
 
 /* ---- 字符串工具 ---- */
 static int slen(const char*s){int n=0;while(s[n])n++;return n;}
+static int scmp(const char*a,const char*b){while(*a&&*b){if(*a!=*b)return 0;a++;b++;}return *a==*b;}
 static int shas(const char*s,const char*sub){int i,j;for(i=0;s[i];i++){for(j=0;sub[j]&&s[i+j]==sub[j];j++);if(!sub[j])return 1;}return 0;}
 static void scpy(char*d,const char*s,int max){int i=0;while(s[i]&&i<max-1){d[i]=s[i];i++;}d[i]=0;}
 static void scat(char*d,const char*s,int max){int l=slen(d),i=0;while(s[i]&&l+i<max-1){d[l+i]=s[i];i++;}d[l+i]=0;}
@@ -75,7 +80,6 @@ static void lgd(int v)
         if (d || started) { lc((char)('0' + d)); started = 1; }
     }
 }
-static void lgx(unsigned v){static const char h[]="0123456789abcdef";lg("0x");for(int s=28;s>=0;s-=4)LB[LP++]=h[(v>>s)&0xF];}
 static void flushlog(void){
     int fd=sy3(SYS_open,(int)LOGPATH,0x241,0644);
     if(fd<0)return;
@@ -176,10 +180,20 @@ static int mount_sd(void)
  *   ④ 全局熔断：失败数 > MAX_FAIL ⇒ 之后全部跳过
  * ============================================================ */
 
-#define MODDIR   "/log/zvegisk/mods"
-#define STATEDIR "/log/zvegisk/state"
+/* ★ 双目录架构（借鉴 KernelSU meta-overlayfs）
+ *   元数据（小、要可靠、启动早期就要读）→ /setting（20MB，独立分区）
+ *   内容  （大、可能几十 MB）           → /log（500MB）
+ *   好处：改开关不碰 /log；/log 被清也不丢开关状态；
+ *         扫描 20 个 module.prop 比扫 20 个含大文件的目录快得多。 */
+#define METADIR  "/setting/zvegisk/mods"     /* module.prop / disabled / .failed */
+#define CONTDIR  "/log/zvegisk/mods"         /* lib/NAME.so 与 system/ 实体 */
+#define STATEDIR "/setting/zvegisk"          /* boot_count / safemode / 记录   */
+#define MOUNTREC "/setting/zvegisk/mounts.active"
 #define MAX_FAIL 3
 #define MAX_MODS 32
+#define MAX_OVL  32
+
+static int g_ovl_cnt;          /* 本次已挂载的覆盖层数量 */
 
 /* 判断路径是否存在（文件或目录） */
 
@@ -294,6 +308,18 @@ static int prop_int(const char *dir, const char *key)
     return -1;
 }
 
+/* 从双目录读 module.prop 里的整数键 */
+static int prop_int_dual(const char *name, const char *key)
+{
+    char p[PATHMAX];
+    int v;
+    scpy(p, METADIR, PATHMAX); scat(p, "/", PATHMAX); scat(p, name, PATHMAX);
+    v = prop_int(p, key);
+    if (v >= 0) return v;
+    scpy(p, CONTDIR, PATHMAX); scat(p, "/", PATHMAX); scat(p, name, PATHMAX);
+    return prop_int(p, key);
+}
+
 /* 载入一个代码模块：fork 出载体进程，LD_PRELOAD 模块 .so
  * 返回 0 成功，<0 失败 */
 static int run_code_module(const char *name, const char *so, int verify_port, int timeout_ms)
@@ -345,108 +371,291 @@ static int run_code_module(const char *name, const char *so, int verify_port, in
     return 0;
 }
 
-/* 标记失败（黑名单） */
-static void mark_failed(const char *name)
+
+
+/* ------------------------------------------------------------
+ * 双目录模块枚举
+ *   元数据：/setting/zvegisk/mods/<name>/module.prop|disabled|<name>.failed
+ *   内容  ：/log/zvegisk/mods/<name>/lib/<name>.so | system/...
+ *
+ * 扫描顺序：先扫 METADIR（拿开关状态），再扫 CONTDIR（补只有内容的模块）。
+ * 同名以 METADIR 的元数据为准。
+ * ------------------------------------------------------------ */
+
+/* 已处理过的模块名（去重） */
+static char g_done[MAX_MODS][48];
+static int  g_done_n;
+
+static int already_done(const char *nm)
 {
-    char path[200];
-    scpy(path, STATEDIR, sizeof path);
-    scat(path, "/", sizeof path);
-    scat(path, name, sizeof path);
-    scat(path, ".failed", sizeof path);
-    writefile(path, "1\n", 2);
+    for (int i = 0; i < g_done_n; i++)
+        if (scmp(g_done[i], nm)) return 1;
+    return 0;
+}
+static void set_done(const char *nm, int idx)
+{
+    if (idx < 0 || idx >= MAX_MODS) return;
+    int i = 0;
+    while (nm[i] && i < 47) { g_done[idx][i] = nm[i]; i++; }
+    g_done[idx][i] = 0;
 }
 
-/* 是否上次失败过 */
-static int is_failed(const char *name)
+/* 读某个模块的元数据文件路径（METADIR 优先，回退 CONTDIR） */
+static void meta_path(char *out, const char *name, const char *leaf, int meta_first)
 {
-    char path[200];
-    scpy(path, STATEDIR, sizeof path);
-    scat(path, "/", sizeof path);
-    scat(path, name, sizeof path);
-    scat(path, ".failed", sizeof path);
-    return exists(path);
+    scpy(out, meta_first ? METADIR : CONTDIR, PATHMAX);
+    scat(out, "/", PATHMAX);
+    scat(out, name, PATHMAX);
+    scat(out, "/", PATHMAX);
+    scat(out, leaf, PATHMAX);
+}
+
+/* 前置声明 */
+static int apply_overlay_tree(const char *modroot, const char *rel, int *applied);
+
+/* 处理单个模块 */
+static int process_module(const char *nm, int *fails)
+{
+    char p[PATHMAX];
+
+    /* disabled 或 failed ⇒ 跳过 */
+    meta_path(p, nm, "disabled", 1);
+    if (exists(p)) { lg("  disabled\n"); return 0; }
+    meta_path(p, nm, "disabled", 0);
+    if (exists(p)) { lg("  disabled\n"); return 0; }
+
+    char failed[PATHMAX];
+    scpy(failed, STATEDIR, PATHMAX); scat(failed, "/", PATHMAX);
+    scat(failed, nm, PATHMAX); scat(failed, ".failed", PATHMAX);
+    if (exists(failed)) { lg("  blacklisted\n"); return 0; }
+
+    /* 代码模块：优先 /log 的 lib/<name>.so，回退 /setting */
+    char so[PATHMAX];
+    scpy(so, CONTDIR, PATHMAX); scat(so, "/", PATHMAX); scat(so, nm, PATHMAX);
+    scat(so, "/lib/", PATHMAX); scat(so, nm, PATHMAX); scat(so, ".so", PATHMAX);
+    if (!exists(so)) {
+        scpy(so, METADIR, PATHMAX); scat(so, "/", PATHMAX); scat(so, nm, PATHMAX);
+        scat(so, "/lib/", PATHMAX); scat(so, nm, PATHMAX); scat(so, ".so", PATHMAX);
+    }
+    if (exists(so)) {
+        int vp = prop_int_dual(nm, "verify_port");
+        if (run_code_module(nm, so, vp, 8000) < 0) {
+            lg("  FAIL -> blacklist\n");
+            writefile(failed, "1\n", 2);
+            (*fails)++;
+        } else lg("  OK\n");
+        return 0;
+    }
+
+    /* 资源模块：看 /log 有没有 system/ */
+    char sysd[PATHMAX];
+    scpy(sysd, CONTDIR, PATHMAX); scat(sysd, "/", PATHMAX); scat(sysd, nm, PATHMAX);
+    scat(sysd, "/system", PATHMAX);
+    if (exists(sysd)) {
+        static int applied;
+        applied = 0;
+        lg("  overlay:\n");
+        apply_overlay_tree(sysd, "", &applied);
+        lg("  applied "); lgd(applied); lg(" file(s)\n");
+        return 0;
+    }
+
+    lg("  empty module, ignore\n");
+    return 0;
+}
+
+/* 扫一个目录，对每个子目录调 process_module */
+static void scan_dir(const char *dir, int *fails, int *count)
+{
+    int dfd = sy4(SYS_open, (int)dir, 0x10000 /*O_DIRECTORY*/, 0, 0);
+    if (dfd < 0) { lg("  (no "); lg(dir); lg(")\n"); return; }
+
+    static char dbuf[4096];
+    int n;
+    while ((n = sy3(217 /*getdents64*/, dfd, (int)dbuf, sizeof dbuf)) > 0) {
+        for (int off = 0; off < n; ) {
+            unsigned short reclen = *(unsigned short *)(dbuf + off + 16);
+            char *nm = dbuf + off + 19;
+            if (reclen == 0) break;
+            if (nm[0] != '.') {
+                if (*fails >= MAX_FAIL) { lg("  BREAKER open, skip rest\n"); off += reclen; continue; }
+                if (already_done(nm)) { off += reclen; continue; }
+                if (*count >= MAX_MODS) { lg("  too many, stop\n"); break; }
+                set_done(nm, g_done_n++);
+                (*count)++;
+                lg("mod: "); lg(nm); lg("\n");
+                process_module(nm, fails);
+            }
+            off += reclen;
+        }
+        if (*count >= MAX_MODS) break;
+    }
+    sy1(SYS_close, dfd);
 }
 
 /* 加载全部模块 */
 static void load_modules(void)
 {
     lg("--- modules ---\n");
-    sy2(SYS_mkdir, (int)MODDIR, 0755);
-    sy2(SYS_mkdir, (int)STATEDIR, 0755);
+    sy2(SYS_mkdir, (int)"/setting/zvegisk", 0755);
+    sy2(SYS_mkdir, (int)METADIR, 0755);
+    sy2(SYS_mkdir, (int)CONTDIR, 0755);
+    sy2(SYS_mkdir, (int)"/log/zvegisk", 0755);
 
-    /* ---- ① agent 永远第一个，独立于模块目录 ----
-     * 这样即使后面的模块搞坏系统，agent 也已经起来了，可远程排查。 */
+    g_done_n = 0;
+    g_ovl_cnt = 0;
+
+    /* ---- ① agent 永远第一个 ---- */
     if (exists("/log/zvegisk/agent.so")) {
         int en = 0;
         static char b[16];
         if (readfile("/log/zvegisk/agent_enable", b, sizeof b) > 0 && shas(b, "true")) en = 1;
         if (!en && readfile("/setting/zvegisk/agent_enable", b, sizeof b) > 0 && shas(b, "true")) en = 1;
         if (en) {
-            if (is_failed("agent")) lg("  agent SKIPPED (blacklisted)\n");
+            char af[PATHMAX];
+            scpy(af, STATEDIR, PATHMAX); scat(af, "/agent.failed", PATHMAX);
+            if (exists(af)) lg("  agent SKIPPED (blacklisted)\n");
             else if (run_code_module("agent", "/log/zvegisk/agent.so", 7777, 8000) < 0) {
                 lg("  agent FAIL -> blacklist\n");
-                mark_failed("agent");
+                writefile(af, "1\n", 2);
             } else lg("  agent OK\n");
         } else lg("  agent disabled\n");
     } else lg("  no agent.so\n");
 
-    /* ---- ② 模块目录 ---- */
-    int dfd = sy4(SYS_open, (int)MODDIR, 0x10000 /*O_DIRECTORY*/, 0, 0);
-    if (dfd < 0) { lg("  no mods dir\n"); return; }
+    /* ---- ② 双目录扫描 ---- */
+    int fails = 0, count = 0;
+    lg("[meta] ");  scan_dir(METADIR, &fails, &count);
+    lg("[cont] ");  scan_dir(CONTDIR, &fails, &count);
 
-    static char dbuf[4096];
+    lg("--- modules done, fails="); lgd(fails); lg(", loaded="); lgd(count); lg(" ---\n");
+}
+
+/* ============================================================
+ * 覆盖层挂载记录 + 精确回滚（替代 KernelSU 的 source=KSU 标识）
+ *
+ * ★ 为什么不用 source 标识：
+ *   内核 3.0.27 没有新 mount API（fsopen/fsconfig 是 5.2+），
+ *   且 mount(2) 带 MS_BIND 时 data 参数被内核忽略 ⇒ 无法打标签。
+ * ⇒ 改为把 (src,dst) 写进记录文件，回滚时只卸记录里的点，
+ *   不误伤系统自己的挂载。
+ * ============================================================ */
+
+static int bind_mount(const char *src, const char *dst)
+{
+    return sy5(SYS_mount, (int)src, (int)dst, 0, MS_BIND, 0);
+}
+
+/* 记录一次挂载 */
+static void rec_mount(const char *src, const char *dst)
+{
+    if (g_ovl_cnt >= MAX_OVL) return;
+    int fd = sy3(SYS_open, (int)MOUNTREC, 0x241 /*O_WRONLY|O_CREAT*/, 0644);
+    if (fd < 0) return;
+    sy3(SYS_lseek, fd, 0, 2 /*SEEK_END*/);
+    char line[PATHMAX * 2];
+    int n = 0;
+    for (const char *q = src; *q && n < PATHMAX - 2; q++) line[n++] = *q;
+    line[n++] = '\t';
+    for (const char *q = dst; *q && n < PATHMAX * 2 - 2; q++) line[n++] = *q;
+    line[n++] = '\n';
+    sy3(SYS_write, fd, (int)line, n);
+    sy1(SYS_close, fd);
+    g_ovl_cnt++;
+}
+
+/* 按记录回滚：倒序卸载，只卸我们挂过的点 */
+static void rollback_mounts(void)
+{
+    static char buf[PATHMAX * 8];
+    int n = readfile(MOUNTREC, buf, sizeof buf);
+    if (n <= 0) { lg("rollback: no record\n"); return; }
+    lg("rollback: "); lgd(g_ovl_cnt); lg(" mount(s)\n");
+
+    static char *lines[MAX_OVL];
+    int cnt = 0;
+    char *q = buf;
+    while (*q && cnt < MAX_OVL) {
+        lines[cnt++] = q;
+        while (*q && *q != '\n') q++;
+        if (*q == '\n') { *q = 0; q++; }
+    }
+    for (int i = cnt - 1; i >= 0; i--) {
+        char *tab = 0;
+        for (char *t = lines[i]; *t; t++) if (*t == '\t') tab = t;
+        if (!tab) continue;
+        *tab = 0;
+        const char *dst = tab + 1;
+        sy2(SYS_umount2, (int)dst, MNT_DETACH);
+        lg("  umount "); lg(dst); lg("\n");
+    }
+    sy1(SYS_unlink, (int)MOUNTREC);
+}
+
+/* ------------------------------------------------------------
+ * 覆盖层应用（Phase 2：单文件 bind）
+ *
+ * 只处理【目标已存在】的文件 —— 因为 mount --bind 不能新建文件。
+ * 目标不存在的情况（比如新增 appFw.so）需要目录级覆盖（符号链接农场），
+ * 那是 Phase 3。
+ *
+ * ★ 单文件 bind 足够覆盖：声音、图片、字体、已有 .uxc/.xdb。
+ * ------------------------------------------------------------ */
+
+#define OVL_MAXDEPTH 6
+
+static int apply_overlay_tree(const char *modroot, const char *rel, int *applied)
+{
+    /* ★ 深度限制：防止异常深的目录树把栈吃光（相机只有 128MB，
+     *   不能像手机那样随便递归）。正常 /usr/share 最多 3~4 层。 */
+    int depth = 0;
+    for (const char *t = rel; *t; t++) if (*t == '/') depth++;
+    if (depth > OVL_MAXDEPTH) { lg("    SKIP(too deep)\n"); return -1; }
+
+    char dir[PATHMAX];
+    scpy(dir, modroot, PATHMAX);
+    if (rel[0]) { scat(dir, "/", PATHMAX); scat(dir, rel, PATHMAX); }
+
+    int dfd = sy4(SYS_open, (int)dir, 0x10000 /*O_DIRECTORY*/, 0, 0);
+    if (dfd < 0) return -1;
+
+    /* ★ 必须是每层独立的栈缓冲，不能用 static ——
+     *   否则递归时子层覆盖父层的目录内容，父层继续读就是垃圾。 */
+    char dbuf[1024];
     int n;
-    int fails = 0;
-    int count = 0;
     while ((n = sy3(217 /*getdents64*/, dfd, (int)dbuf, sizeof dbuf)) > 0) {
         for (int off = 0; off < n; ) {
-            /* struct linux_dirent64 { u64 ino; s64 off; u16 reclen; u8 type; char name[] } */
             unsigned short reclen = *(unsigned short *)(dbuf + off + 16);
-            unsigned char dtype = *(unsigned char *)(dbuf + off + 18);
+            unsigned char  dtype  = *(unsigned char  *)(dbuf + off + 18);
             char *nm = dbuf + off + 19;
             if (reclen == 0) break;
             if (nm[0] != '.') {
-                lg("mod: "); lg(nm); lg("\n");
-                count++;
-                if (count > MAX_MODS) { lg("  too many, stop\n"); break; }
-                if (fails >= MAX_FAIL) { lg("  BREAKER open, skip rest\n"); off += reclen; continue; }
+                char child[PATHMAX];
+                scpy(child, rel, PATHMAX);
+                if (child[0]) scat(child, "/", PATHMAX);
+                scat(child, nm, PATHMAX);
 
-                char dir[200];
-                scpy(dir, MODDIR, sizeof dir);
-                scat(dir, "/", sizeof dir);
-                scat(dir, nm, sizeof dir);
-
-                /* disabled 文件存在 ⇒ 跳过 */
-                char dp[220];
-                scpy(dp, dir, sizeof dp); scat(dp, "/disabled", sizeof dp);
-                if (exists(dp)) { lg("  disabled\n"); off += reclen; continue; }
-                if (is_failed(nm)) { lg("  blacklisted\n"); off += reclen; continue; }
-
-                /* lib/<name>.so ⇒ 代码模块 */
-                char so[240];
-                scpy(so, dir, sizeof so); scat(so, "/lib/", sizeof so); scat(so, nm, sizeof so); scat(so, ".so", sizeof so);
-                if (exists(so)) {
-                    int vp = prop_int(dir, "verify_port");
-                    if (run_code_module(nm, so, vp, 8000) < 0) {
-                        lg("  FAIL -> blacklist\n");
-                        mark_failed(nm);
-                        fails++;
-                    } else lg("  OK\n");
-                    off += reclen;
-                    continue;
+                if (dtype == 4 /*DT_DIR*/) {
+                    apply_overlay_tree(modroot, child, applied);
+                } else {
+                    char src[PATHMAX], dst[PATHMAX];
+                    scpy(src, modroot, PATHMAX); scat(src, "/", PATHMAX); scat(src, child, PATHMAX);
+                    scpy(dst, "/usr/", PATHMAX);  scat(dst, child, PATHMAX);
+                    if (!exists(dst)) {
+                        lg("    SKIP(no target) "); lg(dst); lg("\n");
+                    } else if (bind_mount(src, dst) == 0) {
+                        rec_mount(src, dst);
+                        (*applied)++;
+                        lg("    bind "); lg(dst); lg("\n");
+                    } else {
+                        lg("    BIND FAIL "); lg(dst); lg("\n");
+                    }
                 }
-                /* system/ ⇒ 资源模块（Phase 2 才实现） */
-                char sys[220];
-                scpy(sys, dir, sizeof sys); scat(sys, "/system", sizeof sys);
-                if (exists(sys)) lg("  overlay (Phase2 未实现)\n");
-                else lg("  empty module, ignore\n");
             }
             off += reclen;
         }
-        if (count > MAX_MODS) break;
     }
     sy1(SYS_close, dfd);
-    lg("--- modules done, fails="); lgd(fails); lg(" ---\n");
+    return 0;
 }
 
 /* 立刻卸载 SD 卡，把冲突窗口压到毫秒级 */
@@ -501,6 +710,9 @@ static void watchdog(void)
         sy1(SYS_exit,0);
     }
     lg("ui_FAIL -> reboot\n");
+    /* ★ 先把我们挂的覆盖层全部卸掉，再重启。
+     *   这样即使重启后 safemode/dmode 没拦住，系统文件也是干净的。 */
+    rollback_mounts();
     flushlog();
     /* 强制重启：reboot(LINUX_REBOOT_CMD_RESTART) = 0x01234567 */
     sy4(SYS_reboot,0xFEE1DEAD,0x28121969,0x01234567,0);
