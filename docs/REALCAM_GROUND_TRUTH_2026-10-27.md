@@ -1081,3 +1081,60 @@ struct thread_info { unsigned long flags; int preempt_count; ... struct task_str
 1. 试 `init_module` 的不同姿势（可写缓冲、4 字节对齐、先 `delete_module` 冲突名、检查 `-20` 到底对应哪条错误路径）；
 2. 或用**现有已加载模块的接口**注册队列（例如让 `fake_gles` 里加 DMM 应答逻辑，随开机 insmod 加载，完全避免运行时加载）；
 3. 成功后再看内核 MA 是否能拿到合法 mspace，从而让 App 的 dmp_allocator 走通。
+
+---
+
+## 27. 第 40 轮：★ 里程碑 —— **内核态 DMM 服务让真 MA 通了**，App 首次冲出 MA 进入业务框架
+
+### 27.1 做法：把 DMM 应答**编进开机就加载的模块**（不再运行时 init_module）
+
+在 `fake_gles.c`（开机由 `/kmod/grm_gles.ko` insmod）里加：
+
+```c
+osal_reg_msg_queue_cb(0x0061003C, &dmm_h, &fake_dmm_cb, 0);   // 注册 DMM 队列
+fake_dmm_cb(req):
+    seq = *(u16*)(req+0x14)
+    osal_valloc_msg_wait(0x0061003C, &m, 24, 1)
+    m[0]=0x8001; m[4]=1(pool); m[6]=seq; m[0x10]=0x02000000; m[0x14]=0x20312000
+    osal_snd_msg(0x014C0424, m)
+```
+
+### 27.2 实测（镜像 `ab_v2280`：真 grm_ma + 我们的软件 dmpgles2 + 该模块 + 干净探针）
+
+```
+FAKEDMM reg rc=0 h=60b9ef40
+MA passthru op=7      ← 用户态 MA 请求交给内核 MA
+MA passthru op=1      ← dmm_open：内核 MA 发消息给 DMM
+FAKEDMM req n=1 w0=00000001 seq=0     ← ★ 我们的内核模块收到
+FAKEDMM reply seq=0 snd=0             ← ★ 应答成功
+MA passthru op=9      ← malloc：内核 MA 用刚建立的 mspace 分配
+```
+
+**没有 oops、没有 `mspace_malloc` 崩溃**（对比第 21 节的 RT BUG：那是**用户态**应答走 RT 用户态交付路径导致的；
+内核态应答完全绕开了它）。
+
+### 27.3 App 的下一步进展（本轮最大收获）
+
+MA 通之后 App 继续往下走，出现了**新的线程**并进入业务框架：
+
+```
+[current task] program: /usr/bin/im.elf.real (THREAD_INFRA1) (pid: 139 …)
+address: 00000000, trap_no 0xe            ← 空指针数据异常
+pc=0x08a397fc  →  映射到 libBizFw.so 偏移 0x427FC
+   = AvbbcLogManager::getInstance() 内部
+```
+
+之前是"MA 一过就静默"，现在是 **MA 过了、起了 THREAD_INFRA1、跑到 libBizFw 才崩** ⇒ 前进了一大步。
+
+### 27.4 顺带修的一个符号可见性问题
+
+把业务推进后又暴露：`libObj.so: undefined symbol: MWF::RsrcAcsr::RsrcAcsr(...)`。
+查证：该符号**确实由我们镜像里的 `/lib/libMWF.so` 定义**（dynsym 有 `FUNC GLOBAL DEFAULT 10 …`），
+只是 App 解析时 libMWF 还没进全局作用域。在 preload 里提前 `dlopen("//lib/libMWF.so", RTLD_NOW|RTLD_GLOBAL)` 即可（已加，
+`PL //lib/libMWF.so h=0x16038` 成功；`libmprctrl.so` 仍返回 0，需单独查依赖）。
+
+### 27.5 下一轮
+
+1. 查 `AvbbcLogManager::getInstance` 的 NULL 来源（很可能是日志实例未初始化 → 与 `0x8F013A` 日志服务应答是否完整有关）；
+2. 继续用"内核态服务"这一招补其它缺的服务（比用户态稳）；
+3. 关注判据：`GRM2 > 0` 且 `/dev/stream` 从均匀 `0x5A5A` 变非均匀。
