@@ -172,3 +172,102 @@ ERROR : Failed to mmap!
 **★ 文件里**不含** 0xFA0028/0xFA005D 字面量
 ⇒ ID→偏移映射在备份服务端，不在文件里
 ⇒ 只能靠 stub `Backup_read_4Byte` 改这两个值。**
+
+---
+
+## 七、★★★ 修正与最终结论（QEMU 线实测反馈后）
+
+### 我的 `.bss` 假说被证伪
+
+**QEMU 线实测：`dlopen` 返回后、任何初始化之前，`.bss` 是干净的**
+（`echo=0 / q1=0 / q2=0 / pfx=0`）⇒ **加载器确实清零了 `.bss`。**
+**`isEchoBackOn == 1` 是之后被置上的 —— 因为 App 启动参数带 `debug`
+（`im.elf debug s g r u l i a lazy-global`），**真机上也是 1**。**
+
+**⇒ 所以真机上 MonCtrl **必须**存在，`MonDrv::Init` 不是它的来源。**
+
+### 5 处 `MonCtrl` 构造点的真实属主
+
+```
+0x1E910  MWF::EventReceiver::PrintQueue(ParamDump::Filter)      ← 栈上临时，无关
+0x1E9E8  MWF::EventReceiver::PrintMessage(bool, ObjMsg*, char*) ← 栈上临时，无关
+0x1F238  MWF::InhDP::Initialize()  @0x1F220                     ← 建 3 个
+0x1F252  MWF::InhDP::Initialize()
+0x1F26C  MWF::InhDP::Initialize()
+```
+
+### 各实例落到哪个全局（GOT 解出）
+
+| MonCtrl 实例 | 全局地址 | 备注 |
+|---|---|---|
+| **`RsrcDP::smp_monErr`** | **0x4586C** | **★ `SetEventSender` 用的就是这个** |
+| `InhDP::smp_monErr` | 0x44254 | |
+| `InhDP::smp_monWrn` | 0x442B8 | |
+| `InhDP::smp_monDbg` | 0x442B0 | |
+| `InhMcmd::smp_monAdd` | 0x442D8 | debug=true |
+
+### 完整调用链（全部反汇编确认）
+
+```
+MWF::Initialize()                        @0x20A09
+  20a1e: strb #1, [0x442DB]              ← ★★★ 幂等令牌，在干活【之前】置 1
+  20a20: → MwfCommon::Init()
+  20a24: → Monitor::Init()
+  20a4a: → ObjThread::StartThread()
+  20a4e: → ObjLog_Mcmd::Init()
+  20a52: → RsrcMcmd::Init()              @0x2D0CC
+            2d0d0: → RsrcDP::Initialize()   @0x2CC29（412 B）
+                      → new MonCtrl → RsrcDP::smp_monErr @0x4586C
+  20a56: → InhMcmd::Init()               @0x204C8（100 B）
+            204ce: → InhDP::Initialize()    @0x1F220
+                      → 3× MonCtrl + 1× MonCtrl(debug) → InhMcmd::smp_monAdd
+  20a5a: → ObjIf_Mcmd::Init()
+  20a5e: → ObjIf::Init()
+  20a62: → EventIdFactory::Initialize(0x83e8, 0x800)
+```
+
+### ★★★ 真正的 bug：幂等令牌被提前消耗
+
+**令牌在 `MWF_BASE + 0x442DB`（`.bss`，静态值 0）。
+`MWF::Initialize()` 在 `+0x20A1E`（第二条指令）就把它置 1，**早于所有实际工作**。**
+
+**⇒ 若从 preload 提前调用且中途失败（卡在 0x20A24~0x20A4E 之间），
+**App 自己再调时 `ldrb r5,[r3]; bne 20a8a` 直接跳过**
+⇒ `RsrcDP::smp_monErr` 永远为 0 ⇒ `SetEventSender` 永远崩。**
+
+### 修法
+
+**① 推荐：不要从 preload 调 `MWF::Initialize()`，让 App 自己调。**
+
+**② 若必须提前调，调用后把令牌复位：**
+```c
+MWF_Initialize();
+*(volatile unsigned char*)(MWF_BASE + 0x442DB) = 0;  // 归还令牌
+```
+**⚠️ 会跑两次，某些 `operator new` 会重复分配。**
+
+**③ 直接调叶子（注意：`RsrcDP::Initialize` / `InhDP::Initialize` **都没有幂等守卫**，
+调两次会重复分配并覆盖全局，泄漏但不崩）：**
+```
+RsrcMcmd::Init() → RsrcDP::Initialize()
+InhMcmd::Init()  → InhDP::Initialize()
+ObjLog_Mcmd::Init() / ObjIf_Mcmd::Init() / ObjIf::Init()
+EventIdFactory::Initialize(0x83e8, 0x800)
+```
+
+### 关于 QEMU 线新崩的 `libMWF+0x25CC0`
+
+```
+0x25CC0 = ~ParamStd_Template<int, Param::Type(7)>()
+25cc6: blx MWF::Param::~Param()
+```
+**⇒ 在析构**构造到一半/被覆盖的对象** —— 与令牌问题同源（下游产物）。
+**★ 修好令牌前不要急着修这个。**
+
+### 关于 stub 的 FixedAreaTop/Size 的疑点
+
+**QEMU 线 stub 成 `0x8F000000 / 0x80000`，mmap 成功、MonQueue 建起来了。
+但 `+0x53400` 这个偏移暗示真机的缓冲区在某个**特定 RTOS 共享区**
+（cmdline 候选：`klog.addr=0x035A5000` / `boottime=0x20000@0x03585000`）。
+⇒ 建在普通 DDR 里不会崩，但监视器输出没人读（另一端在 RTOS）。
+★ 若目的只是不崩，现状可接受；要让监视器真工作，这两个值需对齐 RTOS 侧。**
