@@ -353,7 +353,7 @@ static void sample_threads(void)
  * with an infinite timeout, so the semaphore id and who posts it are decisive. */
 static void *uipc_handle;
 static int sem_n, sem_n2;
-int osal_wai_sem_tmo(unsigned sem, long tmo)
+int zz_unused_wai_sem(unsigned sem, long tmo)
 {
     static int (*real)(unsigned,long);
     if(!real) real = (int(*)(unsigned,long))dlsym(uipc_handle, "osal_wai_sem_tmo");
@@ -362,7 +362,7 @@ int osal_wai_sem_tmo(unsigned sem, long tmo)
     if(sem_n <= 12) { printf("MENUHOST WAITSEM returned=%d sem=%08x\n", r, sem); fflush(0); }
     return r;
 }
-int osal_sig_sem(unsigned sem)
+int zz_unused_sig_sem(unsigned sem)
 {
     static int (*real)(unsigned);
     if(!real) real = (int(*)(unsigned))dlsym(uipc_handle, "osal_sig_sem");

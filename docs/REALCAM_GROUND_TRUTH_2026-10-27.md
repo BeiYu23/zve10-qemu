@@ -4682,3 +4682,24 @@ MENUHOST app body enter 0x557a399
 ### 110.4 判据状态
 
 `GRM2` 无记录、`/dev/dmpgles2` 未打开、`/dev/stream` 未变，**菜单未显示，目标未完成**。
+
+---
+
+## 112. 2026-10-27 A/B：移除我们自己的信号量拦截层，崩溃形态完全不变
+
+疑问：我们的拦截层（`osal_wai_sem_tmo` / `osal_sig_sem` 等，以 ARM 模式编译）是否
+与固件的 Thumb 调用约定冲突，从而制造了"Thumb 位丢失"。
+
+做法：把这两个符号改名（不再拦截），保留 Backup 应答与线程钩子，其余不变，重跑。
+
+```
+ZZINSN pc=libObj+0x63d506   ← 与拦截层存在时完全相同的崩溃点
+FAKEGLES open=0 ioctl=0
+dmpgles2 相关日志=0
+```
+
+⇒ **否证**：崩溃与我们的信号量拦截无关，问题在固件/内核一侧的调用态。
+
+结项文档见 [FINAL_HANDOFF_2026-10-27](FINAL_HANDOFF_2026-10-27.md)。
+
+`GRM2` 无记录、`/dev/dmpgles2` 未打开、`/dev/stream` 未变，**菜单未显示，目标未完成**。
