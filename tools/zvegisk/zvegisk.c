@@ -97,10 +97,10 @@ static void flushlog(void){
     if (LP <= 0) return;
     int fd = -1;
     if (LOGPATH[0]) {
-        fd = sy3(SYS_open, (int)LOGPATH, 0x241, 0644);
+        fd = sy3(SYS_open, (int)LOGPATH, 0x441 /*O_WRONLY|O_CREAT|O_APPEND*/, 0644);
     } else {
         for (int i = 0; LOG_PATHS[i]; i++) {
-            fd = sy3(SYS_open, (int)LOG_PATHS[i], 0x241, 0644);
+            fd = sy3(SYS_open, (int)LOG_PATHS[i], 0x441 /*O_APPEND*/, 0644);
             if (fd >= 0) { scpy(LOGPATH, LOG_PATHS[i], sizeof LOGPATH); break; }
         }
     }
@@ -732,7 +732,7 @@ static int bind_mount(const char *src, const char *dst)
 static void rec_mount(const char *src, const char *dst)
 {
     if (g_ovl_cnt >= MAX_OVL) return;
-    int fd = sy3(SYS_open, (int)MOUNTREC, 0x241 /*O_WRONLY|O_CREAT*/, 0644);
+    int fd = sy3(SYS_open, (int)MOUNTREC, 0x441 /*O_APPEND*/, 0644);
     if (fd < 0) return;
     sy3(SYS_lseek, fd, 0, 2 /*SEEK_END*/);
     char line[PATHMAX * 2];
@@ -960,6 +960,11 @@ static void watchdog(void)
 static void work_inner(void)
 {
     LP=0;
+    /* ★ 每次开机清空日志（之后 flushlog 用 O_APPEND 追加） */
+    { int tfd = sy3(SYS_open, (int)"/log/zvegisk.log", 0x241 /*O_TRUNC*/, 0644);
+      if (tfd >= 0) sy1(SYS_close, tfd); }
+    LOGPATH[0] = 0;                 /* 重置，让本次重新探测可用路径 */
+
     lg("\n===== boot uptime=");
     { static char ub[48]; int m = readfile("/proc/uptime", ub, sizeof ub);
       if (m > 0) { for (int i = 0; i < m && ub[i] != '.' && i < 20; i++) lc(ub[i]); }
