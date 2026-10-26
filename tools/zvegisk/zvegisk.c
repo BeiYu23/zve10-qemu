@@ -747,8 +747,15 @@ static void work(void)
       writefile("/setting/zvegisk/boot_count",o,l); }
 
     if(cnt>3){
-        lg("over limit -> safemode, do nothing\n");
+        lg("SELF-DISABLE: "); lgd(cnt); lg(" fails -> remove preload\n");
         writefile("/setting/zvegisk/safemode","1\n",2);
+        /* ★★★ 终极自愈：把自己从 preload 摘掉
+         *   下次开机 bootin 读不到 preload ⇒ 干脆不加载我们
+         *   ⇒ 纯原厂启动，不需要任何外部工具。
+         *   ★ 先把日志刷盘，再摘 —— 否则事后看不到原因。 */
+        flushlog();
+        sy1(SYS_unlink,(int)"/setting/mode/preload");
+        lg("preload removed, rebooting to stock next time\n");
         flushlog();
         return;
     }
@@ -762,6 +769,17 @@ static void work(void)
 
     /* ④ 挂 SD 卡 */
     if(mount_sd()!=0){ lg("sd_unavailable -> nothing\n"); flushlog(); return; }
+
+    /* ③.5 ★ 挂载后立刻查 SD 卡上的 safemode
+     *   ⇒ 相机起不来时，拔卡插电脑放个 safemode 文件就能救。 */
+    { static char sp[PATHMAX];
+      scpy(sp,"/tmp/zsd/zvegisk/safemode",PATHMAX);
+      if (exists(sp)) {
+          lg("SD safemode -> do nothing\n");
+          unmount_sd();
+          flushlog();
+          return;
+      } }
 
     /* ④ 读 boot_mode */
     static char bm[32];
