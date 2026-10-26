@@ -1958,3 +1958,31 @@ HIT LDS_AFTER pc=0400dfb2 lr=040eac3b r0=00000000     r1=00000001     r3=0000000
 1. 是否返回非空对象；
 2. 是否触发 GRM 绘制（`GRM2 > 0`）；
 3. `/dev/stream` 是否从均匀 `0x5A5A` 变非均匀。
+
+---
+
+## 48. 第 61 轮：受控入口（C 路线）第一次尝试 —— 被 App 自身的加载期崩溃打断
+
+### 48.1 做法
+
+在探针里第一个 `osal_snd_sync_msg` 被调用时**惰性起线程**（遵守"构造器不建线程"的纪律），
+线程等 8 秒后创建 App 自己的菜单视图对象：
+
+* 版本 1：`dlopen("//lib/viewUnified2.so", RTLD_NOW|RTLD_GLOBAL)` → `ViewGlobalMenuToInstance(0)`
+* 版本 2（避免 dlopen）：从 `/proc/self/maps` 取 viewUnified2 基址 → 直接调 `base+0x2E4C0E|1`
+
+### 48.2 结果
+
+| 版本 | 结果 |
+|---|---|
+| v1（dlopen） | `CE starting` 后 **崩在 ld.so+0x7012**（依赖映射）——在 App 活动期间 dlopen 又踩到 glibc 2.11 的加载竞态 |
+| v2（maps 直调） | `CE starting` 后 **崩在 ld.so+0xA706**，**CE 自己的日志（base/sym/ret）一条都没出来** |
+
+⇒ **这轮没法评价"受控入口"本身**：App 在这个配置下先死在加载期（且看起来是竞态，两次跑崩点还不一样）。
+
+### 48.3 结论与下一轮
+
+* 直接调 `ViewGlobalMenuToInstance` 的思路仍然成立，但要挑一个**App 稳定活着**的环境去试；
+* 已知最稳定的环境是 **poke 路线**（Y9 + `Application_System_Init`，跑到 `INITCFG` 且**加载了 viewUnified2**、不崩）；
+* **下一轮：把 CE 挂到 poke 路线上** —— 等 viewUnified2 加载完成、`W5 init returned` 之后，
+  再调用 `ViewGlobalMenuToInstance`，这样相机不会在加载期被打断。
