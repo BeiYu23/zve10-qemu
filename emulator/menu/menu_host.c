@@ -426,6 +426,11 @@ int main(int argc,char **argv) {
      * its config object and internally dlopens+initialises the model/view config
      * modules. This is original firmware code doing the original work. */
     for(int si = 0; si < 200; si++) { usleep(10000); sample_threads(); }
+    {
+        unsigned *b = (unsigned *)(libobj_base + 0x145ca60);
+        printf("MENUHOST IDAREA %08x %08x %08x %08x %08x %08x\n",
+               b[0], b[1], b[2], b[3], b[4], b[5]); fflush(0);
+    }
     /* Run the firmware's own UX initialiser body and watch whether it actually
      * instantiates the engine singletons (ResourceManager slot 0x145ca64,
      * GraphicsEngine slot 0x13dcb78, private#4 slot 0x145cbc4). */
@@ -436,8 +441,21 @@ int main(int argc,char **argv) {
         unsigned long th0 = 0;
         if(pc0) { int rc = pc0(&th0, 0, ux_thread_body, 0); printf("MENUHOST ux thread rc=%d\n", rc); fflush(0); }
     }
-    /* app_thread intentionally NOT launched in this run: only the UX
-     * initialiser is exercised so its own behaviour can be observed. */
+    /* The state word that gates UX init is at libObj+0x145ca6c (measured: 1 in
+     * this environment, 0 on the genuine path). Clear it, then run the original
+     * app thread body, which itself performs UX init -> app ctor -> main loop. */
+    {
+        unsigned *flag = (unsigned *)(libobj_base + 0x145ca6c);
+        printf("MENUHOST flag_before=%08x\n", *flag); fflush(0);
+        *flag = 0;
+    }
+    {
+        void *pth = load("/usr/lib/libpthread-2.11.2.so");
+        int (*pcreate)(unsigned long *, const void *, void *(*)(void *), void *) =
+            (int(*)(unsigned long *, const void *, void *(*)(void *), void *))dlsym(pth, "pthread_create");
+        unsigned long th = 0;
+        if(pcreate) { int rc = pcreate(&th, 0, app_thread, 0); printf("MENUHOST app thread rc=%d\n", rc); fflush(0); }
+    }
     /* Optional original entry points are disabled for this run: calling them in
      * this order faults on prerequisites the boot sequence would have created
      * (see REALCAM_GROUND_TRUTH 94/95). Thread-creation hooks stay enabled. */
