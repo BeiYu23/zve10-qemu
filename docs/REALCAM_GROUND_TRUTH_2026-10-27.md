@@ -4794,3 +4794,15 @@ ZZINSN pc=libObj+0x63d506   ← 完全相同的崩溃点
 ### 114.4 判据状态
 
 `GRM2` 无记录、`/dev/dmpgles2` 未打开、`/dev/stream` 未变，**菜单未显示，目标未完成**。
+
+---
+
+## 115. 2026-10-27 收尾：对外可读报告 + 仓库整理
+
+* 新增对外可读报告 [`REPORT_ZVE10_MENU_ATTEMPT_2026-10-27.md`](REPORT_ZVE10_MENU_ATTEMPT_2026-10-27.md)
+  （方法论、可复用成果、阻塞链、已否证假设、后续建议）；
+* 新增宿主目录的复现说明 [`emulator/menu/README.md`](../emulator/menu/README.md)；
+* 实验镜像由 38 个（71 GB）精简为 3 个被文档引用的配置（`v11` 原厂路径、`v36` 宿主+线程体、`v38` Thumb A/B）；
+* 工作区恢复为文档所述配置（`-marm`、信号量观测钩子齐全）。
+
+`GRM2` 无记录、`/dev/dmpgles2` 未打开、`/dev/stream` 未变，**菜单未显示，目标未完成**。
