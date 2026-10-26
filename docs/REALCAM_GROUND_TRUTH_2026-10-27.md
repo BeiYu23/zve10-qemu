@@ -1256,3 +1256,38 @@ BZI init at base=0x08a02000
    确认谁写了这个垃圾值；
 2. 若是"没有 CP 才走到的调试路径"，考虑**提供最小 CP 通道**或让该路径不被触发（比 patch 更符合 a7c2 做法）；
 3. 判据仍为 `GRM2 > 0` + `/dev/stream` 非均匀。
+
+---
+
+## 31. 第 44 轮：崩溃真凶 = `MWF::ObjIf::SetEventSender` 里 **MonCtrl 指针是垃圾**
+
+### 31.1 重新对齐偏移后（GDB 报 MWFBASE，本轮 libMWF=0x058C2000）
+
+```
+崩溃 pc = libMWF+0x26332  (MWF::ObjIf::SetEventSender+0x22)
+   2632e: ldr.w r9,[r4,r3]        ; r9 = 全局 MonCtrl 指针
+   26334: ldr.w r0,[r9]           ; ★ 解引用 r9
+   26338: bl    MonCtrl::ConPrintfMessage
+故障地址 = 0x4  ⇒ r9 == 4（垃圾）
+```
+
+**⇒ 崩溃点不是监视器队列，而是 `MWF::ObjIf` 打日志时用的 `MonCtrl` 单例没被正确建立。**
+
+### 31.2 顺带确认的符号地址（后面可直接用）
+
+| 符号 | 偏移 |
+|---|---|
+| `MonDrv::Init` | libMWF+0x311A5 |
+| `MonDrv::Getchar / Putchar / OutputProc` | +0x31329 / +0x31415 / +0x31381 |
+| `MonDrv::mp_input` / `mp_ioBuffer` / `mp_lockBufStatus` | **0x46CA0 / 0x46CA4 / 0x46CB0** |
+| `MonCtrl` ctor / vtable / typeinfo | +0x30C95 / 0x42E50 / 0x42E60 |
+| `MWF::ObjIf::GetInstance` | libMWF+0x26A4D |
+
+（GDB 观察：`MonDrv::Getchar` 在多轮轮询里返回 -1（队列空），本身不崩；崩的是**日志路径取的 MonCtrl**。）
+
+### 31.3 下一轮
+
+1. 找到写 MonCtrl 全局的那条路径（`MWF::ObjIf::GetInstance` 里应该会 `new MonCtrl`），
+   像 BizFw 那样**在合适时机补调一次**，让全局拿到有效对象；
+2. 若 MonCtrl 依赖监视器通道（CP 调试口），就提供最小实现（`ConPrintfMessage` 走 sink 即可）；
+3. 判据仍为 `GRM2 > 0` + `/dev/stream` 非均匀。
