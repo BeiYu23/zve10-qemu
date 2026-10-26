@@ -2254,3 +2254,43 @@ API pump create=0 tid=0x093E2460        ← 线程创建成功
 4. 之后再做"受控入口"（那时需要在进程内做，可以用最小注入：只挂一两个符号）。
 
 这可能是本轮之后收益最大的一步：**先把 App 进程还给原厂，再谈注入**。
+
+---
+
+## 56. 第 69 轮：★ 极简 preload（只应答 backup）→ **加载期崩溃消失，App 稳定运行**
+
+### 56.1 做法
+
+新写一个 **极简 shim**（`grmslim.c`，~70 行）：
+
+* **没有构造器、没有线程、没有其它拦截**；
+* 只实现 `osal_snd_sync_msg`：`qid==0x003E014D` 用内置 key 表真实应答，其余原样转发；
+* 控制台 fd 惰性打开。
+
+### 56.2 实测（`ab_v2890`，43 秒）
+
+```
+BS n=1 cnt=3 w0=0x0000003e w1=0x003e000b
+BS n=2 cnt=3 w0=0x00000094 w1=0x00940003
+…（backup 请求逐条真实应答）
+Exception/ZZINSN 计数 = 0        ← ★ 没有任何加载期崩溃
+Mon Buf Size : 00008000           ← MonDrv::Init 正常
+```
+
+⇒ **此前反复出现的 `ld.so +0xA706 / +0x7012` 崩溃，确实是我们"重型 preload"造成的**；
+极简 shim 下 App 进程稳定。
+
+### 56.3 进一步（本轮第二版）
+
+在极简 shim 上加了两样东西：
+1. 前 20 次同步发送打印 `qid + w0`（用于看清 App 依赖哪些队列）；
+2. 惰性调用 `Application_System_Init`（需 libObj 已映射且符号可解析）。
+
+实测：App 正常跑（`SQ qid=0x008f013a/0x003e014d/0x0094016a` 都在被处理），**无崩溃**；
+但 `API` 行没打印 ⇒ `dlsym(RTLD_DEFAULT,"Application_System_Init")` 取不到（libObj 是 dlopen 进来的，不在全局作用域）。
+
+### 56.4 下一轮
+
+1. 在极简 shim 里**用 `dlopen("//lib/libObj.so")` 拿句柄再 dlsym**（极简 shim 已证明不会破坏加载器）；
+2. 拿到后再做"内联 `Application_System_Init` + 观察 `pViewManager`"，这次环境是干净的；
+3. 若 pVM 仍未建立，就在**这条稳定环境**里重做 vtable/事件泵实验（之前都被加载期崩溃打断，做不了）。
