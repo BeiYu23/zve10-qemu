@@ -164,7 +164,46 @@ static void dump_tasks(const char *when)
             f = open(p,0); if(f>=0) { k = (int)read(f,comm,sizeof(comm)-1); if(k>0){comm[k]=0; for(int j=0;j<k;j++) if(comm[j]=='\n') comm[j]=0;} close(f); }
             snprintf(p,sizeof p,"/proc/self/task/%s/wchan",name);
             f = open(p,0); if(f>=0) { k = (int)read(f,wchan,sizeof(wchan)-1); if(k>0){wchan[k]=0; for(int j=0;j<k;j++) if(wchan[j]=='\n') wchan[j]=0;} close(f); }
-            printf("MENUHOST   tid=%-6s comm=%-16s wchan=%s\n", name, comm, wchan); fflush(0);
+            {
+                char sp[160]; int sf, sk; unsigned long pc = 0;
+                char st[512];
+                snprintf(sp,sizeof sp,"/proc/self/task/%s/stat",name);
+                sf = open(sp,0);
+                if(sf >= 0) {
+                    sk = (int)read(sf, st, sizeof(st)-1); close(sf);
+                    if(sk > 0) {
+                        st[sk] = 0;
+                        char *rp = st;
+                        while(*rp && *rp != ')') rp++;   /* skip pid (comm) */
+                        if(*rp == ')') {
+                            rp++;
+                            int f = 3;                   /* next field number */
+                            char *tok = rp;
+                            while(*tok && f < 31) {
+                                while(*tok == ' ') tok++;
+                                if(!*tok) break;
+                                char *end = tok; while(*end && *end != ' ') end++;
+                                if(f == 30) { /* kstkeip */
+                                    unsigned long v = 0; int base = 10;
+                                    char *q = tok;
+                                    if(q[0]=='0' && (q[1]=='x'||q[1]=='X')) { base = 16; q += 2; }
+                                    while(*q && q < end) {
+                                        int d = -1;
+                                        if(*q>='0'&&*q<='9') d = *q-'0';
+                                        else if(base==16 && *q>='a'&&*q<='f') d = *q-'a'+10;
+                                        if(d < 0) break;
+                                        v = v*base + d; q++;
+                                    }
+                                    pc = v;
+                                    break;
+                                }
+                                tok = end; f++;
+                            }
+                        }
+                    }
+                }
+                printf("MENUHOST   tid=%-6s comm=%-16s wchan=%-24s uPC=%08lx\n", name, comm, wchan, pc); fflush(0);
+            }
         }
         off += reclen;
     }

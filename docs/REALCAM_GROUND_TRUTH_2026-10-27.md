@@ -3891,3 +3891,43 @@ breakpoint at libObj+0x683f4d (GRM_gpermFillrect)
 不是修一个字段能解决的。
 
 `GRM2` 无记录，`/dev/stream` 未变，**菜单未显示，目标未完成**。
+
+---
+
+## 93. 2026-10-26 线程停摆点精确定位：App 处于"事件饥饿"
+
+### 93.1 否证一个错误假设
+
+子代理给出的"线程入口 = libObj+0x8a2398"经 GDB 断点验证**零命中**（`menu-only-v16.img`，
+四点同断 `+0x8a2398 / +0x8a2ee0 / +0x8a2fa6 / +0x8a3104` 全部 0 次）。
+⇒ 该地址不是 `Application_System_Init` 所建线程的真实入口；依赖它的推断全部作废。
+（`Application_System_Init` 本身经 dlsym 解析为 `base+0x8a2409`，基址校验无误。）
+
+### 93.2 用 `/proc/self/task/<tid>/stat` 的 kstkeip 直接读出停摆 PC
+
+宿主在运行中读取每个线程的 `comm / wchan / kstkeip`：
+
+```
+tid=126 im.elf          wchan=0                   uPC=040c3614  = libc+0x96614
+tid=127 mwf_monitor_inp  wchan=hrtimer_nanosleep   uPC=040a7254  = libc+0x7a254
+tid=128 Appframework     wchan=futex_wait_queue_me uPC=04143146  = libpthread+0xd146
+tid=129 Appframework     wchan=futex_wait_queue_me uPC=04143146  = libpthread+0xd146
+tid=130 Appframework     wchan=osal_rcv_msg_tmo    uPC=040c817c  = libc+0x9b17c (ioctl 包装内)
+```
+
+（libc 基址 `0x0402d000`、libpthread `r-x` 基址 `0x04136000`、libObj `0x04cd8000`，均取自同一份 maps。）
+
+⇒ App 进程此刻的状态是：**两个线程阻塞在 pthread 互斥/条件等待，一个线程阻塞在 UIPC 接收 ioctl**。
+没有任何线程在执行初始化或绘制代码。这是典型的"**等待外部事件，而事件源不存在**"。
+
+### 93.3 结论
+
+* 两条启动路径都能稳定运行 180–200 秒且不崩溃；
+* MA 服务真实工作、DMM 协议正确；
+* App 从未打开图形设备、从未调用 `GRM_*` 绘制函数；
+* 停摆形态是事件饥饿，而不是某个应答值错误。
+
+要把 App 推进到视图/绘制阶段，必须补上**原厂启动事件链**（谁在什么时机向哪个队列投递什么消息），
+这是一个需要继续逆向事件生产者的工作量，不属于本轮能完成的范畴。
+
+`GRM2` 无记录、`/dev/stream` 未变，**菜单未显示，目标未完成**。
