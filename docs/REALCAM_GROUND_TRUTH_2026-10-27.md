@@ -2146,3 +2146,36 @@ API inline: pVM_after=0x00000000
    或直接调 `MWF::ObjThread::ThreadInit`；
 2. 观察三件事：`pViewManager` 是否被写入、`viewUnified2` 是否加载、`GRM2` 是否变化；
 3. 若 `MWF::Initialize` 又触发早前的崩溃，则改为**只创建并启动 ObjThread**（更小的一步）。
+
+---
+
+## 53. 第 66 轮：延迟调 `MWF_Init` 没能执行（App 之后几乎不再发同步消息）
+
+### 53.1 做法
+
+在 `Application_System_Init` 内联调用之后，**延迟 50 次同步发送**再调 `MWF_Init`（dlsym 自 libMWF），
+避免与 `Application_System_Init` 同栈。
+
+### 53.2 实测（`ab_v2820`）
+
+```
+ Mon Buf Size  : 00008000          ← MonDrv::Init 在更早的时候自然跑过
+API inline: base=0x06063000 pVM_before=0 pVM_after=0
+（★ MWFB 一行都没出现 —— s2_count 从未达到 50）
+```
+
+⇒ **App 在这之后几乎不再调用 `osal_snd_sync_msg`**（它很快就空了），所以延迟触发根本没机会执行。
+
+### 53.3 现状判断（本轮的核心结论）
+
+* App 的主线程在 **libc 的等待原语**里（此前 census 已证），进程只有很少的线程；
+* 它**不会自己往下走**：既不创建 ViewManager，也不启动事件泵；
+* 因此"我们推它一把"的做法，都卡在**它自己不再发起任何动作**这一点上。
+
+**⇒ 下一步必须换成"我们主动把事件塞进它的队列"**，而不是等它有动作时顺带触发。
+
+### 53.4 下一轮
+
+1. 拦 `osal_rcv_msg_tmo` / `osal_wai_sem_tmo`，记录**主线程**在等什么（qid / 信号量）；
+2. 针对那个等待点，**构造一条符合 App 期望格式的事件消息**投进去（类似 backup 服务那样，真实投递而不是伪造返回值）；
+3. 目标：让 App 自己从"空转"进入"处理事件 → 创建 ViewManager → 开视图"。
