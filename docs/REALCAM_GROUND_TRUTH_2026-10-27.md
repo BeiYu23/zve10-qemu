@@ -2113,3 +2113,36 @@ ctor(this, r1):                   ; 0x2E4958
 新方案：**拦截 `osal_snd_sync_msg`，在它第一次被调用时（此时正处于 App 自己的线程上下文里）**
 直接调用 `Application_System_Init(0)` —— 相当于在该线程内联完成框架启动，而不是另起线程。
 观察：`pViewManager` 是否被写入、是否出现 `viewUnified2` 加载、`GRM2` 是否变化。
+
+---
+
+## 52. 第 65 轮：`Application_System_Init` **内联**调用成功（不崩），但 pVM 仍为 0 —— 因为没人消费它投的事件
+
+### 52.1 做法（修正了上一轮）
+
+在 `osal_snd_sync_msg` 的**第一次调用**里，先等 `libObj` 已加载且 `Application_System_Init` 符号可解析，
+再**就地（App 自己的线程上下文里）**调用它，并加 `in_api` 重入保护。
+
+### 52.2 实测（`ab_v2810`，46 秒，无崩溃）
+
+```
+API inline: base=0x06063000  pVM_before=0x00000000  sym=0x06905409
+API inline returned=0x00000004
+API inline: pVM_after=0x00000000
+```
+
+* **调用本身是安全的**（内联、在 App 线程里，没有 `pc=0`）；
+* 返回值 `4`（不是错误崩溃），但 **`pViewManager` 依然是 0**；
+* 之后也没有 `viewUnified2` 加载 / `INITCFG` / 绘制。
+
+### 52.3 原因（与之前反汇编一致）
+
+`Application_System_Init` 只做两件事：`snprintf` 一个名字 → **`createRequestModelExecuteEvent(0, buf)`（投事件）** → 写名字缓冲区。
+**它不会自己处理该事件**；处理方是 App 的事件泵/`ObjThread`——而我们环境里那个泵从来没起来。
+
+### 52.4 下一轮
+
+1. 在 `Application_System_Init` 之后**紧接着启动事件泵**：调 `MWF::Initialize()`（它会 `new ObjThread` + `StartThread`）
+   或直接调 `MWF::ObjThread::ThreadInit`；
+2. 观察三件事：`pViewManager` 是否被写入、`viewUnified2` 是否加载、`GRM2` 是否变化；
+3. 若 `MWF::Initialize` 又触发早前的崩溃，则改为**只创建并启动 ObjThread**（更小的一步）。
