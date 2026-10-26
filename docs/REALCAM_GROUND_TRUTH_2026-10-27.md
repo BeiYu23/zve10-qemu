@@ -3931,3 +3931,53 @@ tid=130 Appframework     wchan=osal_rcv_msg_tmo    uPC=040c817c  = libc+0x9b17c 
 这是一个需要继续逆向事件生产者的工作量，不属于本轮能完成的范畴。
 
 `GRM2` 无记录、`/dev/stream` 未变，**菜单未显示，目标未完成**。
+
+---
+
+## 94. 2026-10-26 主动驱动原厂初始化入口：配置链能动，但每个入口都被 NULL 前置对象挡住
+
+### 94.1 一个真实进展：`initializeConfig()` 能把配置链跑起来
+
+`initializeConfig`（`libObj+0x14be84`，**无参**：`new(24)` → 构造 `0x14bd58` → 存全局）。
+从宿主在 `Application_System_Init` 之后调用它，日志出现此前从未出现的加载：
+
+```
+MISSSO //lib/viewUnified2.so (err=-2)
+IMOPEN OK /usr/lib/viewUnified2.so
+QMMAP ... len=0xe4fb10 ... name=viewUnified2.so
+MISSSO //lib/CautionConfig.so (err=-2)
+```
+
+随后崩在 `libObj+0x617740`：`ldr.w r3,[r0,#0x514]`，`r0=0`，故障地址正是 `0x514`
+——某个对象为空时的引用计数自增。LR=`libObj+0x6329e9`。
+
+⇒ 结论：配置链本身可用，但它需要的对象（管理器/引擎）不存在。
+
+### 94.2 按原厂线程顺序补 `uxengine`：更早被挡住
+
+原厂线程入口第一步是 `bl 0x6271d4`（`uxengine_init` 导出的 `+0x6271cd` 只是 `bx lr` 空桩，
+真体在 `+0x6271d4`，无参、内部自设 640×480）。调用后：
+
+```
+MENUHOST uxinit=0x52ff1d5 (base=04cd8000)
+MENUHOST uxengine body enter
+→ pc=libObj+0x63d506  insn=b1036cdb  r0..r3 全 0
+```
+
+即 UX 引擎初始化自身在第一个子调用处就拿到 NULL 前置。
+
+### 94.3 自造错误记录（避免重犯）
+
+第一次调用时把 `dlopen` 返回的 **handle**（`0x24e40`）当成了模块**基址**，导致跳转到野地址
+`0x64ced4`。正确做法：用 `/proc/self/maps` 里 `libObj.so` 的 `r-xp 00000000` 行起点作基址
+（本例 `0x04cd8000`）。任何 `base+offset` 的直调都必须用 maps 基址，不能用 handle。
+
+### 94.4 本轮结论
+
+* 配置链可以被驱动（`viewUnified2` 真的加载了）——这是今天最接近"进入视图阶段"的一步；
+* 但 `initializeConfig` 与 `uxengine` 各自都撞在"前置对象为 NULL"上，两者互为因果：
+  先调配置缺引擎对象，先调引擎缺配置/资源；
+* 说明真正的缺口是**原厂启动序列**（谁先创建引擎/管理器/配置，谁在何时驱动事件），
+  不是单个函数可补齐。
+
+`GRM2` 无记录、`/dev/dmpgles2` 未打开、`/dev/stream` 未变，**菜单未显示，目标未完成**。

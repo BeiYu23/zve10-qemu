@@ -103,6 +103,7 @@ extern long syscall(long, ...);
 extern int read(int, void *, unsigned long);
 extern int snprintf(char *, unsigned long, const char *, ...);
 #define AT_FDCWD_ 0
+static unsigned libobj_base;
 static void dump_libobj_map(void)
 {
     char buf[24000]; int fd = open("/proc/self/maps", 0); int k;
@@ -115,7 +116,16 @@ static void dump_libobj_map(void)
         char *e = p; while(*e && *e != '\n') e++;
         char c = *e; *e = 0;
         if(strstr_(p, "libObj.so") && strstr_(p, "r-x")) {
-            printf("MENUHOST LIBOBJ %s\n", p); fflush(0);
+            unsigned v = 0; int ok = 0;
+            for(int i = 0; i < 8; i++) {
+                char c = p[i]; int d = -1;
+                if(c >= '0' && c <= '9') d = c - '0';
+                else if(c >= 'a' && c <= 'f') d = c - 'a' + 10;
+                if(d < 0) { ok = 0; break; }
+                v = v * 16 + d; ok = 1;
+            }
+            if(ok) libobj_base = v;
+            printf("MENUHOST LIBOBJ %s (base %08x)\n", p, libobj_base); fflush(0);
         }
         if(strstr_(p, "libc-2.11.2.so") && strstr_(p, "r-x")) {
             printf("MENUHOST LIBC %s\n", p); fflush(0);
@@ -262,6 +272,25 @@ int main(int argc,char **argv) {
     printf("MENUHOST API=%p pVMslot=%p\n",(void*)app,(void*)pvm); fflush(0);
     if(!app||!pvm) return 14;
     mark("MENUHOST Application_System_Init enter\n"); app(0); mark("MENUHOST Application_System_Init returned\n");
+    /* Drive the app's own configuration initializer: initializeConfig(void) allocates
+     * its config object and internally dlopens+initialises the model/view config
+     * modules. This is original firmware code doing the original work. */
+    sleep(2);
+    /* Original thread entry does exactly this: the UX engine initialiser first,
+     * then the app construction. uxengine_init()'s exported symbol is a stub;
+     * the real body sits at +0x6271d4 and takes no arguments. Original code. */
+    {
+        void (*uxinit)(void) = (void(*)(void))(libobj_base + 0x6271d4 + 1);
+        printf("MENUHOST uxinit=%p (base=%08x)\n", (void*)uxinit, libobj_base); fflush(0);
+        mark("MENUHOST uxengine body enter\n");
+        uxinit();
+        mark("MENUHOST uxengine body returned\n");
+    }
+    {
+        void (*initcfg)(void) = (void(*)(void))dlsym(obj, "initializeConfig");
+        printf("MENUHOST initializeConfig=%p\n", (void*)initcfg); fflush(0);
+        if(initcfg) { mark("MENUHOST initializeConfig enter\n"); initcfg(); mark("MENUHOST initializeConfig returned\n"); }
+    }
     /* The original framework runs in its own thread created by
      * Application_System_Init. Returning from main would tear the process down
      * while that thread is still issuing UIPC traffic, which is what produced
