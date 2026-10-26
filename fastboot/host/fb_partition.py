@@ -112,7 +112,7 @@ def read_chunk(d, block, nblocks):
     off = 0
     while off < nbytes:
         take = min(0x1000, nbytes - off)
-        piece = peek_binary(d, DATA + off, take)
+        _, piece = peek_binary(d, DATA + off, take)
         out += piece
         off += take
     return bytes(out)
@@ -198,23 +198,101 @@ def cmd_write(d, a):
     if a.expect_lba is not None and a.lba != a.expect_lba:
         raise SystemExit('lba 0x%x is not the expected 0x%x' % (a.lba, a.expect_lba))
 
+    done_chunks = 0
+    if a.resume_file:
+        rf = Path(a.resume_file)
+        if rf.exists():
+            try:
+                done_chunks = int(rf.read_text().strip() or 0)
+            except ValueError:
+                done_chunks = 0
+        print('resume: %d/%d chunks already written (%.1f MiB), continuing'
+              % (done_chunks, total_chunks, done_chunks * CHUNK_BYTES / 1048576))
+
+    def save_progress(n):
+        if a.resume_file:
+            Path(a.resume_file).write_text('%d\n' % n)
+
+    if a.verify_target:
+        print('ADDRESS PROOF: reading one chunk at LBA 0x%x and comparing with %s'
+              ' at 0x%x ...' % (a.lba, a.verify_target, a.target_offset))
+        ref = Path(a.verify_target).read_bytes()
+        seg = ref[a.target_offset:a.target_offset + CHUNK_BYTES]
+        if len(seg) != CHUNK_BYTES:
+            raise SystemExit('proof target too short')
+        live = read_chunk(d, a.lba, CHUNK_BLOCKS)
+        if live != seg:
+            bad = [i for i in range(CHUNK_BYTES) if live[i] != seg[i]]
+            raise SystemExit(
+                'ADDRESS PROOF FAILED at LBA 0x%x: %d of %d bytes differ from '
+                'the reference at offset 0x%x (first diffs %s)\n'
+                '  => this LBA is NOT where you think it is. REFUSING TO WRITE.'
+                % (a.lba, len(bad), CHUNK_BYTES, a.target_offset, bad[:6]))
+        print('  proof OK: LBA 0x%x holds exactly the reference bytes at 0x%x'
+              % (a.lba, a.target_offset))
+
     t0 = time.time()
-    for i in range(total_chunks):
+    written_this_run = 0
+    for i in range(done_chunks, total_chunks):
         block = a.lba + i * CHUNK_BLOCKS
         chunk = img[i * CHUNK_BYTES:(i + 1) * CHUNK_BYTES]
         do_rb = a.verify_every and ((i + 1) % a.verify_every == 0)
         write_chunk(d, block, chunk, do_readback=do_rb)
+        written_this_run += 1
+        save_progress(i + 1)
         if (i + 1) % 8 == 0 or i + 1 == total_chunks:
-            done = (i + 1) * CHUNK_BYTES
+            done_b = (i + 1) * CHUNK_BYTES
             el = time.time() - t0
-            rate = done / el / 1024 / 1024 if el else 0
-            eta = (n - done) / (done / el) if done and el else 0
+            rate = written_this_run * CHUNK_BYTES / el / 1024 / 1024 if el else 0
+            left = (total_chunks - i - 1) * CHUNK_BYTES
+            eta = left / (written_this_run * CHUNK_BYTES / el) if el and written_this_run else 0
             print('  %5d/%d  %.1f/%.1f MiB  %.2f MiB/s  ETA %.0fs%s'
-                  % (i + 1, total_chunks, done / 1048576, n / 1048576,
+                  % (i + 1, total_chunks, done_b / 1048576, n / 1048576,
                      rate, eta, '  (verified)' if do_rb else ''),
                   flush=True)
-    print('\nwrote %d bytes in %.1fs' % (n, time.time() - t0))
-    print('now power-cycle and see whether the camera boots.')
+    print('\nwrote %d chunks (%d bytes) this session in %.1fs'
+          % (written_this_run, written_this_run * CHUNK_BYTES, time.time() - t0))
+    if done_chunks + written_this_run >= total_chunks:
+        print('ALL %d chunks written - flashing complete.' % total_chunks)
+        print('power-cycle and see whether the camera boots.')
+    else:
+        print('INCOMPLETE: %d of %d chunks done (%0.1f%%).'
+              % (done_chunks + written_this_run, total_chunks,
+                 100.0 * (done_chunks + written_this_run) / total_chunks))
+        print('re-inject and run the same command again to continue.')
+    return 0
+
+
+def cmd_compare(d, a):
+    """Read chunks from flash and compare against an image file. Read-only."""
+    img = Path(a.image).read_bytes()
+    n = len(img)
+    if n % CHUNK_BYTES:
+        raise SystemExit('image size must be a multiple of %d' % CHUNK_BYTES)
+    total = n // CHUNK_BYTES
+    start = getattr(a, 'start_chunk', 0)
+    limit = getattr(a, 'max_chunks', 0) or total
+    mism = []
+    t0 = time.time()
+    for i in range(start, min(total, limit)):
+        block = a.lba + i * CHUNK_BLOCKS
+        want = img[i * CHUNK_BYTES:(i + 1) * CHUNK_BYTES]
+        got = read_chunk(d, block, CHUNK_BLOCKS)
+        if got != want:
+            bad = [j for j in range(len(want)) if want[j] != got[j]]
+            mism.append((i, block, len(bad), bad[:6]))
+            print('  MISMATCH chunk %d (block 0x%x): %d bytes differ, first %s'
+                  % (i, block, len(bad), bad[:6]), flush=True)
+        elif (i + 1) % 16 == 0 or i == min(total, limit) - 1:
+            print('  chunk %d/%d OK  (%.1fs)' % (i + 1, min(total, limit),
+                                                 time.time() - t0), flush=True)
+    print()
+    if mism:
+        print('DIFFER: %d of %d chunks mismatch (first bad chunk %d)'
+              % (len(mism), min(total, limit) - start, mism[0][0]))
+        return 1
+    print('MATCH: chunks %d..%d identical to %s'
+          % (start, min(total, limit) - 1, a.image))
     return 0
 
 
@@ -234,19 +312,35 @@ def main(argv):
     p.add_argument('--out', required=True)
     p.set_defaults(fn=cmd_read)
 
+    p = sub.add_parser('compare', help='read flash and compare with an image')
+    p.add_argument('--lba', type=lambda x: int(x, 0), default=PART_NFLASHA15_LBA)
+    p.add_argument('--image', required=True)
+    p.add_argument('--start-chunk', type=int, default=0)
+    p.add_argument('--max-chunks', type=int, default=0)
+    p.set_defaults(fn=cmd_compare)
+
     p = sub.add_parser('write', help='stream an image into the partition')
     p.add_argument('--lba', type=lambda x: int(x, 0), default=PART_NFLASHA15_LBA)
     p.add_argument('--expect-lba', type=lambda x: int(x, 0),
                    default=PART_NFLASHA15_LBA)
     p.add_argument('--image', required=True)
-    p.add_argument('--verify-every', type=int, default=32,
+    p.add_argument('--verify-every', type=int, default=0,
                    help='read back one chunk every N chunks (0 = never)')
+    p.add_argument('--verify-target', default=None, metavar='BACKUP_IMG',
+                   help='READ-ONLY address proof: before writing, read the first '
+                        'chunk at --lba and require it to equal BACKUP_IMG at '
+                        '--target-offset. Refuses to write on mismatch. Use this '
+                        'to prove the LBA is where you think it is.')
+    p.add_argument('--target-offset', type=lambda x: int(x, 0), default=0,
+                   help='byte offset inside --verify-target that corresponds to --lba')
+    p.add_argument('--resume-file', default=None,
+                   help='progress file: skip chunks already written, so a '
+                        'session that dies can be continued after re-injection')
     p.set_defaults(fn=cmd_write)
 
     a = ap.parse_args(argv)
-    if a.cmd in ('verify', 'read', 'write'):
-        if a.blocks > CHUNK_BLOCKS:
-            raise SystemExit('--blocks max is %d' % CHUNK_BLOCKS)
+    if getattr(a, 'blocks', 0) > CHUNK_BLOCKS:
+        raise SystemExit('--blocks max is %d' % CHUNK_BLOCKS)
 
     d = connect()
     try:
