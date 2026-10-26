@@ -370,6 +370,21 @@ int osal_sig_sem(unsigned sem)
     return real ? real(sem) : -1;
 }
 
+/* The firmware's own app-thread body (libObj+0x8a2398):
+ *   uxengine init -> construct the app object on this thread's stack
+ *   -> post requestModelExecute -> run the app main loop -> destruct.
+ * Running it in our own thread reproduces the original lifecycle exactly;
+ * the object lives on that thread's stack, so no global is fabricated. */
+static void *app_thread(void *arg)
+{
+    (void)arg;
+    void (*body)(void) = (void(*)(void))(libobj_base + 0x8a2398 + 1);
+    printf("MENUHOST app body enter %p\n", (void*)body); fflush(0);
+    body();
+    printf("MENUHOST app body returned\n"); fflush(0);
+    return 0;
+}
+
 int main(int argc,char **argv) {
     (void)argc;(void)argv;
     mark("MENUHOST main: original im/IMDB main bypassed\n");
@@ -392,6 +407,14 @@ int main(int argc,char **argv) {
      * its config object and internally dlopens+initialises the model/view config
      * modules. This is original firmware code doing the original work. */
     for(int si = 0; si < 200; si++) { usleep(10000); sample_threads(); }
+    {
+        void *pth = load("/usr/lib/libpthread-2.11.2.so");
+        int (*pcreate)(unsigned long *, const void *, void *(*)(void *), void *) =
+            (int(*)(unsigned long *, const void *, void *(*)(void *), void *))dlsym(pth, "pthread_create");
+        unsigned long th = 0;
+        printf("MENUHOST launch app body via pthread_create=%p\n", (void*)pcreate); fflush(0);
+        if(pcreate) { int rc = pcreate(&th, 0, app_thread, 0); printf("MENUHOST pthread_create rc=%d th=%lu\n", rc, th); fflush(0); }
+    }
     /* Optional original entry points are disabled for this run: calling them in
      * this order faults on prerequisites the boot sequence would have created
      * (see REALCAM_GROUND_TRUTH 94/95). Thread-creation hooks stay enabled. */

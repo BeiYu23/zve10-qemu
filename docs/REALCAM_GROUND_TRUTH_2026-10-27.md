@@ -4109,3 +4109,49 @@ App 的初始化链**确实跑起来了**（建模 + DMP 分配器都执行过�
     但它的 `r0` 需要有效的 App 对象，否则会像此前一样空指针。
 
 `GRM2` 无记录、`/dev/dmpgles2` 未打开、`/dev/stream` 未变，**菜单未显示，目标未完成**。
+
+---
+
+## 98. 2026-10-26 完整解出 App 线程体，并直接在宿主里复现（首次）
+
+### 98.1 线程体全文（`libObj+0x8a2398`，0x70 字节，逐条反汇编）
+
+```
+8a2398: push {r4,r7,lr}; sub sp,#0x74; r7 = sp
+8a239e: bl  0x6271d4              ; uxengine 初始化（真体，非导出空桩）
+8a23a2: r1 = pc-relative literal  ; 要传给构造函数的名字/配置参数
+8a23a4: r0 = r7                   ; this —— App 对象在【本线程栈】上
+8a23aa: bl  0x8a2ee0              ; App 对象构造函数(this=r7, r1=literal)
+8a23ae: memset(r7+0x50, 0, 0x20)
+8a23ba: snprintf(r7+0x50, 0x20, fmt, global)
+8a23ce: r0=1; r1=r7+0x50; bl 0x8a2314   ; createRequestModelExecuteEvent(1, name)
+8a23d8: r0=r7; bl 0x8a3104        ; ★ App 主循环(this=r7)
+8a23de: r0=r7; bl 0x8a306c        ; 析构(this=r7)
+```
+
+⇒ **重要结构性事实**：App 对象是**线程栈局部变量**，不是全局单例。
+所以只要复现这一段（ux init → 栈上构造 → 投事件 → 主循环 → 析构），
+就能得到原厂完整的 App 生命周期，**不需要伪造任何全局管理器**。
+
+### 98.2 实测：调用线程体后崩在 ux 初始化的空全局
+
+宿主起 pthread 直接调 `libObj+0x8a2399`（Thumb）：
+
+```
+MENUHOST pthread_create rc=0
+MENUHOST app body enter 0x557a399
+→ pc=libObj+0x63d506  insn=b1036cdb  r0..r3 全 0
+   LR=libObj+0x627197（位于 0x627164 内）
+```
+
+崩点与 §94.2 完全一致：`0x63d4fc` 处 `ldr r3,[r3,#0x4c]`，`r3` 来自某个 **GOT 全局指针**，该指针为 NULL。
+
+⇒ 也就是说：线程体本身可以调起，**但 ux 初始化要求一个由更早启动阶段创建的全局对象**；
+我们的宿主（以及原厂 launcher 路径）都没有走到创建它的那一步。
+注意原厂路径里 `0x610f74` 是命中过的（§95.1），说明这部分初始化跑过，
+但 `0x6271d4` 之后的第二步（`0x627164`）依赖的另一全局仍为空——
+两者的差异正是下一步要查的：**`0x610f74` 是否真的成功创建了它应当创建的全局**。
+
+### 98.3 判据状态
+
+`GRM2` 无记录、`/dev/dmpgles2` 未打开、`/dev/stream` 未变，**菜单未显示，目标未完成**。
