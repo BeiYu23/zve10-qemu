@@ -44,6 +44,12 @@ unsigned long arch_phys_to_cache(unsigned long pa) {
     printf("MENUHOST arch_phys_to_cache rejected pa=%08lx status=%d\\n",pa,phys_map_status); fflush(0);
     return 0;
 }
+static int strstr_(const char *h, const char *n)
+{
+    int i, j;
+    for(i = 0; h[i]; i++) { for(j = 0; n[j]; j++) if(h[i+j] != n[j]) break; if(!n[j]) return 1; }
+    return 0;
+}
 static void mark(const char *s) { unsigned n=0; while(s[n]) ++n; write(1,s,n); }
 static void *load_flags(const char *s, int flags) {
     printf("MENUHOST dlopen %s flags=%x\n",s,flags); fflush(0);
@@ -140,6 +146,41 @@ static void dump_tasks(const char *when)
     }
 }
 
+/* Prove whether the MA request ever reaches a consumer: queue depth tells us
+ * "not delivered" (depth grows, nobody reads) vs "consumed, no reply" (depth 0). */
+static unsigned stat_q(unsigned qid)
+{
+    static int (*fn)(unsigned, unsigned *);
+    unsigned st = 0;
+    if(!fn) fn = (int(*)(unsigned,unsigned*))dlsym((void*)-1, "osal_stat_msgq");
+    if(!fn) return 0xdeadbeefu;
+    if(fn(qid, &st)) return 0xdeadbeeeu;
+    return st;
+}
+static void probe_queues(const char *when)
+{
+    printf("MENUHOST QSTAT %s ma=%08x dmm=%08x log=%08x\n", when,
+           stat_q(0x014c0424u), stat_q(0x0061003cu), stat_q(0x008f013au)); fflush(0);
+}
+static void dump_modules(void)
+{
+    char buf[3000]; int fd = open("/proc/modules",0); int k;
+    if(fd < 0) { printf("MENUHOST MODULES unavailable\n"); fflush(0); return; }
+    k = (int)read(fd, buf, sizeof(buf)-1); close(fd);
+    if(k <= 0) return;
+    buf[k] = 0;
+    printf("MENUHOST MODULES>>\n"); fflush(0);
+    char *p = buf;
+    while(*p) {
+        char *e = p; while(*e && *e != '\n') e++;
+        char c = *e; *e = 0;
+        if(strstr_(p, "grm_ma") || strstr_(p, "fake_gles2") || strstr_(p, "osal_uipc")) {
+            printf("MENUHOST   %s\n", p); fflush(0);
+        }
+        *e = c; if(!c) break; p = e + 1;
+    }
+}
+
 int main(int argc,char **argv) {
     (void)argc;(void)argv;
     mark("MENUHOST main: original im/IMDB main bypassed\n");
@@ -163,6 +204,7 @@ int main(int argc,char **argv) {
     for(unsigned i=0;;++i) {
         sleep(1);
         if((i % 5)==0) { printf("MENUHOST tick=%u pVM=%08x\n",i,*pvm); fflush(0); }
-        if(i==20 || i==45 || i==80) dump_tasks(i==20?"t20":(i==45?"t45":"t80"));
+        if(i==5 || i==15 || i==30 || i==50 || i==70) { char tag[8]; tag[0]='t'; tag[1]=(char)('0'+i/10); tag[2]=(char)('0'+i%10); tag[3]=0; probe_queues(tag); }
+        if(i==20) { dump_modules(); dump_tasks("t20"); }
     }
 }
