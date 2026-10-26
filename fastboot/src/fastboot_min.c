@@ -4,6 +4,7 @@
 #include "dwc3.h"
 #include "reset.h"
 #include "timer.h"
+#include "darwin.h"
 
 /*
  * Minimal fastboot protocol on top of usb.c's bulk endpoints.
@@ -287,12 +288,103 @@ static void cmd_load(const char *args)
     fb_result(line);
 }
 
+/* ---- oem darwin ---------------------------------------------------------
+ *
+ * Darwin is the power-supervisor MCU on SIO channel 0. Its Virtual WDT counts
+ * down at 0x200026FC and kills the SoC when a counter hits zero; nothing in
+ * bootrom context re-arms it, so any SIO exchange (a read counts) extends the
+ * session. The host sends `oem darwin` periodically to stay alive.
+ *
+ * The chip select pin is not known on ZV-E10 yet, so it is set explicitly with
+ * `oem darwin pin:<port>:<bit>`. Until then nothing touches GPIO.
+ */
+
+static void darwin_show_bytes(const char *what, const u8 *b, u32 n)
+{
+    char line[FB_RESPONSE_MAX];
+    u32 i, k = 0;
+
+    k = str_append(line, k, sizeof(line), what);
+    for (i = 0; i < n; i++) {
+        line[k++] = ' ';
+        k += hex_format(line + k, b[i], 2);
+    }
+    line[k] = 0;
+    fb_info(line);
+}
+
+/* `oem darwin pin:<port>:<bit>` -- set the chip select and bring SIO up. */
+static void cmd_darwin_pin(const char *args)
+{
+    const char *p;
+    u32 port, bit;
+
+    port = (u32)hex_parse(args, &p);
+    if (p == args || *p != ':') {
+        fb_fail("usage: oem darwin pin:<port>:<bit>");
+        return;
+    }
+    bit = (u32)hex_parse(p + 1, &p);
+    if (bit > 31 || port > 31) {
+        fb_fail("port/bit out of range");
+        return;
+    }
+
+    darwin_set_pin(port, bit);
+    darwin_init();
+    {
+        char line[FB_RESPONSE_MAX];
+        u32 k = 0;
+        k = str_append(line, k, sizeof(line), "xcs=port ");
+        k += hex_format(line + k, port, 1);
+        k = str_append(line, k, sizeof(line), " bit ");
+        k += hex_format(line + k, bit, 1);
+        line[k] = 0;
+        fb_okay(line);
+    }
+}
+
+/* `oem darwin` -- report the VWDT without touching it. The read is the feed. */
+static void cmd_darwin_state(void)
+{
+    u8 counters[4], reloads[3];
+
+    if (!darwin_pin_set()) {
+        fb_fail("xcs pin not set (oem darwin pin:<port>:<bit>)");
+        return;
+    }
+    if (darwin_vwdt_state(counters, reloads) != 0) {
+        fb_fail("no reply from darwin (link down or wrong pin?)");
+        return;
+    }
+
+    darwin_show_bytes("counters @200026fc:", counters, 4);
+    darwin_show_bytes("reloads  @2000003c:", reloads, 3);
+    fb_okay("");
+}
+
+static void cmd_darwin(const char *args)
+{
+    const char *rest;
+
+    if (str_eq(args, "")) {
+        cmd_darwin_state();
+        return;
+    }
+    if ((rest = str_after(args, " pin:")) != 0) {
+        cmd_darwin_pin(rest);
+        return;
+    }
+    fb_fail("usage: oem darwin [pin:<port>:<bit>]");
+}
+
 static void cmd_oem_help(void)
 {
     fb_info("peek:<addr>[:<len>]   dump memory, max 0x1000");
     fb_info("poke:<addr>:<val>     32-bit write, reports readback");
     fb_info("call:<addr>           call addr as u32 f(void)");
     fb_info("load:<addr>           copy staged download to addr");
+    fb_info("darwin [pin:<port>:<bit>]  feed/report the power MCU VWDT");
     fb_okay("");
 }
 
@@ -314,6 +406,14 @@ static void cmd_oem(const char *args)
     }
     if ((rest = str_after(args, "load:")) != 0) {
         cmd_load(rest);
+        return;
+    }
+    if (str_eq(args, "darwin")) {
+        cmd_darwin("");
+        return;
+    }
+    if ((rest = str_after(args, "darwin ")) != 0) {
+        cmd_darwin(rest);
         return;
     }
     if (str_eq(args, "help")) {

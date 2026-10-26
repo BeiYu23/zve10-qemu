@@ -338,7 +338,9 @@ u32 dwc3_event_poll(void)
     dsb();
     event = *(volatile u32 *)&event_buffer[evt_lpos];
 
-    evt_lpos = (evt_lpos + 4) % sizeof(event_buffer);
+    /* DWC3_EVENT_BUFFERS_SIZE is a power of two, so mask instead of modulo:
+     * that keeps libgcc's __aeabi_idivmod out of this freestanding build. */
+    evt_lpos = (evt_lpos + 4) & (sizeof(event_buffer) - 1);
     write32(DWC3_GEVNTCOUNT(0), 4);
 
     return event;

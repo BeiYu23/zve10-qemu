@@ -41,6 +41,9 @@ static void wait_for_handoff(void)
     int seen_low = 0;
     int i;
 
+    {
+    int hb = 0;
+
     for (i = 0; i < 250; i++) {          /* 250 x 100 ms = 25 s ceiling */
         int vbus = usb_phy_vbus();
 
@@ -49,9 +52,14 @@ static void wait_for_handoff(void)
         if (seen_low && vbus)
             return;
 
-        if ((i % 20) == 19)
+        /* A counter rather than (i % 20): modulo would pull in libgcc's
+         * __aeabi_idivmod, and this image has an 8 KiB serial-boot budget. */
+        if (++hb == 20) {
             led_heartbeat();
+            hb = 0;
+        }
         mdelay(100);
+    }
     }
 }
 
