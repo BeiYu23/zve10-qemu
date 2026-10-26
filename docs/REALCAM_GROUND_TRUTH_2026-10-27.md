@@ -3981,3 +3981,43 @@ MENUHOST uxengine body enter
   不是单个函数可补齐。
 
 `GRM2` 无记录、`/dev/dmpgles2` 未打开、`/dev/stream` 未变，**菜单未显示，目标未完成**。
+
+---
+
+## 95. 2026-10-26 对照两条路径：原厂路径确实执行了 UX 引擎初始化，但两条路径都没到 App 构造
+
+### 95.1 原厂 launcher 路径的实测断点（`menu-only-v11.img`，基址 `0x5e8f000`）
+
+```
+uxfirst  = libObj+0x610f74  → 命中（3.01s，r0=0x6e34211 字符串，r1=640，r2=480，r3=1）
+uxengine = libObj+0x6271d4  → 命中（4.19s，r3=1）
+app_ctor = libObj+0x8a2ee0  → 0 次
+vm_ctor  = libObj+0x8a2fa6  → 0 次
+vmclass  = libObj+0x8a4e28  → 0 次
+cfg_init = libObj+0x14be84  → 0 次
+```
+
+⇒ **原厂路径确实执行了 UX 引擎初始化**（`0x610f74` 是 once-guarded 初始化器：
+`0x640398 → 0x610184 → 0x6131d4`（创建 GraphicsEngine）`→ 0x63d3e0/0x63d3f8 → 0x615d10 → 0x618ed0`），
+**但 App 构造与 ViewManager 构造从未发生**，配置初始化也从未发生。
+
+⇒ 之前"自定义宿主跳过了 uxengine"的担忧只对了一半：原厂路径也会调它，只是调完就没有下文。
+
+### 95.2 顺序依赖被实测出来（宿主路径）
+
+* 先 `initializeConfig()` → 配置链跑起来、`viewUnified2.so` 真的加载 → 崩在 `libObj+0x617740`
+  （`ldr r3,[r0,#0x514]`，`r0=0`，故障地址 `0x514`；调用者 `libObj+0x62c9e9` 从 GOT 取某个单例指针，
+  该单例为 NULL）；
+* 先 `uxengine` 真体（`+0x6271d4`）→ 崩在 `libObj+0x63d506`
+  （`ldr r3,[r3,#0x4c]`，全局单例指针为 NULL；调用链 `0x627164 → 0x63d4fc`）。
+
+两处都是同一形态：**从 GOT 取全局单例 → 取虚表槽 → 调用，而单例没被创建**。
+真机由启动序列创建这些单例，我们两条路径都没走到那一步。
+
+### 95.3 定位收窄
+
+现在剩余缺口可以一句话描述：**`Application_System_Init` 所创建线程的真实入口从未执行**
+（`+0x8a2398`、`+0x8a2ee0` 在两个路径都零命中），因此 App 构造 → ViewManager → 视图 → 绘制这条链
+一个环节都没启动。下一步应验证 `osal_create_thread` 在该调用中是否真的成功、线程是否被调度。
+
+`GRM2` 无记录、`/dev/dmpgles2` 从未打开、`/dev/stream` 未变，**菜单未显示，目标未完成**。
