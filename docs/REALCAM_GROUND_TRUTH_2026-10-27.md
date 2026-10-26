@@ -1646,3 +1646,49 @@ libMWF.so dynsym: … ParamStd_TemplateIbLNS_5Param4TypeE1EEC1Eb   (存在)
 1. 用 `LD_DEBUG=libs,reloc` 之类的调试输出（或 `dlopen` 前后打印 `dlerror()`）确认真实的依赖错误；
 2. 若确属 NEEDED 缺失：把缺失的库（如 `libmwf_mcore.so`/`libux*.so`）从固件里补齐到镜像；
 3. 这一步打通后，`libObj` 才能正常完成绑定，App 才可能继续走到"创建 ViewManager"。
+
+---
+
+## 40. 第 53 轮：★ 修掉 `core_sync_user_init` 缺失（补 `libCoreSync.so`）；App 其实**带 RTLD_GLOBAL 加载 libMWF**
+
+### 40.1 用 `LD_DEBUG=libs` 抓到的第一条致命错误
+
+```
+122: /usr/lib/libObj.so: error: symbol lookup error: undefined symbol: core_sync_user_init (fatal)
+```
+
+`core_sync_user_init` 由 **libCoreSync.so** 定义（7,540 B，只有 `core_sync_user_init/res/sus` 三个 8 字节桩函数），
+而我们镜像里**根本没有这个库**（`/lib` 与 `/usr/lib` 都没有）。
+
+**修法（已完成）**：从固件 dump（`lfu/tree/lib/libCoreSync.so`）把它补进镜像 `/lib/`，并加入 `LD_PRELOAD`。
+
+### 40.2 修掉之后：MWF 模板符号不再是"找不到"，而是继续往后
+
+```
+im.elf: symbol lookup error: /usr/lib/libObj.so: undefined symbol:
+    _ZN3MWF17ParamStd_TemplateItLNS_5Param4TypeE6EEC1Et
+```
+再看 dlopen 追踪：
+
+```
+DL libMWF.so  mode=257 -> 257        ← ★ 257 = RTLD_LAZY|RTLD_GLOBAL（App 本来就带 GLOBAL）
+IMOPEN OK //lib/libMWF.so
+```
+⇒ **作用域没问题**，是"调用发生在 libMWF 被加载之前"的时序问题；而补上 libCoreSync 后这条链继续往前。
+
+### 40.3 现在的新崩溃：libc 的 `dl_open` 里遍历 link_map
+
+```
+崩溃 pc=0x042BA35A → libc-2.11.2.so +0x5935A
+59356: ldr.w r1,[sl,#12]
+5935a: ldr   r0,[r1,#8]      ; ★ r1 非法
+5935c: cmp   sl, r0
+```
+（典型 `_dl_open` / scope 链表遍历形态。）
+
+### 40.4 下一轮
+
+1. **去掉我们的 preload 再跑一次**（纯固件），看 App 是否也会崩在同一处：
+   - 若**不崩** ⇒ 是我们的 preload 扰动了 link_map（那就换成更轻的注入方式，例如只挂必要符号）；
+   - 若**同样崩** ⇒ 是固件自身/我们机型环境的 dlopen 问题，需要另找；
+2. 继续按"缺哪个库就补哪个"的方式清理（libCoreSync 之后可能还有别的"设备上有、我们镜像缺"的小库）。
