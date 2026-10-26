@@ -414,7 +414,7 @@ static void meta_path(char *out, const char *name, const char *leaf, int meta_fi
 static int apply_overlay_tree(const char *modroot, const char *rel, int *applied);
 
 /* 处理单个模块 */
-static int process_module(const char *nm, int *fails)
+static int process_module(const char *nm, int *fails, int phase)
 {
     char p[PATHMAX];
 
@@ -437,7 +437,7 @@ static int process_module(const char *nm, int *fails)
         scpy(so, METADIR, PATHMAX); scat(so, "/", PATHMAX); scat(so, nm, PATHMAX);
         scat(so, "/lib/", PATHMAX); scat(so, nm, PATHMAX); scat(so, ".so", PATHMAX);
     }
-    if (exists(so)) {
+    if (phase == 0 && exists(so)) {
         int vp = prop_int_dual(nm, "verify_port");
         if (run_code_module(nm, so, vp, 8000) < 0) {
             lg("  FAIL -> blacklist\n");
@@ -451,7 +451,7 @@ static int process_module(const char *nm, int *fails)
     char sysd[PATHMAX];
     scpy(sysd, CONTDIR, PATHMAX); scat(sysd, "/", PATHMAX); scat(sysd, nm, PATHMAX);
     scat(sysd, "/system", PATHMAX);
-    if (exists(sysd)) {
+    if (phase == 1 && exists(sysd)) {
         static int applied;
         applied = 0;
         lg("  overlay:\n");
@@ -460,12 +460,13 @@ static int process_module(const char *nm, int *fails)
         return 0;
     }
 
-    lg("  empty module, ignore\n");
+    if (phase == 0) lg("  (no lib/, not a code module)\n");
+    else            lg("  (no system/, not an overlay module)\n");
     return 0;
 }
 
 /* 扫一个目录，对每个子目录调 process_module */
-static void scan_dir(const char *dir, int *fails, int *count)
+static void scan_dir(const char *dir, int *fails, int *count, int phase)
 {
     int dfd = sy4(SYS_open, (int)dir, 0x10000 /*O_DIRECTORY*/, 0, 0);
     if (dfd < 0) { lg("  (no "); lg(dir); lg(")\n"); return; }
@@ -484,7 +485,7 @@ static void scan_dir(const char *dir, int *fails, int *count)
                 set_done(nm, g_done_n++);
                 (*count)++;
                 lg("mod: "); lg(nm); lg("\n");
-                process_module(nm, fails);
+                process_module(nm, fails, phase);
             }
             off += reclen;
         }
@@ -494,7 +495,7 @@ static void scan_dir(const char *dir, int *fails, int *count)
 }
 
 /* 加载全部模块 */
-static void load_modules(void)
+static void load_modules(int phase)
 {
     lg("--- modules ---\n");
     sy2(SYS_mkdir, (int)"/setting/zvegisk", 0755);
@@ -505,8 +506,8 @@ static void load_modules(void)
     g_done_n = 0;
     g_ovl_cnt = 0;
 
-    /* ---- ① agent 永远第一个 ---- */
-    if (exists("/log/zvegisk/agent.so")) {
+    /* ---- ① agent 永远第一个（只在 phase 0）---- */
+    if (phase == 0 && exists("/log/zvegisk/agent.so")) {
         int en = 0;
         static char b[16];
         if (readfile("/log/zvegisk/agent_enable", b, sizeof b) > 0 && shas(b, "true")) en = 1;
@@ -520,14 +521,14 @@ static void load_modules(void)
                 writefile(af, "1\n", 2);
             } else lg("  agent OK\n");
         } else lg("  agent disabled\n");
-    } else lg("  no agent.so\n");
+    } else if (phase == 0) lg("  no agent.so\n");
 
     /* ---- ② 双目录扫描 ---- */
     int fails = 0, count = 0;
-    lg("[meta] ");  scan_dir(METADIR, &fails, &count);
-    lg("[cont] ");  scan_dir(CONTDIR, &fails, &count);
+    lg(phase ? "[meta/ovl] " : "[meta/code] "); scan_dir(METADIR, &fails, &count, phase);
+    lg(phase ? "[cont/ovl] " : "[cont/code] "); scan_dir(CONTDIR, &fails, &count, phase);
 
-    lg("--- modules done, fails="); lgd(fails); lg(", loaded="); lgd(count); lg(" ---\n");
+    lg("--- phase "); lgd(phase); lg(" done, fails="); lgd(fails); lg(", seen="); lgd(count); lg(" ---\n");
 }
 
 /* ============================================================
@@ -756,7 +757,7 @@ static void work(void)
      *   放在挂 SD 之前：模块都在 /log（内部），不依赖 SD 是否插着。
      *   这样即使没 SD 卡、或 SD 挂了，agent 依然能起来，
      *   保证"出问题时你有远程通道"。 */
-    load_modules();
+    load_modules(0);          /* 只加载代码模块（agent 是救援通道，与模式无关） */
     flushlog();
 
     /* ④ 挂 SD 卡 */
@@ -773,7 +774,9 @@ static void work(void)
 
     /* ⑤ Phase 1：先只看模式，不做任何 bind */
     if(n>0 && shas(bm,"new")){
-        lg("mode=NEW (Phase1: bind 未实现，只记录)\n");
+        lg("mode=NEW -> apply overlays\n");
+        load_modules(1);      /* ★ 只有 new 模式才应用资源覆盖 */
+        flushlog();
         /* TODO Phase 2: 遍历 /tmp/zsd/zvegisk/mods/<name>/system/ 做 mount --bind */
     } else {
         lg("mode=OLD -> stock boot\n");
