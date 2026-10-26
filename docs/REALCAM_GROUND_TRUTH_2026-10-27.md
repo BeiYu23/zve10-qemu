@@ -1894,3 +1894,28 @@ lib/libIMDB.so       ← UND 引用
    libMWF 与探针继续留在 im.elf 的 `LD_PRELOAD` 里 —— 这样 libIMDB（任何进程）都能解析到它；
 2. 再看 `pc=0` 是否消失；若消失，App 应能继续往 `Application_System_Init` 方向走；
 3. 判据不变：`GRM2 > 0` + `/dev/stream` 非均匀。
+
+---
+
+## 46. 第 59 轮：`LD_DEBUG=symbols` 运行 70 秒未崩（28k 次查找），但 trace 里没有 core_sync 查找
+
+### 46.1 本轮三次运行的结果
+
+| 配置 | 结果 |
+|---|---|
+| `ld.so.preload = CoreSync + 探针`，`LD_PRELOAD = libMWF` | **退化**：崩在 `libMWF+0x32372`（MonQueue）——把 CoreSync 挪进 preload 文件反而更糟 |
+| `ld.so.preload = 探针`，`LD_PRELOAD = CoreSync + libMWF + 探针`（bind2 配置） | 跑 80s、16.9k 条绑定日志，最后 `pc=0` |
+| 同上但 `LD_DEBUG=symbols` | **70 秒未崩**，28,367 行查找日志；超时时仍在解析（最后是 `memset` 的查找） |
+
+### 46.2 关键观察
+
+* `LD_DEBUG=symbols` 大幅拖慢启动 ⇒ 那次 `pc=0` 很可能是**时序相关**的问题，不是纯逻辑错误；
+* symbols trace 里**完全没有 `core_sync` 的查找记录** ⇒ bind2 里那条 "undefined symbol: core_sync_user_init" 出现在
+  **另一个更早/不同的加载路径**（很可能是 `dlopen(libIMDB, RTLD_NOW)` 的失败，被 App 捕获后继续）；
+* 目前**能跑最久的配置**是 bind2：`ld.so.preload=探针`，`LD_PRELOAD=CoreSync+libMWF+探针`。
+
+### 46.3 下一轮
+
+1. 用 bind2 配置**不带任何 LD_DEBUG** 跑 150 秒，看是否真的能稳定跑下去、并且是否出现 `INITCFG / GRM2`；
+2. 若稳定：检查 `pVM`（libObj+0x1459784）与 `Application_System_Init` 是否被调用；
+3. 若仍 `pc=0`：用 GDB 在 `pack` 崩溃前抓 `_dl_runtime_resolve` 的 `sym` 参数，直接读出缺失符号名。
