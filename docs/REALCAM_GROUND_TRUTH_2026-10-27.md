@@ -1919,3 +1919,42 @@ lib/libIMDB.so       ← UND 引用
 1. 用 bind2 配置**不带任何 LD_DEBUG** 跑 150 秒，看是否真的能稳定跑下去、并且是否出现 `INITCFG / GRM2`；
 2. 若稳定：检查 `pVM`（libObj+0x1459784）与 `Application_System_Init` 是否被调用；
 3. 若仍 `pc=0`：用 GDB 在 `pack` 崩溃前抓 `_dl_runtime_resolve` 的 `sym` 参数，直接读出缺失符号名。
+
+---
+
+## 47. 第 60 轮：GDB 定位 —— `pc=0` 发生在 **ld.so 调用的 libc 函数内部**
+
+### 47.1 断点结果（`ld.so + 0xDFB0`，基址固定 0x04000000）
+
+```
+HIT LDS_CALL  pc=0400dfb0 lr=040d8b51 r0=0402050c r1=0x80000101 r3=040eaba5
+HIT LDS_AFTER pc=0400dfb2 lr=040eac3b r0=00000000     r1=00000001     r3=00000001
+（连续 6 次都是同样调用，r3 一直是 0x040eaba5，有效）
+```
+
+⇒ `ld.so` 在 0xDFB0 `blx r3`（r3 = libc 里的函数 0x040EABA5）**是正常调用**，
+而不是空指针；崩溃时的 `lr=0x0400DFB3` 正好是这条 `blx` 的返回地址。
+
+**⇒ `pc=0` 的现场在"被调用的 libc 函数内部"跳了空指针**，即 App/libc 的某条回调链断在 NULL。
+
+### 47.2 判断
+
+到这里，"加载器/符号可见性/缺失库"这一类问题**已经基本清完**；剩下的是
+**App 内部（libc/MWF/BizFw 一带）某个回调槽为 NULL 被调用**。
+
+### 47.3 策略调整（重要）
+
+继续在"让 App 自然启动"上追这些 NULL 回调，代价高且不可控。
+**按 a7c2 的"受控入口"经验，转向 C 路线**：
+
+> 不依赖 App 的完整启动流程，**直接调用 viewUnified2 导出的视图工厂**
+> `ViewGlobalMenuToInstance`（viewUnified2+0x2E4C0F，dynsym GLOBAL），
+> 让它创建"菜单视图对象"，再由 `libgrm2.so` 把它的绘制光栅化到 streamfb 镜像区。
+> 这是"App 自己的视图对象在画"，不是我们手绘 UI。
+
+先决条件（已具备）：`libgrm2` shim、显示链路、viewUnified2 可在 preload 里 dlopen。
+
+下一轮开始做这个实验：先以 `ViewGlobalMenuToInstance(0)` 试探，观察：
+1. 是否返回非空对象；
+2. 是否触发 GRM 绘制（`GRM2 > 0`）；
+3. `/dev/stream` 是否从均匀 `0x5A5A` 变非均匀。
