@@ -1766,3 +1766,40 @@ a706: ldr r5,[r5,#4]        ; ★ r5 非法 ⇒ 崩
 2. 只用我们的探针（不预加载 libMWF）→ 已知会报 MWF 符号 UND；
 3. 探针 + 在拦截 `dlopen("libObj.so")` 时**先同步加载 libMWF 再放行**（顺序化，避免嵌套）；
 4. 若 3 仍不通，改用 **`/etc/ld.so.preload`**（rootfs 里本来就有这个文件）注入，排除 `LD_PRELOAD` 次序因素。
+
+---
+
+## 43. 第 56 轮：★ 定位并修掉"ld.so 在 INIT_ARRAY 崩" —— **是我们的构造器在建线程**
+
+### 43.1 四组对照（本轮跑完三组）
+
+| 组合 | 结果 |
+|---|---|
+| A. 纯固件（无 preload）| 崩在 libMWF+0x32372（MonQueue，this=NULL）|
+| B. `LD_PRELOAD=libCoreSync + libMWF`（**不含我们的探针**）| 同样崩在 libMWF+0x32372 ⇒ **预加载 libMWF 本身不会搞坏 loader** |
+| C. 上面两者 + 我们的探针（**构造器里 `pthread_create`**）| 崩在 **ld.so +0xA706（处理 DT_INIT_ARRAY）** |
+| D. C 但**去掉构造器里的线程** | **ld.so 崩溃消失**；新崩溃 `pc=0x00000000`（跳空指针），且**不再出现 MWF 符号 UND 报错** |
+
+**⇒ 结论：ld.so 的 INIT_ARRAY 崩溃是我们自己的构造器在动态加载器初始化阶段 `pthread_create` 造成的**（glibc 2.11 在 init 阶段建线程不安全）。去掉后，**MWF 符号绑定也正常了**（因为 libMWF 已在全局作用域）。
+
+### 43.2 现在的位置
+
+```
+FAKEDMM req/reply ok
+Mon Buf Size ok
+（无 symbol lookup error ✓）
+崩溃 pc=0x00000000 —— 调到空指针（执行地址 0）
+```
+
+⇒ 加载器层面的问题**已清空**；现在回到"App 初始化流程里某个函数指针是 NULL"。
+
+### 43.3 下一轮
+
+1. 用 GDB 在 `pc=0` 前抓最后一条 `blx/bx`（或看 `ZZEXCSTACK` 的 lr）定位**是谁跳到了 0**；
+2. 若 lr 指向某个"回调注册"位置 ⇒ 说明我们少提供了一条回调（按 a7c2 方式补真实实现，而不是塞桩）；
+3. 若 lr 指向 MWF/ObjIf 的虚表 ⇒ 说明某个对象未构造（继续按"补原厂初始化"处理）。
+
+### 43.4 纪律修正（重要）
+
+**探针的构造器里永远不要建线程**（本项目所有 preload 探针都要遵守）。
+线程一律改为"首次被拦截调用时惰性启动"。
