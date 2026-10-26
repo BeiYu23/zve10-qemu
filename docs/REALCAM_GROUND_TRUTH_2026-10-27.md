@@ -1551,3 +1551,45 @@ ARMED
 然后：
 1. 对该槽下写 watchpoint，看**谁在正常流程里写它**；
 2. 若无人写，就查 `viewManagerIf` 的实现方（应该是 viewUnified2 里的 `ViewManager` 实体）为什么没被实例化。
+
+---
+
+## 38. 第 51 轮：pViewManager 的真实全局地址 = **libObj+0x1459784**（此前一直盯错地址）
+
+### 38.1 怎么算出来的（静态、可复现）
+
+`viewManagerIf` 的实现（libObj+0x1410A4）访问 pVM 的方式是**两段式 GOT 访问**：
+
+```
+1410aa: ldr r4,[pc,#196]  → 字面量 @0x141170 = 0x1296B74
+1410ac: ldr r3,[pc,#196]  → 字面量 @0x141174 = 0x7698
+1410b0: add r4, pc        → r4 = 0x1410B4 + 0x1296B74 = 0x13D7C28  ← libObj 的 GOT 基址
+1410b6: ldr r6,[r4,r3]    → r6 = GOT[0x13D7C28+0x7698] = GOT 条目 @0x13DF2C0
+1410b8: ldr r9,[r6]       → r9 = pVM
+```
+
+再查 `.rel.dyn`：GOT 条目 `0x13DF2C0` 是 `R_ARM_RELATIVE`，其 addend（从文件读）= **0x1459784**
+⇒ **pViewManager 全局变量在 `libObj + 0x1459784`（.bss 内）**，
+而**不是**我们之前一直盯的 `0x149221C`（那个位置 60 秒零写入也不奇怪）。
+
+### 38.2 用正确地址重测：仍然是 0、仍然无人写
+
+* GDB 写 watchpoint 盯 `libObj+0x1459784`（poke 路线，60s）：**零次写入**；
+* guest 内直接读：`PV i=0..36  pVMreal=0  pVMold=0  inst=0`（每 4 秒一次，全程 0）。
+
+⇒ **两种路线下 App 都从不创建 ViewManager**（结论与此前一致，但这次是"对的地址"给出的）。
+
+### 38.3 顺带说明
+
+* `libObj` 的 GOT 基址 = `0x13D7C28`，`pVM` 的 GOT 条目只有一个（0x13DF2C0）；
+* 想找"谁写 pVM"，需要在这 99 个"用 GOT 基址"的代码点里逐一定位，成本较高；
+  更实际的做法是**先确认 pVM 应该由谁创建**（`viewManagerIf` 没有导出 setter，
+  说明实现方在 libObj 内部或 viewUnified2 通过别的通道）。
+
+### 38.4 下一轮候选（需要用户拍板，见回复里的三选一）
+
+1. 继续深挖"谁创建 ViewManager"（最忠实，但不确定还要几轮）；
+2. 找一个**更小的 App 自身绘制路径**（例如应用自带的启动画面/logo 绘制，不依赖 ViewManager），
+   让"App 自己的代码"先画出第一帧，再回头打通菜单；
+3. 走 a7c2 的"受控入口"变体：直接 new 一个 View 对象（`ViewGlobalMenuToInstance`）并调用它的绘制，
+   绕过 ViewManager（需人工准备好上下文结构）。
