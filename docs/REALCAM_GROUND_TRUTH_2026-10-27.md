@@ -2072,3 +2072,44 @@ CE2 call0
 2. 若调用点在生产代码里、且上游是 ViewManager，则说明**必须先有 ViewManager**——那就回到 pVM 那条线；
 3. 备选：用 vtable 里 `v8/v9`（viewUnified2+0x2E2870/0x2E28A4，紧邻菜单工厂）作为"轻量方法"先试，
    这两个看起来是"设置/显示"类小函数，可能不像 v0 那样依赖完整上下文。
+
+---
+
+## 51. 第 64 轮：★ 证实"视图工厂的 r1 就是 ViewManager*" —— 两条路线正式收敛
+
+### 51.1 工厂与构造函数
+
+```
+ViewGlobalMenuToInstance(r1):
+  2e4c10: new(0x16C)
+  2e4c16: r5 = r1
+  2e4c20: bl 0x2E4958            ; ctor(this, r1)
+  2e4c24: return this
+
+ctor(this, r1):                   ; 0x2E4958
+  2e4960: blx ViewBaseProduct::ViewBaseProduct(ViewManager*)   ← ★ r1 的类型是 ViewManager*
+  2e497a: blx View::setModelRequest(bool)
+```
+
+⇒ **我们传的 `r1=0` 就是"没有 ViewManager"**，所以对象只构造了一半，一调虚函数就空指针崩。
+
+### 51.2 ViewManager 的唯一持有者是 libObj
+
+* `pViewManager` 是 **libObj 的导出对象**：`libObj+0x149221C`（所以最初那个地址其实是对的）；
+* 全库只有 libObj 定义它，**没有任何外部库引用**；
+* `viewUnified2` 只用不造：它的 UND 里全是 `ViewBase/ViewBaseProduct(..., ViewManager*)`、`viewManagerIf::*`；
+* 在 poke 路线上再盯 `pViewManager` 60 秒：**仍然零次写入**。
+
+⇒ **ViewManager 只能由 libObj 的 App 框架启动链创建**，也就是我们一直没能真正跑起来的 `Application_System_Init` 那条路。
+
+### 51.3 结论
+
+"受控入口造视图"和"等框架自然启动"**两条路线在这里正式合流**：
+**没有 ViewManager，就没有任何可用的视图对象**。
+
+### 51.4 下一轮（关键实验：把 `Application_System_Init` 放到**主线程**上调）
+
+之前失败的原因是"在侧线程里调"⇒ `pc=0`。
+新方案：**拦截 `osal_snd_sync_msg`，在它第一次被调用时（此时正处于 App 自己的线程上下文里）**
+直接调用 `Application_System_Init(0)` —— 相当于在该线程内联完成框架启动，而不是另起线程。
+观察：`pViewManager` 是否被写入、是否出现 `viewUnified2` 加载、`GRM2` 是否变化。
