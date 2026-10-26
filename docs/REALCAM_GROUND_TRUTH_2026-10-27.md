@@ -1692,3 +1692,45 @@ IMOPEN OK //lib/libMWF.so
    - 若**不崩** ⇒ 是我们的 preload 扰动了 link_map（那就换成更轻的注入方式，例如只挂必要符号）；
    - 若**同样崩** ⇒ 是固件自身/我们机型环境的 dlopen 问题，需要另找；
 2. 继续按"缺哪个库就补哪个"的方式清理（libCoreSync 之后可能还有别的"设备上有、我们镜像缺"的小库）。
+
+---
+
+## 41. 第 54 轮：对照实验 + 把 ld.so 崩溃点定位到 **INIT_ARRAY 处理**
+
+### 41.1 对照实验：纯固件（无任何 preload）反而更早崩
+
+镜像 `ab_v2630`（只有 CoreSync + 普通 wrapper，**不 preload 我们的探针**）：
+
+```
+崩溃 pc=0x058AB372 → libMWF+0x32372（MonQueue/Param 一带），r0=0
+```
+⇒ **没有我们的服务/探针，App 在 libMWF 里就崩了**；我们确实在帮它往前走。
+
+### 41.2 提前 dlopen libMWF（CoreSync 已补齐）仍崩，但位置有意义
+
+```
+PE libMWF=0x00016038
+崩溃 pc=0x0400A706 (ld-2.11.2.so)
+```
+
+反汇编该处：
+
+```
+a6f8: stmdb sp!,{r4,r5,r6,r7,r8,r9,sl,lr}
+a6fe: ldr r5,[r0,#124]      ; l_info[DT_INIT_ARRAY] 之类
+a702: ldr r3,[r0,#56]
+a704: ldr r0,[r0,#52]
+a706: ldr r5,[r5,#4]        ; ★ r5 非法 ⇒ 崩
+```
+
+**⇒ 崩在动态加载器处理某个库的 `DT_INIT_ARRAY`（构造函数表）时**，说明**某个 .so 的 INIT_ARRAY 指针落在了映射之外**。
+
+重点怀疑对象：**我们自己的 `libgrmlog.so`**（用 `-nostdlib -shared` 构建、靠 `__attribute__((constructor))`），
+它的动态段/构造表可能与 ld-2.11 的期望不完全一致。
+
+### 41.3 下一轮
+
+1. 检查 `libgrmlog.so` 的动态段（`DT_INIT_ARRAY/DT_INIT_ARRAYSZ/DT_INIT`）是否规范：
+   `readelf -d libgrmlog.so | grep -E "INIT"`，并与一个正常库对照；
+2. 若确实异常：改成**不用构造器**（把初始化放到第一次被拦截调用时惰性执行），再跑对照；
+3. 这一步若通过，libMWF 就能被我们安全地提前加载，`libObj` 的 MWF 模板符号绑定也不会再失败。
