@@ -15,7 +15,14 @@
 | 监视器固定区 | `Backup_read_4Byte` stub 到 DDR ⇒ `FixedAreaTop 8F000000`、两条 MonQueue 真正建立 |
 | 显示链路 | `streamfb` 镜像物理 `0x20312000`；`libgrm2.so` 光栅化 shim 就绪（彩条已验证） |
 | 缺失库 | 补 `libCoreSync.so`（`core_sync_user_init` 等桩） |
+| **UIPC 共享区** | `mmap(/dev/mem, 0x00900000, 1MB)` ⇒ `0x00946xxx` 动态 id 变成**合法指针**，App 真正读写队列对象 |
+| **backup 应答语义** | 值走**返回值字段 `m[1]`**（`MonDrv` 打印 `FixedAreaTop 8F000000 / Size 00080000` 证实） |
 | 菜单视图对象 | poke 路线上 `ViewGlobalMenuToInstance(0)` **返回非空对象**（0x100F70/0x100FE8） |
+
+## ★ 仪器纠错（2026-10-27，第 89 轮）
+`osal_dynamic_id` 真实签名是 **`(flags, id, unsigned *out)` 三个参数**；
+我们第 82–88 轮的拦截器写成了两个参数，**把 out 指针吃掉** ⇒
+"分配永远失败（-1024）"全是**我们自己的 bug**。修好后分配 100% 成功。
 
 ## 当前卡点（按因果顺序）
 1. **App 不启动框架**：主线程停在 libc 等待里，线程数极少；`pViewManager`（`libObj+0x149221C`）**从未被写**；
