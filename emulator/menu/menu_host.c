@@ -375,6 +375,17 @@ int osal_sig_sem(unsigned sem)
  *   -> post requestModelExecute -> run the app main loop -> destruct.
  * Running it in our own thread reproduces the original lifecycle exactly;
  * the object lives on that thread's stack, so no global is fabricated. */
+static unsigned *slot_rm, *slot_ge, *slot_p4;
+void *ux_thread_body(void *arg)
+{
+    (void)arg;
+    void (*body)(void) = (void(*)(void))(libobj_base + 0x6271d4 + 1);
+    printf("MENUHOST ux body enter %p\n", (void*)body); fflush(0);
+    body();
+    printf("MENUHOST ux body returned\n"); fflush(0);
+    return 0;
+}
+
 static void *app_thread(void *arg)
 {
     (void)arg;
@@ -407,15 +418,29 @@ int main(int argc,char **argv) {
      * its config object and internally dlopens+initialises the model/view config
      * modules. This is original firmware code doing the original work. */
     for(int si = 0; si < 200; si++) { usleep(10000); sample_threads(); }
-    /* Create the UX graphics engine with its own original creator:
-     * libObj+0x613134 does malloc(0x240) -> ctor 0x612b34 -> store into the
-     * GraphicsEngine singleton slot. We read the slot before/after to prove it. */
+    /* Run the firmware's own UX initialiser body and watch whether it actually
+     * instantiates the engine singletons (ResourceManager slot 0x145ca64,
+     * GraphicsEngine slot 0x13dcb78, private#4 slot 0x145cbc4). */
+    /* Call the UX initialiser's first step with the exact arguments the
+     * firmware's own thread body passes (see libObj+0x6271d4), then read the
+     * engine singleton slots to see what actually gets created. */
     {
-        unsigned *slot = (unsigned *)(libobj_base + 0x13dcb78);
-        void (*create_engine)(void) = (void(*)(void))(libobj_base + 0x613134 + 1);
-        printf("MENUHOST engine slot before=%08x creator=%p\n", *slot, (void*)create_engine); fflush(0);
-        create_engine();
-        printf("MENUHOST engine slot after=%08x\n", *slot); fflush(0);
+        unsigned lit = *(unsigned *)(libobj_base + 0x627298);
+        const char *name = (const char *)(libobj_base + lit + 0x6271dc);
+        void (*uxfirst)(const char *, unsigned, unsigned, unsigned,
+                        unsigned, unsigned, unsigned) =
+            (void(*)(const char *, unsigned, unsigned, unsigned,
+                     unsigned, unsigned, unsigned))(libobj_base + 0x610f74 + 1);
+        printf("MENUHOST uxfirst=%p name=%s rm_before=%08x ge_before=%08x p4_before=%08x\n",
+               (void*)uxfirst, name,
+               *(unsigned *)(libobj_base + 0x145ca64),
+               *(unsigned *)(libobj_base + 0x13dcb78),
+               *(unsigned *)(libobj_base + 0x145cbc4)); fflush(0);
+        uxfirst(name, 640, 480, 1, 0, 0x80000000u, 0);
+        printf("MENUHOST uxfirst returned rm=%08x ge=%08x p4=%08x\n",
+               *(unsigned *)(libobj_base + 0x145ca64),
+               *(unsigned *)(libobj_base + 0x13dcb78),
+               *(unsigned *)(libobj_base + 0x145cbc4)); fflush(0);
     }
     {
         void *pth = load("/usr/lib/libpthread-2.11.2.so");
@@ -432,9 +457,21 @@ int main(int argc,char **argv) {
      * Application_System_Init. Returning from main would tear the process down
      * while that thread is still issuing UIPC traffic, which is what produced
      * the loader fault at the end of the previous run. Stay alive instead. */
-    for(unsigned i=0;;++i) {
-        sleep(1);
-        if((i % 5)==0) { printf("MENUHOST tick=%u pVM=%08x\n",i,*pvm); fflush(0); }
-        if(i==20) dump_tasks("t20");
+    /* Fast slot sampling: watch whether the UX initialiser instantiates the
+     * engine singletons before it faults on the private pointer. */
+    {
+        unsigned last_rm = 0xffffffffu, last_ge = 0xffffffffu, last_p4 = 0xffffffffu;
+        for(unsigned k = 0; k < 400; ++k) {
+            usleep(20000);
+            unsigned rm = *(unsigned *)(libobj_base + 0x145ca64);
+            unsigned ge = *(unsigned *)(libobj_base + 0x13dcb78);
+            unsigned p4 = *(unsigned *)(libobj_base + 0x145cbc4);
+            if(rm != last_rm || ge != last_ge || p4 != last_p4) {
+                printf("MENUHOST SLOTS t=%ums rm=%08x ge=%08x p4=%08x pVM=%08x\n",
+                       k*20, rm, ge, p4, *pvm); fflush(0);
+                last_rm = rm; last_ge = ge; last_p4 = p4;
+            }
+        }
+        printf("MENUHOST sampling finished\n"); fflush(0);
     }
 }
