@@ -1803,3 +1803,49 @@ Mon Buf Size ok
 
 **探针的构造器里永远不要建线程**（本项目所有 preload 探针都要遵守）。
 线程一律改为"首次被拦截调用时惰性启动"。
+
+---
+
+## 44. 第 57 轮：空桩对照 + `LD_DEBUG=bindings` 时间线（App 其实已跑很远）
+
+### 44.1 空桩对照（证明"是我们的 hook 在帮忙"）
+
+把探针换成一个**只有 `int __stub_symbol(void)` 的空 .so**（其余 preload 不变）：
+
+```
+崩溃 pc=0x04065372 = libMWF+0x32372（MonQueue，r0=0）
+```
+⇒ 与"完全不 preload"的 A 组一样早期崩。
+**⇒ 是我们的拦截/服务把 App 推到了后面**，不是 preload 本身的问题。
+
+### 44.2 `LD_DEBUG=bindings` 跑出来的时间线（本轮最有用）
+
+镜像 `ab_v2690`（CoreSync + libMWF + 探针，全部 preload，`LD_DEBUG=bindings`）：
+
+```
+3371 行:  calling init: /lib/libCoreSync.so            ← 我们补的库确实加载并初始化了
+15187 行: /usr/lib/libObj.so: error: symbol lookup error:
+          undefined symbol: core_sync_user_init (fatal)
+16517 行: 崩溃 pc=0x00000000
+```
+
+并且日志里总共 **16,892 行** 绑定记录 —— App 在崩溃前已经把
+`libBusPower.so / libUsbControl.so / libjsoncpp.so.23 / libMWF.so` 等大量库绑完
+（最后几条是 `libBusPower → libMWF` 的 `ObjMsg::GetParam / ParamStd_Template<u32,8>::GetValue`）。
+
+### 44.3 新问题：`core_sync_user_init` 明明已加载却仍报 undefined
+
+* `libCoreSync.so` 已 `calling init`（说明加载成功）；
+* libObj 里它是 `GLOBAL UND`，libCoreSync 里是 `GLOBAL DEFAULT` 定义；
+* 但懒绑定到该符号时仍然 fatal。
+
+**待查方向**：
+1. 可能存在**第二个 im.elf 进程**（App 自己 re-exec），而它**没有继承 LD_PRELOAD** ⇒ 那个进程里没有 libCoreSync；
+2. 或该 UND 带了**版本需求**（verdef），与我们这份 libCoreSync 的版本节点不匹配；
+3. 或 `libObj` 是以 RTLD_LOCAL 加载的、scope 里看不到 preload 的库（需要抓 `dlopen` 的 mode 与当时的 scope）。
+
+### 44.4 下一轮
+
+1. 打印 `/proc/*/comm` + `cmdline`，确认是否存在**多个 im.elf**（re-exec 假设）；
+2. 用 `LD_DEBUG=scopes` 或 `dlopen` 记录（mode + 调用者）验证 scope；
+3. 若确认 re-exec：让 wrapper 在 re-exec 后仍带 preload（例如用 `/etc/ld.so.preload`，它会被所有进程继承）。
