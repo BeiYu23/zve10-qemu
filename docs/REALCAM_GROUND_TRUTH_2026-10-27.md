@@ -3136,3 +3136,41 @@ DYNID3 flags=0x52 id=0 out=0x00946005 before=0x370A00EB after=0x370A00EB
 1. 定位 `ld.so +0x12E8` 处的解析目标（打印 reloc 的 symbol 名），确定哪个符号是 0；
 2. 若确实是"可选功能符号"，检查它应由哪个库提供（可能又缺一个小库）；
 3. 同时保持共享区映射（这条要固化进基线镜像）。
+
+---
+
+## 77. 第 90 轮：把"已验证修复"合并进极简 shim 后的实测
+
+### 77.1 合并的三项（都在极简 shim 里，无构造器、无线程）
+
+1. backup 应答（值走 `m[1]`）；
+2. **UIPC 共享区 mmap**（`/dev/mem @ 0x00900000, 1MB`）；
+3. **BizFw 日志表初始化**（`libBizFw` 一被映射就调 `+0x4275C`）。
+
+### 77.2 实测（`ab_v3330`）
+
+```
+MAPSH ret=0x0000000a                    ← 共享区映射成功
+ FixedAreaTop  : 8F000000               ← MonDrv 配置读取正确
+ FixedAreaSize : 00080000
+ Mon Buf Size  : 00008000
+BZINIT base=0x08A0D000                  ← BizFw 日志表初始化被调用
+BZINIT done
+（BK 请求推进到 40 条）
+[Exception] pc=0x08A4F7FC = libBizFw+0x427FC   ← ★ 仍然是 AvbbcLogManager 的 ConvertDef2Set NULL
+```
+
+### 77.3 判断
+
+* 三项修复**都生效了**（共享区/配置/MonDrv/BizFw 初始化都有正向证据）；
+* 但 `AvbbcLogManager::getInstance` 仍崩 ⇒ **我们的 `Initialize()` 调用没把表填上**，
+  可能原因：
+  1. 调用时机太早（库刚映射、静态构造还没跑完）；
+  2. 或者崩溃发生在**另一个进程/另一份映射**上；
+  3. 或者该表需要 `SetDef2Set` 依赖的另一个全局先初始化。
+
+### 77.4 下一轮
+
+1. 在 `BZINIT` 之后立刻调用 `ConvertDef2Set(10)` 自检（上一轮用过这招，能直接判断表是否填上）；
+2. 若为空 ⇒ 把初始化延后到"第一次 backup/日志请求之后"再调一次（那时静态构造肯定已完成）；
+3. 若仍空 ⇒ 反汇编 `Initialize` 的循环体，看它依赖哪个全局（可能就是 `MonDrv` 那条链）。
