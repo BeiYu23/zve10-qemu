@@ -1986,3 +1986,48 @@ HIT LDS_AFTER pc=0400dfb2 lr=040eac3b r0=00000000     r1=00000001     r3=0000000
 * 已知最稳定的环境是 **poke 路线**（Y9 + `Application_System_Init`，跑到 `INITCFG` 且**加载了 viewUnified2**、不崩）；
 * **下一轮：把 CE 挂到 poke 路线上** —— 等 viewUnified2 加载完成、`W5 init returned` 之后，
   再调用 `ViewGlobalMenuToInstance`，这样相机不会在加载期被打断。
+
+---
+
+## 49. 第 62 轮：★★ 里程碑 —— 在 poke 路线上**成功创建了 App 自己的菜单视图对象**
+
+### 49.1 做法
+
+在 poke 路线（Y9 + `Application_System_Init`）里，等 `viewUnified2` 的 init 跑完（`W5 init returned`）之后，
+**直接调用视图工厂**（不走 dlopen，用 maps 里解析到的 `rx` 作为 viewUnified2 基址）：
+
+```c
+void *(*vmf)(void*) = (void*(*)(void*))(rx + 0x2E4C0E | 1);   /* ViewGlobalMenuToInstance */
+void *view = vmf(0);
+```
+
+### 49.2 实测（镜像 `ab_v2750`，跑 94 秒、42,624 行串口）
+
+```
+INITCFG_ENTER tid=188
+W5 call init
+W5 init returned
+CE2 sym=0x0F125C0F
+CE2 ret=0x00100F70        ← ★★★ 返回了非空对象！
+```
+
+**没有任何 oops / ZZINSN / Exception**（这次跑满 94 秒）。
+
+**⇒ 这是第一次真的把"App 自己的菜单视图对象"创建出来**（原厂 `viewUnified2` 的工厂函数创建的，
+不是我们手搭的 UI 结构）。
+
+### 49.3 还差什么（判据仍未满足）
+
+```
+GRM2 = 0（只有 init 那一条）→ 视图对象存在，但还没让它进入绘制流程
+/dev/stream 仍均匀 0x5A5A
+```
+
+⇒ 下一步要让这个视图**执行它自己的绘制/更新**：需要读它的 vtable，
+找到 `draw / update / show / activate` 之类的虚函数并调用（原厂代码在画，我们只负责触发与光栅化）。
+
+### 49.4 下一轮
+
+1. 在 probe 里打印 `view` 的 vtable（`*(u32*)view` → 前 16 个条目）；
+2. 依次小心调用疑似 `draw/update` 的条目，观察 `GRM2` 是否增长；
+3. 一旦 `GRM2 > 0`，检查 `/dev/stream` 是否从均匀 `0x5A5A` 变非均匀（这才是"真正显示"的判据）。
