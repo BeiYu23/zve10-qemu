@@ -3818,3 +3818,32 @@ tid 130 的接收队列（来自内核 UIPC 打点，`cmd=0x80000005` 的 `f0`�
 
 ⇒ 现在能确定的只是"发了、没人回、也没再向 DMM 要东西"。究竟是 `grm_ma` 没收到、
 收到后内部状态不合法而静默失败、还是回了但投递到别处，**仍需 GDB 级别的现场取证**。
+
+### 91.7 GDB 取证（决定性）：MA 服务正常收到并处理请求 —— 不是路由问题
+
+断点 `grm_ma基址+0xd0` = `ma_user_sync_cb`（`0x5f3c90d0`，基址 `0x5f3c9000` 来自宿主打印的
+`/proc/modules`）。命中序列（`menu-only-v13.img`）：
+
+```
+CB#1  op=7  findbyname
+CB#2  op=1  open
+CB#3  op=9  malloc
+CB#4  op=10 free
+CB#5  op=2  close
+CB#6  op=1  open
+CB#7  op=9  malloc
+CB#8  op=9  malloc
+CB#9  op=9  malloc
+CB#10 op=9  malloc
+```
+
+`ma_user_sync_cb` 的分派表（反汇编）：`op1 open / op2 close / op3 create_msp / op4 空操作 /
+op5-6 cache / op7 findbyname / op8 findbyphys / op9 malloc / op10 free / op11-13 compact`。
+
+**结论**：MA 请求确实到达原厂 `grm_ma.ko` 并被真实处理（含两次 open、四次 malloc、一次 free、
+一次 close）。所以"队列没人回"不是路由问题，**早先的猜测被否证**。
+停住的位置在最后一次 `malloc(9)` 之后——即 App 拿到若干 MA 内存后不再发请求，
+进入等待绘图侧/其它队列的状态。
+
+⇒ 剩余工作面收窄为：`ma_malloc_impl` 返回的内存语义（来自我们用 DMM 单元建出的 mspace）
+是否满足调用方，以及之后图形侧（`grm_gles`/GPE）是否具备可用的绘制通路。

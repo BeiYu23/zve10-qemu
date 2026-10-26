@@ -191,6 +191,7 @@ int main(int argc,char **argv) {
     void (*mwfi)(void)=(void(*)(void))dlsym(mwf,"_ZN3MWF10InitializeEv");
     if(!mwfi) {mark("MENUHOST missing MWF Initialize\n"); return 12;}
     mark("MENUHOST MWF Initialize enter\n"); mwfi(); mark("MENUHOST MWF Initialize returned\n");
+    dump_modules();
     void *obj=load_flags("/usr/lib/libObj.so",0x101); if(!obj) return 13;
     void (*app)(const char *)=(void(*)(const char *))dlsym(obj,"Application_System_Init");
     unsigned *pvm=(unsigned *)dlsym(obj,"pViewManager");
@@ -204,7 +205,6 @@ int main(int argc,char **argv) {
     for(unsigned i=0;;++i) {
         sleep(1);
         if((i % 5)==0) { printf("MENUHOST tick=%u pVM=%08x\n",i,*pvm); fflush(0); }
-        if(i==5 || i==15 || i==30 || i==50 || i==70) { char tag[8]; tag[0]='t'; tag[1]=(char)('0'+i/10); tag[2]=(char)('0'+i%10); tag[3]=0; probe_queues(tag); }
-        if(i==20) { dump_modules(); dump_tasks("t20"); }
+        if(i==20) dump_tasks("t20");
     }
 }
