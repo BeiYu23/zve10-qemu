@@ -1849,3 +1849,48 @@ Mon Buf Size ok
 1. 打印 `/proc/*/comm` + `cmdline`，确认是否存在**多个 im.elf**（re-exec 假设）；
 2. 用 `LD_DEBUG=scopes` 或 `dlopen` 记录（mode + 调用者）验证 scope；
 3. 若确认 re-exec：让 wrapper 在 re-exec 后仍带 preload（例如用 `/etc/ld.so.preload`，它会被所有进程继承）。
+
+---
+
+## 45. 第 58 轮：否证 re-exec 假说；`core_sync_user_init` 其实来自 **libIMDB.so**
+
+### 45.1 否证 re-exec
+
+`ab_v2690`（`LD_DEBUG=bindings`）日志里：
+* 我们的探针只打印了 **1 次** `OBS0 clean probe up`；
+* 所有 `LD_DEBUG` 行的 pid 都是 **122**。
+
+⇒ **全进程只有一个 im.elf，没有 re-exec**，之前的"第二个进程丢 LD_PRELOAD"假说不成立。
+
+### 45.2 把三个库都塞进 `/etc/ld.so.preload` 反而更差
+
+镜像 `ab_v2700`（`/etc/ld.so.preload` = CoreSync + libMWF + 探针）：
+
+```
+崩溃 pc=0x058AB372 = libMWF+0x32372（MonQueue，this=NULL）—— 退回到"无服务"那一档
+```
+⇒ **把 libMWF 预加载进所有进程会打乱 App 自身时序**（sen.elf 等也会带着 MWF 起来）。
+这个方向不可取；libMWF 只应给 im.elf 用（`LD_PRELOAD`）。
+
+### 45.3 `core_sync_user_init` 的真实来源
+
+全固件树里只有两个库涉及它：
+
+```
+lib/libCoreSync.so   ← 定义（GLOBAL DEFAULT）
+lib/libIMDB.so       ← UND 引用
+```
+
+**libObj 里连这个字符串都没有** ⇒ 运行期那句
+`/usr/lib/libObj.so: error: symbol lookup error: undefined symbol: core_sync_user_init (fatal)`
+**把责任方写成了 libObj，但真正需要它的是 libIMDB**（glibc 报的是当时正在做重定位的对象）。
+
+而且这条错误**没有杀死进程**（日志后面继续有绑定记录与 QMMAP）⇒ App 捕获后继续跑，
+最终以 `pc=0`（调用空指针）崩掉。
+
+### 45.4 下一轮
+
+1. **只把 `libCoreSync.so` 放进 `/etc/ld.so.preload`**（微型库、无副作用），
+   libMWF 与探针继续留在 im.elf 的 `LD_PRELOAD` 里 —— 这样 libIMDB（任何进程）都能解析到它；
+2. 再看 `pc=0` 是否消失；若消失，App 应能继续往 `Application_System_Init` 方向走；
+3. 判据不变：`GRM2 > 0` + `/dev/stream` 非均匀。
