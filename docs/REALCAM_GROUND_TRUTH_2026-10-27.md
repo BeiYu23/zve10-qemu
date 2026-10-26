@@ -1460,3 +1460,45 @@ MWFI token=0 smp_monErr=0x000305d0                      ← 令牌仍是 0（未
 1. GDB watchpoint：`0x442DB`（令牌）+ `0x4586C`（smp_monErr）+ 几个 MonCtrl 全局，看**谁写、写了什么**；
 2. 若 App 从不调用 `MWF::Initialize`，再决定是"我们调 + 归还令牌"还是"逐叶子初始化"；
 3. 判据仍为 `GRM2 > 0` + `/dev/stream` 非均匀。
+
+---
+
+## 36. 第 49 轮：按"逐叶子初始化"补 MWF（合作方方案③）—— 全部调用成功，但 MonCtrl 全局仍是小值
+
+### 36.1 做法
+
+不再调带令牌的 `MWF::Initialize()`，改为按顺序直接调叶子（全部 libMWF 导出）：
+
+```
+RsrcMcmd::Init      (+0x2D0CC)   ← 内含 RsrcDP::Initialize（建 smp_monErr）
+ObjLog_Mcmd::Init   (+0x209DC)
+InhMcmd::Init       (+0x204C8)   ← 内含 InhDP::Initialize（建另外 3+1 个 MonCtrl）
+ObjIf_Mcmd::Init    (+0x28AAC)
+ObjIf::Init         (+0x26200)
+EventIdFactory::Initialize(0x83E8, 0x800)  (+0x1E4A8)
+```
+
+### 36.2 实测（`ab_v2490`）
+
+```
+LEAF RsrcMcmd::Init ... ok
+LEAF ObjLog_Mcmd::Init ... ok
+LEAF InhMcmd::Init ... ok
+LEAF ObjIf_Mcmd::Init ... ok
+LEAF ObjIf::Init ... ok
+LEAF EventIdFactory::Initialize ... ok
+LEAF done token=0 smp_monErr=0x00027508      ← ★ 仍是"小值"，不是堆指针
+崩溃 → libMWF（pc=0x05AEE002，insn=0x4080E8BD = 命中数据区 ⇒ 又一次跳飞）
+```
+
+**⇒ 叶子全部执行成功，但 `0x4586C` 里仍是 `0x27508` 这类小值。**
+两种可能：
+1. `0x4586C` **不是** `RsrcDP::smp_monErr`（合作方给的偏移需要核对）；
+2. 它是那个全局，但 `RsrcDP::Initialize` 在 `RsrcMcmd::Init` 里走的是另一分支（例如被某个前置条件挡住）。
+
+### 36.3 下一轮（直接对地址做实验，不再依赖推断）
+
+1. GDB 断在 `SetEventSender` 的 `0x2632E`（`ldr.w r9,[r4,r3]`）：**打印 r4 与 r3，算出真正的全局地址**，
+   再 `x` 该地址确认内容 —— 这是唯一可靠的办法；
+2. 拿到真地址后，用写 watchpoint 抓写入者；若无人写，就在 preload 里直接调用"能建 MonCtrl 的那个叶子"；
+3. 目标不变：让 `SetEventSender` 的日志路径拿到有效 MonCtrl，从而通过这一关，继续向 `pVM/View` 推进。
