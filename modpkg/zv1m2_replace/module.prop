@@ -1,0 +1,7 @@
+id=zv1m2-replace
+name=ZV-1M2 菜单（仅替换）
+version=0.1
+versionCode=1
+author=cokee
+description=只替换 ZV-E10 已有的文件（global.xdb / master_* / color/style / 语言包），不新增文件。用于验证引擎对 ZV-1M2 索引的反应。
+type=overlay

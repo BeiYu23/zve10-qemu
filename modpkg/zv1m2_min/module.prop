@@ -1,0 +1,7 @@
+id=zv1m2-min
+name=ZV-1M2 菜单（完整结构）
+version=0.1
+versionCode=1
+author=cokee
+description=完整结构集（11 新增 + 14 替换）。需要目录级覆盖（Phase 3）才能加载全部。
+type=overlay
