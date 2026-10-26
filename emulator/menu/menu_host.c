@@ -103,6 +103,30 @@ extern long syscall(long, ...);
 extern int read(int, void *, unsigned long);
 extern int snprintf(char *, unsigned long, const char *, ...);
 #define AT_FDCWD_ 0
+static void dump_libobj_map(void)
+{
+    char buf[24000]; int fd = open("/proc/self/maps", 0); int k;
+    if(fd < 0) return;
+    k = (int)read(fd, buf, sizeof(buf)-1); close(fd);
+    if(k <= 0) return;
+    buf[k] = 0;
+    char *p = buf;
+    while(*p) {
+        char *e = p; while(*e && *e != '\n') e++;
+        char c = *e; *e = 0;
+        if(strstr_(p, "libObj.so") && strstr_(p, "r-x")) {
+            printf("MENUHOST LIBOBJ %s\n", p); fflush(0);
+        }
+        if(strstr_(p, "libc-2.11.2.so") && strstr_(p, "r-x")) {
+            printf("MENUHOST LIBC %s\n", p); fflush(0);
+        }
+        if(strstr_(p, "libosal_uipc.so") && strstr_(p, "r-x")) {
+            printf("MENUHOST UIPC %s\n", p); fflush(0);
+        }
+        *e = c; if(!c) break; p = e + 1;
+    }
+}
+
 static void dump_tasks(const char *when)
 {
     char buf[2048];
@@ -193,6 +217,7 @@ int main(int argc,char **argv) {
     mark("MENUHOST MWF Initialize enter\n"); mwfi(); mark("MENUHOST MWF Initialize returned\n");
     dump_modules();
     void *obj=load_flags("/usr/lib/libObj.so",0x101); if(!obj) return 13;
+    dump_libobj_map();
     void (*app)(const char *)=(void(*)(const char *))dlsym(obj,"Application_System_Init");
     unsigned *pvm=(unsigned *)dlsym(obj,"pViewManager");
     printf("MENUHOST API=%p pVMslot=%p\n",(void*)app,(void*)pvm); fflush(0);

@@ -3847,3 +3847,47 @@ op5-6 cache / op7 findbyname / op8 findbyphys / op9 malloc / op10 free / op11-13
 
 ⇒ 剩余工作面收窄为：`ma_malloc_impl` 返回的内存语义（来自我们用 DMM 单元建出的 mspace）
 是否满足调用方，以及之后图形侧（`grm_gles`/GPE）是否具备可用的绘制通路。
+
+---
+
+## 92. 2026-10-26 绘制通路取证：App 从未调用自己的绘制函数
+
+### 92.1 谁提供绘制 API
+
+`GRM_bitmapCreate` / `GRM_bitmapWriteLockBits` / `GRM_gpermFillrect` 都由 **`libObj.so` 自己定义**
+（`0x684c19 / 0x684ead / 0x683f4d`），并同时被 `libObj` 内部引用——即绘制代码就在 App 主体里，
+不需要额外的 `libgrm.so`。真机 `/usr/lib` 里也没有 `libgrm*.so`。
+
+### 92.2 GDB 断点结果：零命中
+
+`menu-only-v14.img`，libObj 基址 `0x4cd8000`（取自 `/proc/self/maps` 的 `r-xp 00000000` 行，已核对）：
+
+```
+breakpoint at libObj+0x684c19 (GRM_bitmapCreate)
+breakpoint at libObj+0x683f4d (GRM_gpermFillrect)
+→ 70 秒内 0 次命中
+```
+
+配合 run6/7/11 中 `FAKEGLES open=0 ioctl=0`、App 仅打开 `/dev/usb`、`/dev/uipc`、`/dev/mem`、`/dev/console`，
+可以确认：**App 从未进入绘制，图形设备从未被打开**。
+
+### 92.3 阻断点取证的两条失败路线（记录以免重试）
+
+1. 断 `osal_rcv_msg_tmo`(libosal_uipc+0x3ed9) 与私有 `u_osal_rcv_msg_tmo`(+0x26f5)：**均零命中**。
+   说明那个"卡在 osal_rcv_msg_tmo"的 `wchan` 是**内核模块**的同名函数，用户态调用路径不是这两个入口。
+2. 断 libc `ioctl`(libc+0x9b170) 并按 `cmd==0x80000005/0x80000004` 过滤：命中 1 次
+   （`cmd=0x80000004 lr=libosal_uipc+0x25dd`）后 70 秒内不再前进——
+   断在 ioctl 会让每次系统调用都陷入调试器，guest 被拖慢到无法到达稳态。**此路线不可用。**
+
+### 92.4 当前结论（本阶段终态）
+
+* MA 服务真实工作（op 7/1/9/10/2/1/9×4）；
+* App 在最后一次 MA `malloc` 之后停止发起请求，`pViewManager` 始终为 0；
+* App 从未调用 `GRM_*`，从未打开 `/dev/dmpgles2`；
+* 两条启动路径（原厂 launcher / 菜单宿主）都停在同一点，且都不再崩溃（180–200 秒稳定）。
+
+⇒ 剩余阻塞不是"某个服务答错"，而是**App 缺少推动它进入视图/绘制阶段的上游事件**
+（此前多轮得出的同一结论：事件泵/启动 sequence 未建立）。这属于需要实现原厂启动事件链的工作，
+不是修一个字段能解决的。
+
+`GRM2` 无记录，`/dev/stream` 未变，**菜单未显示，目标未完成**。
