@@ -5161,3 +5161,61 @@ QEMU 机型里也有注释提到分区信息来自镜像内的 *information tabl
 2. **分区布局与真机不一致** → `/tmp` 从未存在，字体缺失（本节）。
 
 `GRM2` 无记录、`/dev/dmpgles2` 未打开、`/dev/stream` 未变，**菜单未显示，目标未完成**。
+
+---
+
+## 125. 2026-10-27 对照 chocotan/zve10-qemu（他们跑出菜单了）：三处关键差异
+
+仓库：`https://github.com/chocotan/zve10-qemu`（commit `a7f23b0`
+"Add ZV-E10 QEMU emulator with original menu rendering"）。已 clone 到
+`/mnt/build/ref-chocotan-zve10`。
+
+### 125.1 存储：他们不用 nflasha 分区，改用 PL181 SD 卡
+
+`source/kernel/0001-zve10-qemu.patch` 新增 amba 设备：
+
+```
+.start = 0xf1005000, .irq = { 41 }
+/* zve10-qemu: PL181 SD card provides the camera /usr and /system tree. */
+```
+
+⇒ `/usr` 与 `/system` 来自 **SD 卡**，绕开 nflasha 分区表与 `/tmp` 分区问题（我们正是卡在这里）。
+
+### 125.2 配置：他们用厂商 IMDB 自带的 qemu 档位位
+
+`scripts/prepare-ui-profile.py` 只对 10 个 USB/tethering 模块做 `targets & ~2`，
+并显式断言保留 **`appFw.so` / `libgrm.so` / `libuxengine.so`** 三个模块在 qemu 档位启用。
+
+⇒ 也就是说：**UI 引擎是三个独立库**，由 IMDB 在启动时加载。
+我们的镜像里**没有这三个库**（`lfu/tree/lib` 里那两个 7.5 KB 文件是我们自己的桩，不是真库）。
+
+### 125.3 驱动方式：在 IMDB 生命周期入口装 hook，而不是自造宿主
+
+`source/ui/ui-observe.c` 注释："Cold-start hooks only: install before IMDB invokes the UI
+lifecycle entries."，hook 的入口是：
+
+```
+notifyDraw / drawFramebuffer / Application… / font_register
+rm_execute / rm_step / engine_wait / lz_decode
+```
+
+并用软件实现 `software_init/fill/blit/present/engine_wait`，最后导出 PNG。
+
+⇒ 我们一直在**手动调 `Application_System_Init`**，绕过了 IMDB 的正常加载链，
+所以引擎库根本没进进程——`p4` 之类"没有写者"的现象由此而来。
+
+### 125.4 结论
+
+我们的三次"做错了"现在对上了：
+
+1. 配置读取一律失败（已证实，§122）；
+2. 分区布局与真机不一致、`/tmp` 缺失（已证实，§123–124）；
+3. **UI 引擎三个库根本没进镜像**（本节，最致命）。
+
+### 125.5 下一步（二选一）
+
+A. **照抄他们的路径**：SD 卡提供 /usr+/system；IMDB 只清 10 个 USB 模块；生命周期 hook + 软件光栅化。
+B. **最小增量验证**：先从 `FirmwareData_ZVE10V203.dat` 解出真 `appFw.so`/`libgrm.so`/`libuxengine.so`
+   与所需资源，补进现有 usr 分区，重跑看 App 是否越过当前崩溃点。
+
+`GRM2` 无记录、`/dev/dmpgles2` 未打开、`/dev/stream` 未变，**菜单未显示，目标未完成**。
