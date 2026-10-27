@@ -5219,3 +5219,56 @@ B. **最小增量验证**：先从 `FirmwareData_ZVE10V203.dat` 解出真 `appFw
    与所需资源，补进现有 usr 分区，重跑看 App 是否越过当前崩溃点。
 
 `GRM2` 无记录、`/dev/dmpgles2` 未打开、`/dev/stream` 未变，**菜单未显示，目标未完成**。
+
+---
+
+## 126. 2026-10-27 ★ 首次走上原厂启动链：`bootin.elf target=qemu` 成功，卡在 RT 自旋锁重入
+
+### 126.1 做法（不改分区、不重建根，直接换启动器）
+
+按 chocotan/zve10-qemu 的配方，把 `/bin/im.elf` 换成一个 1.3 KB 的静态启动器
+（`/mnt/build/imwrap_bootin.c`，只用 syscall）：
+
+```c
+argv = { "/usr/bin/bootin.elf", "target=qemu ", "dmode=3", "amode=normal", 0 };
+envp = { "PATH=...", "LD_LIBRARY_PATH=/usr/lib:/lib", 0 };
+execve("/usr/bin/bootin.elf", argv, envp);
+```
+
+并把 `/setting/Backup.bin`、`Backup.bak` 做成指向真 1.2 MB `Backup.bin` 的符号链接
+（rootfs 只剩 167 KB，放不下实体文件）。
+
+### 126.2 结果：原厂链真的跑起来了
+
+```
+EXECVE /usr/bin/bootin.elf
+UIPCRET bootin.elf cmd=0x80000010 ret=0   （×3，注册成功）
+IMOPEN OK /usr/lib/libObj.so              ← 由原厂链自己加载
+UIPCARG Appframework cmd=... f0=0x14c0424 ← App 框架线程在跑 MA 服务调用
+→ kernel BUG at kernel/rtmutex.c:738!
+```
+
+这是本轮/全程最大的进展：**不再是我们自造的宿主，而是原厂 bootin 链在驱动 App**。
+
+### 126.3 新卡点：RT 自旋锁重入（内核态）
+
+`kernel/rtmutex.c:738` 是：
+
+```c
+BUG_ON(rt_mutex_owner(lock) == self);   /* rt_spin_lock_slowlock 内 */
+```
+
+即**同一任务重复获取同一把 RT spinlock**。日志只打出这一行、没有后续 oops 细节。
+
+这类断言通常来自 **PREEMPT_RT 语义与模块/驱动的假设不一致**（spin_lock 在 RT 下是睡眠锁，
+重入即 BUG）。注意我们这套内核是自建 `3.0.27_nl-rt106+`，而对方用 Sony 源码 +
+他们的 `0001-zve10-qemu.patch` 自行编译——**两边内核配置很可能不同**。
+
+### 126.4 下一步
+
+1. 提高异常输出（loglevel / 打开 RT 锁调试）拿到 `rt_spin_lock_slowlock` 的调用者，
+   确认是哪把锁、哪个模块；
+2. 对比我们的 `.config` 与 Sony 默认配置（尤其 `PREEMPT_RT` 相关、`DEBUG_RT_MUTEXES`）；
+3. 或直接改用对方的内核源码 + 补丁重建内核，消除配置漂移（代价大但一步到位）。
+
+`GRM2` 无记录、`/dev/dmpgles2` 未打开、`/dev/stream` 未变，**菜单未显示，目标未完成**。
