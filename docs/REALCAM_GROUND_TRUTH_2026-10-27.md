@@ -5385,3 +5385,40 @@ kernel BUG at kernel/panic.c:106!
 `execve(insmod, 14 个模块)` → `execve(bootin.elf, 'target=qemu ', dmode=3, amode=normal)`。
 
 `GRM2` 无记录、`/dev/dmpgles2` 未打开、`/dev/stream` 未变，**菜单未显示，目标未完成**。
+
+---
+
+## 130. 2026-10-27 参考栈搭建完成，但内核收不到 initrd
+
+### 130.1 已完成（全部照对方来）
+
+* QEMU 11.1.2 + 对方 `zve10.c` / `sony_hwtimer.c` / `0001-register-zve10.patch` → **编译成功**
+  （`build-zve10/qemu-system-arm`，101 MB，`-M zve10` 可用）；
+* 内核：Sony 源码 + 对方补丁 + `zve10_defconfig` → `Image`（3.59 MB，PREEMPT_RT）；
+* initramfs 树按 `setup.md` 组装：rootfs(nflasha7) + usr(nflasha15，149 库) +
+  `/kmod` + `/setting`（`DmmConfig.bin`/`ulogio.bin`/`Backup.bin`=CX88700_ALLLANG）+
+  `/tmp`（含 3 个字体文件）+ `/init`（对方 `init-ui.sh`）+ `libuiobserve.so`（已编，81 KB）
+  + `libIMDB.so` 已由 `prepare-ui-profile.py` 改过（10 个 USB 模块清 qemu 档位，保留
+  `appFw.so`/`libgrm.so`/`libuxengine.so`）。合计 231 MB，打成 `ui.cpio` = 239 MB。
+
+### 130.2 卡点：内核没有拿到 initrd
+
+```
+VFS: Cannot open root device "(null)" or unknown-block(2,0)
+kernel BUG at kernel/panic.c:106!   (init_post)
+```
+
+**用 1 KB 的极小 cpio 复测，同样收不到** ⇒ 不是体积问题，是**转交机制**问题。
+日志里没有任何 `Unpacking initramfs`。
+
+对方机型的加载参数：`loader_start = 0x00128000`（ATAGS 在 0x138000 之下），
+标准 `arm_load_kernel(...)` + `binfo.initrd_filename`。
+
+### 130.3 下一步（按序试）
+
+1. 交叉验证：用**我们旧的内核（zImage）+ 旧 ext2 initrd** 跑对方机型 → 若 initrd 也不认，
+   问题在机型/加载地址；若认，则问题在我们这个 `Image`（raw Image 无 zImage 头，加载路径不同）；
+2. 或直接改用对方方式把 initramfs **编进内核**（`INITRAMFS_SOURCE=ui.cpio`），完全绕开转交；
+3. 必要时给 `binfo` 显式设置 `initrd_start/initrd_size`。
+
+`GRM2` 无记录、`/dev/dmpgles2` 未打开、`/dev/stream` 未变，**菜单未显示，目标未完成**。
