@@ -5708,3 +5708,47 @@ App 不是"卡死"，而是"没人让它继续画"。
 3. 目标不变：`GEMINI.total.solid/textrect` 非零 → `export_ready=1` → 出 PNG。
 
 `GRM2` 无记录、`/dev/dmpgles2` 未打开、`/dev/stream` 未变，**菜单未显示，目标未完成**。
+
+---
+
+## 138. 2026-10-27 ★ 首次观测到"非均匀帧就绪"：`export_ready=1`
+
+### 138.1 之前的判断错在哪
+
+* TCG 慢 10 倍，对方 `capture-menu.py` 的 120 秒超时在我们这里远远不够——
+  长时间运行（约 4–5 分钟墙钟）后，App **真的开始画菜单**：
+
+```
+drawFramebuffer.enter = 8   （记录上限 8 条）
+GEMINI.total.solid    = 8
+GEMINI.total.textrect = 0x194      ← 404 个文字块被绘制
+headless.committed_native_frame = 10
+headless.export_ready = 0x1        ← ★ 非均匀帧就绪（此前一直是 0）
+```
+
+即"没人唤醒"也是误判：只是需要更长时间。
+
+### 138.2 注意：`record()` 记录的是**参数值**不是计数器
+
+`drawFramebuffer.enter=0xd4e70` 里的 0xd4e70 是入参 `a`，不是"画了 87 万次"。
+计数要看行数，不要看值。这一点之前理解错了（已纠正）。
+
+### 138.3 当前阻碍：该状态**不稳定复现**
+
+同一套镜像反复冷启动，只有部分运行能进入"前 8 帧含文字"的状态；
+其余运行前 8 帧 `textrect=0`（且 `FONT.driver/FONT.loaded.slot` 与成功那次**完全一致**，
+说明不是字体差异）。推测是与启动时序相关的竞态。
+
+### 138.4 抓帧手段
+
+`-qmp`（对方 capture 脚本用）与 `-s`（gdbstub）都会改变时序；
+已备好两条不依赖对方脚本的取帧路径：
+
+1. QMP `human-monitor-command pmemsave 0x22c48000 614400 <file>`（物理地址取自
+   `GPE.present.destination`，区间落在对方 `map_surface` 允许范围）；
+2. gdbstub 的 `monitor pmemsave`（同命令，经 gdb 下发）。
+
+正在循环冷启动直到 `GEMINI.total.textrect != 0`，一命中立刻导出该物理帧，
+再用对方 `capture-menu.py` 里的 RGBA4444 解码逻辑转 PNG。
+
+`GRM2` 无记录、`/dev/dmpgles2` 未打开、`/dev/stream` 未变，**菜单未显示，目标未完成**。
