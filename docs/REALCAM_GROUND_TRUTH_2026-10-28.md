@@ -301,3 +301,31 @@ libObj 里有 `/dev/gpio`、`EXEC_POWERON_REC_KEYSCAN_STOP` 等字符串，说�
    并在 App 启动前把 shell 的 stdin 关掉；
 3. 若通道本身不通，改走 **SD 卡命令文件**（hotplug + 轮询），或给"我们自己的机型副本"
    增加第二路串口（不改他们的 `zve10.c`）。
+
+## 154. 2026-10-28 第二路串口已可用（ttyAM1），但 host→guest 数据仍未到达
+
+### 关键突破
+
+1. 对方机型的 `pl011_create` 只建了 UART0；我们在**自己的 QEMU 构建副本**里补上
+   `pl011_create(0xf2001000, pic[151-32], serial_hd(1))`；
+2. 内核侧 `cfg.uart` 是**位掩码**（`cxd900x0_uart_bitmap & (1 << i)`），
+   把 cmdline 改成 **`cfg.uart=3`** 后：
+
+```
+uart1: ttyAM1 at MMIO 0xf2001000 (irq = 151) is a AMBA/PL011
+KEYINJECT tty ok fd=4        ← 注入库成功打开 /dev/ttyAM1
+```
+
+⇒ **专用控制串口存在且可打开**，与相机控制台完全隔离。
+
+### 仍未解决
+
+从 host 经 `-serial unix:` / `-serial tcp:` 写入的数据，guest 侧 `read(/dev/ttyAM1)` 收不到
+（无 `first-read` 日志）。说明问题在 **QEMU chardev → PL011 RX** 这一段的配置，而不是
+guest 或我们的库。
+
+### 下一轮
+
+1. 试 `-chardev socket,id=ctl,path=...,server=on,wait=off,mux=off -serial chardev:ctl` 的显式写法；
+2. 试 `-serial mon:stdio` / `-chardev stdio` 的对照；
+3. 若都不通，改用 **SD 卡命令文件**（SD 已可用）+ QMP 热插，彻底绕开串口。
