@@ -13,6 +13,7 @@ extern long write(int, const void *, unsigned);
 #define NEXT ((void *)-1)
 #define GLOBAL_NOW 0x102
 extern int open(const char *, int, ...);
+extern long syscall(long, ...);
 extern int close(int);
 extern void *mmap(void *, unsigned long, int, int, int, unsigned long);
 extern void *mmap64(void *, unsigned long, int, int, int, long long);
@@ -63,6 +64,7 @@ static void *load(const char *s) { return load_flags(s,GLOBAL_NOW); }
  * Unknown requests fail explicitly; no invented config tables or fake writes.
  * This executable deliberately replaces the CP Backup transport for these keys.
  */
+static int backup_log_n;
 int osal_snd_sync_msg(unsigned qid, void *msg) {
     static int (*real)(unsigned,void *);
     if(qid==0x003e014d && msg) {
@@ -74,7 +76,32 @@ int osal_snd_sync_msg(unsigned qid, void *msg) {
         case 0x00fa00a4: value=0x00100000; break;
         default: known=0; break;
         }
-        printf("MENUHOST backup count=%u key=%08x supported=%d value=%08x\n",m[2],key,known,value); fflush(0);
+        /* DIAGNOSTIC ONLY (not a correct configuration source): for the block
+         * reads the app performs (count>=2 with a caller buffer), serve bytes
+         * taken from the real backup blob we loaded at phys 0x02E80000, read
+         * through the 0x60000000 /dev/mem alias. This is only to test whether
+         * starving these reads is what stops the initialiser. */
+        unsigned buf = m[7], len = m[8];
+        int served = 0;
+        if(!known && buf >= 0x5ef00000u && buf < 0x5f000000u && len > 0 && len <= 0x1000) {
+            unsigned idx = key & 0xFFu;
+            unsigned char *dst = (unsigned char *)buf;
+            static int memfd = -2;
+            if(memfd == -2) memfd = open("/dev/mem", 0);
+            if(memfd >= 0) {
+                long off = (long)(0x02E80000u + idx);
+                if(syscall(19 /*lseek*/, memfd, off, 0) == off) {
+                    int got = (int)read(memfd, dst, len);
+                    if(got == (int)len) { m[1] = len; served = 1; }
+                }
+            }
+        }
+        if(backup_log_n < 60) {
+            backup_log_n++;
+            printf("MENUHOST backup count=%u key=%08x buf=%08x len=%08x known=%d served=%d\n",
+                   m[2], key, buf, len, known, served); fflush(0);
+        }
+        if(served) return 0;
         if(!known) return -1024;
         m[1]=value; return 0;
     }
@@ -440,6 +467,16 @@ int main(int argc,char **argv) {
             (int(*)(unsigned long *, const void *, void *(*)(void *), void *))dlsym(pth0, "pthread_create");
         unsigned long th0 = 0;
         if(pc0) { int rc = pc0(&th0, 0, ux_thread_body, 0); printf("MENUHOST ux thread rc=%d\n", rc); fflush(0); }
+    }
+    /* Test: the old menu's view package may be what registers the singleton at
+     * libObj+0x145CBC4. Load it and check the slot before running the app body. */
+    {
+        printf("MENUHOST p4 before view dlopen = %08x\n",
+               *(unsigned *)(libobj_base + 0x145cbc4)); fflush(0);
+        void *vu = dlopen("/usr/lib/viewUnified2.so", 0x101);
+        printf("MENUHOST viewUnified2 handle=%p err=%s p4=%08x\n", vu,
+               vu ? "none" : dlerror(),
+               *(unsigned *)(libobj_base + 0x145cbc4)); fflush(0);
     }
     /* The state word that gates UX init is at libObj+0x145ca6c (measured: 1 in
      * this environment, 0 on the genuine path). Clear it, then run the original
