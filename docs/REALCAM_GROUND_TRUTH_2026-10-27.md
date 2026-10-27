@@ -5467,3 +5467,37 @@ MODULE_END /usr/kmod/stream2.ko status=0
 3. 或改对方机型补上 `-initrd` 转交（`binfo.initrd_start/size` 显式设置）。
 
 `GRM2` 无记录、`/dev/dmpgles2` 未打开、`/dev/stream` 未变，**菜单未显示，目标未完成**。
+
+---
+
+## 132. 2026-10-27 保留区已与对方一致，剩余崩溃在 dmm.ko 加载
+
+加上对方的 `memrsv=128M@0x20000000:uc` 后，内核正确保留：
+
+```
+reserve area 0: 8000000 @ 20000000
+high_memory: b0000000
+Memory: 1024MB total, 669760k available, 378816k reserved
+Freeing initrd memory: 233644K
+```
+
+模块按对方顺序全部装载成功（devno/dmac/osal_utm/osal_uipc/backup/utimer/osal_ulogio/
+kikilog/stream/stream2 全 `status=0`），**卡在 `dmm.ko`（85588 B）加载**：
+
+```
+MODLOAD read ok len=85588
+Unable to handle kernel paging request at virtual address c2bdf008
+PC is at cache_grow+0x12c/0x328
+```
+
+注意内核常量：`CONFIG_CXD900X0_SIZE_DDR0=0x40000000`、`DDR1=0x10000000`、
+`CONFIG_VMSPLIT_1_5G=y`，而运行期 `high_memory = 0xb0000000`。
+出问题的地址 `0xc2bdf008` **超过 high_memory**，形态像"物理→虚拟换算用了不匹配的基址"
+（`arch_phys_to_cache` 家族），而不是普通 slab 耗尽。
+
+### 下一步
+1. 核对本内核实际 `PAGE_OFFSET` 与 `arch/arm/mach-cxd900x0/memory.h` 的 `VA_DDR0` 是否一致；
+2. 用对方机型的内存布局（只有 1G、无 DDR1）复核，排除 DDR1 映射导致 VA 越界；
+3. 若确认是换算基址问题，优先让 `dmm.ko` 看到的映射与真机一致（而非改模块）。
+
+`GRM2` 无记录、`/dev/dmpgles2` 未打开、`/dev/stream` 未变，**菜单未显示，目标未完成**。
