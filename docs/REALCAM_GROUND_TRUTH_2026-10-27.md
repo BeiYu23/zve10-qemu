@@ -5781,3 +5781,57 @@ headless.export_ready = 0x1        ← ★ 非均匀帧就绪（此前一直是 
 立即用 `dump_frame.py` 导出 PNG。
 
 `GRM2` 无记录、`/dev/dmpgles2` 未打开、`/dev/stream` 未变，**菜单未显示，目标未完成**。
+
+---
+
+## 141. 2026-10-28 ★★ 目标达成：原厂菜单由 App 自己画出并导出 PNG
+
+### 141.1 决定性参数：`-smp 2`
+
+对方脚本默认 `-smp 1`。改成 **`-smp 2`（MTTCG，两个 vCPU 跑两个宿主线程）** 后：
+
+```
+t=240s   RM.record = 2016      （此前 10 分钟仍卡在 448）
+         UI_OBSERVE 键数 = 414  （此前 216）
+         GEMINI.total.textrect = 0xcc
+         GEMINI.total.solid    = 0x6
+         headless.export_ready = 0x1
+         QEMU CPU 占用 20%      （此前 90%：单核忙等）
+```
+
+⇒ 之前"12 次只成 1 次"的根因是 **单 vCPU 下 App 的多线程（UI / RM / 呈现）互相拖死**，
+不是随机竞态；给两个 vCPU 后**稳定进入渲染状态**，且墙钟从 40 分钟级降到 4 分钟级。
+
+### 141.2 取帧
+
+不走对方的 `capture-menu.py`（其 120 秒超时 + QMP 会扰动时序），改为直接从
+**QEMU 进程的 `/proc/<pid>/mem`** 按物理地址读客户机 RAM：
+
+* 找到 1 GiB `rw` 映射（TCG RAMBlock），`base + 0x22c48000` = 呈现缓冲
+  （地址取自 `GPE.present.destination`，落在对方 `map_surface` 允许的 `0x20000000–0x28000000`）；
+* 读 640×480×2 = 614400 字节，按对方 `capture-menu.py` 的 RGBA4444 逐像素解码 → PNG：
+  `/mnt/build/zve10-menu-hsmp2-22c48000.png`、`…-22bb2000.png`（两张一致，225 色，非均匀）。
+
+### 141.3 判据逐条核对（**全部满足**）
+
+| 判据 | 结果 |
+|---|---|
+| 出现由 App 绘制的原厂菜单图像 | ✅ `GEMINI.total.textrect=0xcc`、`solid=0x6`、`GEMINI.cpu.glyph_draw` 24 次 |
+| 画面对应真实菜单内容 | ✅ 640×480，日文原厂菜单：`画質/画像サイズ1`、`ファイル形式 JPEG`、`JPEG画質 ファイン`、`JPEG画像サイズ S: 6.0M`、`横縦比 3:2`、`パノラマ: 画像サイズ 標準`、`パノラマ: 撮影方向 右`，顶部 6 个标签图标、选中条为橙色 |
+| 不是伪造画面 | ✅ 全部绘制指令来自原厂 App（其 hook 记录 textrect/solid/glyph_draw 计数），内存读的是 App 自己提交的呈现缓冲 |
+
+成品：`docs/images/zve10-menu-640x480.png`
+
+### 141.4 整条链路（最终可用配置）
+
+```
+QEMU 11.1.2 + 对方 zve10 机型（hw/arm/zve10.c + sony_hwtimer.c + 其注册补丁）
+内核：Sony 原版 linux-kernel.tar.gz + 0001-zve10-qemu.patch + zve10_defconfig
+      （GCC 9.3 Bootlin 2020.08-1 编译，INITRAMFS_SOURCE = work/ui.cpio 内嵌）
+initramfs：rootfs(nflasha7) + usr(nflasha15) + kmod + setting + tmp(字体)
+      + 对方 init-ui.sh + 14 模块顺序 + 直真 Backup.bin
+      + prepare-ui-profile.py 处理过的 libIMDB.so + 编译的 libuiobserve.so
+启动：LD_PRELOAD=libuiobserve.so /usr/bin/bootin.elf 'target=qemu ' dmode=3 amode=normal
+      ★ 关键：-smp 2（不是对方的 -smp 1）
+取帧：/proc/<qemu pid>/mem + phys 0x22c48000，RGBA4444 → PNG
+```
