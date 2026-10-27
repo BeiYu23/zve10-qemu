@@ -5540,3 +5540,48 @@ PC is at ida_remove+0x7c/0x10c
 `notifyDraw` 只出现 3 次，`UI_CAPTURE_META/READY` 未出现 ⇒ **还没有完成一帧**。
 
 `GRM2` 无记录、`/dev/dmpgles2` 未打开、`/dev/stream` 未变，**菜单未显示，目标未完成**。
+
+---
+
+## 134. 2026-10-27 帧在提交但画面均匀；App 线程停在 cond_wait
+
+### 134.1 已确认的事实（对方机型、对方内核、对方 initramfs）
+
+```
+GPE.clear.cleared   = 0x96000   (=640*480*2，清屏尺寸正确)
+FONT.total.rasters  = 0x74      FONT.raster.nonzero_bytes = 0xb36（字体真的光栅出像素）
+FONT.request.result = 0x1       （字体请求全部成功）
+headless.committed_native_frame = 0x2
+headless.export_ready           = 0        ← 帧是全均匀（空）→ 捕获脚本拒收
+GEMINI.total.solid / textrect / line / quad = 0   ← 没有任何几何绘制
+```
+
+资源齐备：`/tmp/images` 三个字体、`/usr/share/app` 308 个 .uxc 都在。
+
+### 134.2 App 侧状态
+
+最后一条应用事件：
+
+```
+UI_OBSERVE pid=103 tid=182 thread.cond_wait.caller=0xa15b401
+UI_OBSERVE pid=103 tid=182 thread.cond_wait.condition=0xa55a0
+```
+
+即 UI 线程**停在条件变量上等待**，之后再无绘制。所以问题不是"画错"，而是**没人唤醒它**。
+
+### 134.3 旁支：`ps` 触发的 procfs oops 不是主因
+
+```
+Process ps (pid: 220)  → sys_getdents64 → pde_put → ida_remove 空指针
+```
+
+对方补丁已把 `proc_sys_init()` 注释掉（避免 proc_root.subdir 损坏），`ps` 遍历 /proc 仍会踩到，
+但它崩的是 `ps` 自己，不是 App。
+
+### 134.4 下一步
+
+1. 反查 `thread.cond_wait.caller=0xa15b401` 落在哪个模块/函数（相对基址解析），判断等的是哪一路事件；
+2. 对照对方能跑通的路径，看是谁负责唤醒（很可能是 stream/GPE 的完成通知或 timer 回调）；
+3. 唤醒后 `GEMINI.total.solid/textrect` 才会非零，`export_ready` 才会变 1，才能导出 PNG。
+
+`GRM2` 无记录、`/dev/dmpgles2` 未打开、`/dev/stream` 未变，**菜单未显示，目标未完成**。
