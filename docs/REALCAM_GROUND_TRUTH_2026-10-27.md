@@ -5835,3 +5835,28 @@ initramfs：rootfs(nflasha7) + usr(nflasha15) + kmod + setting + tmp(字体)
       ★ 关键：-smp 2（不是对方的 -smp 1）
 取帧：/proc/<qemu pid>/mem + phys 0x22c48000，RGBA4444 → PNG
 ```
+
+---
+
+## 142. 2026-10-28 网页控制台（tools/zve10_web.py）
+
+用途：启停模拟器、实时看屏、抓图、看串口日志。除 Pillow 外无第三方依赖。
+
+```
+python3 tools/zve10_web.py          # 默认 127.0.0.1:8099
+```
+
+接口：
+
+| 路径 | 作用 |
+|---|---|
+| `/` | 控制台页面（左：实时画面，右：串口日志；顶部：启动/停止/抓图） |
+| `POST /start` | 以 `./start-zve10-ui.sh -smp 2` 启动（关键参数 `-smp 2`） |
+| `POST /stop` | 停止 QEMU |
+| `/frame.jpg` | 实时帧（每 700ms 刷新）；从 QEMU 进程 `/proc/<pid>/mem` 读物理 `0x22c48000`，RGBA4444 解码 |
+| `/snap` | 把当前帧存 PNG 到 `/mnt/build/tmp/webui/menu-*.png` |
+| `/status` | JSON：是否运行、pid、运行时长、`frame_ready` |
+| `/log` | 串口日志尾部 |
+
+实测：启动后约 **93 秒**即 `frame_ready=true`（`distinct=225`），
+`/snap` 成功写出 640×480 PNG。比之前 4 分钟更快，原因是 `-smp 2` 期间宿主空闲且冷启动。
