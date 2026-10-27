@@ -1,0 +1,3 @@
+# 注入依赖的 a6700_unlock 源码位置（持久路径，不要放 /tmp）
+# 用法: source env.sh  然后 python3 run_payload.py ...
+export A6700_SRC=/root/fw/_archive/dirs/a6700/应用/src
