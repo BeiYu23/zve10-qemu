@@ -5860,3 +5860,56 @@ python3 tools/zve10_web.py          # 默认 127.0.0.1:8099
 
 实测：启动后约 **93 秒**即 `frame_ready=true`（`distinct=225`），
 `/snap` 成功写出 640×480 PNG。比之前 4 分钟更快，原因是 `-smp 2` 期间宿主空闲且冷启动。
+
+---
+
+## 143. 2026-10-28 完整系统（走他的 SD 路线）：已就位，卡在最早期启动
+
+### 143.1 真机分区表（用户提供，sysfs 实读）
+
+```
+nflasha1  0x00010000   8MB   updater 载荷
+nflasha2  0x00800000  20MB   /setting
+nflasha3  0x01C00000  48MB   /system（同时也是 FAT 启动区）
+nflasha6  0x09400000  16MB   /tmp/jiritsu
+nflasha7  0x0A400000   8MB   / (rootfs)
+nflasha10 0x0AC00000  12MB   /tmp + /etc
+nflasha11 0x0B800000 500MB   /log
+nflasha12 0x2AC00000  40MB   /cert
+nflasha15 0x2D800000 300MB   /usr
+nflasha18 0x4F400000  20MB   /lens
+```
+
+我们手上有全部分区 dump（nflasha1–23 + B0/B1）。
+
+### 143.2 按他的方法搭好的东西
+
+1. **SD 镜像** `/mnt/build/sd.img`（512 MiB，power-of-two，QEMU 要求）：
+   `p1=system(vfat,nflasha3) p2=usr(ext2,nflasha15) p3=setting(nflasha2) p4=tmp(nflasha10)`
+2. **完整系统 initramfs** `/mnt/build/full.cpio`：nflasha7 根 + 静态 C init
+   （挂 proc/sys/devtmpfs → 等 `/dev/mmcblk0` → 挂 p1..p4 → exec `/sbin/init`）
+3. **干净内核**（他的 Sony 源码+补丁+defconfig，无内嵌 UI initramfs；`CONFIG_MMC_ARMMMCI=y`、
+   `EXT2_FS=y`、`VFAT_FS=y` 都在）
+
+### 143.3 现状：挂上 SD 后内核在极早期停住
+
+```
+Linux version 3.0.27_nl-rt106+ (gcc 9.3.0)
+Machine: ARM-CXD900X0
+arm_add_memory: 0 0x128000 0x40000000
+Memory policy: ECC disabled, Data cache writealloc
+（到此为止，无后续任何输出）
+```
+
+* 不加 SD 卡时同一内核可以正常启动到 UI —— 所以是 **pl181/SD 设备本身**影响了早期启动；
+* 已排除 IRQ 冲突：定时器用 153+，pl181 用 41/42（`pic[9]/pic[10]`）；
+* 需要查：pl181 的 clock/DMA 初始化、以及内核 `amba_device_register(&mmci_device)` 的
+  `.irq = {41}` 与 QEMU 侧 2 条 IRQ 是否匹配。
+
+### 143.4 下一步（完整系统）
+
+1. 用 `-d guest_errors` / 加 `ignore_memory_transaction_failures` 之外的办法，看 pl181 是否访问了未映射区；
+2. 若 pl181 模型有问题，改**我们自己的机型副本**（不改他的 `zve10.c`）把 SD 挂上去；
+3. 通过后即可看到厂商 `/sbin/init` 的完整启动日志，判断这台"完整系统"能走到哪一步。
+
+`GRM2` 无记录、`/dev/dmpgles2` 未打开、`/dev/stream` 未变，**菜单未显示，目标未完成**。
