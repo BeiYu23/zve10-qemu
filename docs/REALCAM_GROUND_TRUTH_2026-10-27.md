@@ -5084,3 +5084,37 @@ backup count=2 key=00810001 buf=0a4d7d24 len=1 served=0 ← 缓冲在堆上，�
 拒绝读取 → App 不加载视图库 → `p4` 等对象自然也不会出现。
 
 `GRM2` 无记录、`/dev/dmpgles2` 未打开、`/dev/stream` 未变，**菜单未显示，目标未完成**。
+
+---
+
+## 123. 2026-10-27 字体在 /tmp（nflasha10）——并发现我们的分区布局本身重叠
+
+### 123.1 外部实测信息（另一对话提供，已核对存在性）
+
+* 字体清单 `/usr/share/app/fontlist.dat` 共 6 条，其中 2 条（简中/繁中）**只在 `/tmp`**：
+  `/tmp/images/MYingHeiC-GB18030-SJ_wIcon.ltt`、`/tmp/images/MYingHeiC-Big5-SJ_wIcon.ltt`；
+* `/tmp` = 分区 **nflasha10**，起始 `0x0AC00000`（172 MiB），12 MB，FAT12（spc=32/rsvd=1/nfats=1），
+  实测 23 个文件、非空；
+* 真机备份：`/root/fw/zve10_backup/nflasha10.img`（12,582,912 B）。
+
+这同时解释了 `IMOPEN FAIL TEXTRM_FONT_LIST (err=-2)` 与"rootfs 仅剩 167 KB"。
+
+### 123.2 我们的布局存在重叠（重要缺陷）
+
+| 项 | 值 |
+|---|---|
+| 我们放的 rootfs 起点 | 168 MiB |
+| 我们写入的 rootfs 窗口 | 8 MiB（168–176 MiB） |
+| rootfs ext2 实际大小 | 5012 × 1 KB ≈ 4.9 MB |
+| 真机 `/tmp` 起点 | 172 MiB |
+
+⇒ rootfs 实际覆盖到 172.9 MiB，**与 `/tmp` 起点重叠约 0.9 MB**。
+把真机 `nflasha10.img` 写到 172 MiB 后，rootfs 的 `e2fsck -n` **立即失败**，证明重叠真实存在。
+
+### 123.3 结论与下一步
+
+* 字体问题不是"缺文件"，而是 **`/tmp` 分区我们没有按真机位置放置**；
+* 但直接写入会破坏 rootfs，因为 **rootfs 的位置/尺寸本身放错了**；
+* 下一步：先解析整盘分区表拿到真实 `nflasha7` 偏移与长度，再把 rootfs 与 nflasha10 各放到真机位置。
+
+`GRM2` 无记录、`/dev/dmpgles2` 未打开、`/dev/stream` 未变，**菜单未显示，目标未完成**。
