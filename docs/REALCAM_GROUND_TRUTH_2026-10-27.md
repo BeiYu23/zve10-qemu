@@ -5422,3 +5422,48 @@ kernel BUG at kernel/panic.c:106!   (init_post)
 3. 必要时给 `binfo` 显式设置 `initrd_start/initrd_size`。
 
 `GRM2` 无记录、`/dev/dmpgles2` 未打开、`/dev/stream` 未变，**菜单未显示，目标未完成**。
+
+---
+
+## 131. 2026-10-27 原样使用对方栈：他们的内核+initramfs 在我们的机型上跑通了 init
+
+### 131.1 结论先说
+
+* **对方 `zve10` 机型（由我们按其源码构建）不转交 `-initrd`**：内核 `__atags_pointer=0`，
+  只跑内嵌 initramfs；`-machine zve10,initrd=` 也不行。
+* **把对方的内核 + 对方 `ui.cpio` 放到我们的 `cxd90045` 机型上，`-initrd` 正常转交**：
+
+```
+Trying to unpack rootfs image as initramfs...
+Freeing initrd memory: 233620K
+UI_BOOT_V2                      ← 对方 init-ui.sh 开始执行
+MODULE_END /kmod/devno.ko status=0
+MODULE_END /kmod/dmac.ko status=0
+MODULE_END /usr/kmod/osal_utm.ko status=0
+MODULE_END /usr/kmod/osal_uipc.ko status=0
+MODULE_END /usr/kmod/backup.ko status=0
+MODULE_END /usr/kmod/utimer.ko status=0
+MODULE_END /usr/kmod/osal_ulogio.ko status=0
+MODULE_END /usr/kmod/kikilog.ko status=0
+MODULE_END /usr/kmod/stream.ko status=0
+MODULE_END /usr/kmod/stream2.ko status=0
+→ 装 dmm.ko 时内核 oops（cache_grow，slab 损坏）
+```
+
+### 131.2 当前唯一剩余差异：内存保留区
+
+对方的 cmdline 含 `memrsv=128M@0x20000000:uc`（图形区）与 `memrsv=0x1A5E000@0x02E68000`。
+* **不加** memrsv → 模块装到 `stream2` 后，装 `dmm.ko` 时 slab 崩（图形区未被保留，dmm 写穿）；
+* **加上** `memrsv=128M@0x20000000:uc` → `devno.ko` 之后立刻崩；
+* 两条都加 → 更早死。
+
+⇒ 我们的 `cxd90045` 机型的内存映射与对方机型不同，保留区地址与之冲突。
+
+### 131.3 下一步
+
+1. 查我们机型 RAM/设备布局里 `0x20000000` 与 `0x02E68000` 各被什么占用（QEMU 侧 initrd 落点、
+   `-device loader` 的 BACKUP 位置）；
+2. 让 initrd 落在保留区之外，使 `memrsv` 与对方一致；
+3. 或改对方机型补上 `-initrd` 转交（`binfo.initrd_start/size` 显式设置）。
+
+`GRM2` 无记录、`/dev/dmpgles2` 未打开、`/dev/stream` 未变，**菜单未显示，目标未完成**。
