@@ -92,6 +92,13 @@ def main(argv):
     ap.add_argument('--part-start', type=lambda v: int(v, 0), required=False,
                     help='partition start in BYTES (from oem partition); required '
                          'whenever a reference is used, so reads hit the right LBA')
+    ap.add_argument('--full', action='store_true',
+                    help='write the whole image in contiguous chunks instead of '
+                         'only the blocks that differ; far fewer round trips when '
+                         'most of the image changed')
+    ap.add_argument('--verify-every', type=int, default=1,
+                    help='read back every Nth piece (0 = no per-piece readback; '
+                         'a sampled check still runs at the end)')
     ap.add_argument('--plan-only', action='store_true')
     a = ap.parse_args(argv)
 
@@ -107,27 +114,40 @@ def main(argv):
         if len(ref) != len(target):
             raise SystemExit('image and reference differ in size')
 
-    # which blocks differ
-    todo = [i for i in range(nblocks)
-            if ref is None or target[i * bgran:(i + 1) * bgran] != ref[i * bgran:(i + 1) * bgran]]
-    changed = len(todo) * bgran
-    print('changed : %d of %d blocks = %.1f MiB' % (len(todo), nblocks, changed / 1048576))
-
-    # merge contiguous blocks, then split runs into <= chunk size pieces
-    runs = []
-    for i in todo:
-        if runs and i == runs[-1][1] + 1:
-            runs[-1][1] = i
-        else:
-            runs.append([i, i])
-    pieces = []
-    per = max(1, cgran // bgran)
-    for s, e in runs:
-        i = s
-        while i <= e:
-            j = min(e, i + per - 1)
+    if a.full:
+        # contiguous coverage: far fewer round trips when most blocks changed
+        per = max(1, cgran // bgran)
+        pieces = []
+        i = 0
+        while i < nblocks:
+            j = min(nblocks - 1, i + per - 1)
             pieces.append((i, j))
             i = j + 1
+        runs = [[0, nblocks - 1]]
+        todo = list(range(nblocks))
+    else:
+        todo = [i for i in range(nblocks)
+                if ref is None or target[i * bgran:(i + 1) * bgran] != ref[i * bgran:(i + 1) * bgran]]
+    changed = len(todo) * bgran
+    print('changed : %d of %d blocks = %.1f MiB%s'
+          % (len(todo), nblocks, changed / 1048576, '  (full write)' if a.full else ''))
+
+    if not a.full:
+        # merge contiguous blocks, then split runs into <= chunk size pieces
+        runs = []
+        for i in todo:
+            if runs and i == runs[-1][1] + 1:
+                runs[-1][1] = i
+            else:
+                runs.append([i, i])
+        pieces = []
+        per = max(1, cgran // bgran)
+        for s0, e0 in runs:
+            i = s0
+            while i <= e0:
+                j = min(e0, i + per - 1)
+                pieces.append((i, j))
+                i = j + 1
     print('runs    : %d contiguous, split into %d writes of <= %d KiB'
           % (len(runs), len(pieces), a.chunk_kb))
     if a.plan_only:
@@ -203,9 +223,10 @@ def main(argv):
                 raise SystemExit('piece too large for download buffer: %d B' % len(img))
             download(d, img)
             d.require('flash:%s' % a.part)
-            back = fetch_in_part(d, part_start_lba, off, len(data))
-            if back != data:
-                raise SystemExit('readback mismatch at 0x%X (piece %d)' % (off, idx))
+            if a.verify_every and (idx % a.verify_every == 0):
+                back = fetch_in_part(d, part_start_lba, off, len(data))
+                if back != data:
+                    raise SystemExit('readback mismatch at 0x%X (piece %d)' % (off, idx))
             written += len(data)
             done.add(key)
             prog.write_text(json.dumps({'part': a.part, 'image': a.image,
@@ -216,7 +237,22 @@ def main(argv):
                      written / 1048576 / el if el else 0, len(done)), end='\r')
         print()
         print('finished %d pieces, %.1f MiB written' % (len(done), written / 1048576))
+        # sampled end-to-end check over the whole image
+        print('sampled verify ...')
+        bad = 0
+        step = 4 * 1024 * 1024
+        off = 0
+        n = 0
+        while off + 128 * 1024 <= len(target):
+            got = fetch_in_part(d, part_start_lba, off, 128 * 1024)
+            if got != target[off:off + 128 * 1024]:
+                print('  MISMATCH at 0x%X' % off)
+                bad += 1
+            n += 1
+            off += step
+        print('  %d samples, %s' % (n, 'all match' if bad == 0 else '%d mismatch' % bad))
         return 0
+
     finally:
         d.close()
 
