@@ -5118,3 +5118,46 @@ backup count=2 key=00810001 buf=0a4d7d24 len=1 served=0 ← 缓冲在堆上，�
 * 下一步：先解析整盘分区表拿到真实 `nflasha7` 偏移与长度，再把 rootfs 与 nflasha10 各放到真机位置。
 
 `GRM2` 无记录、`/dev/dmpgles2` 未打开、`/dev/stream` 未变，**菜单未显示，目标未完成**。
+
+---
+
+## 124. 2026-10-27 分区布局核查：我们的镜像与真机偏移不一致，不能直接写 nflasha10
+
+### 124.1 真机分区（manifest + 现场记录）
+
+`/root/fw/zve10_backup/manifest.json`：
+
+| 分区 | 大小 |
+|---|---|
+| nflasha7（rootfs） | 8,388,608 B（8 MiB） |
+| nflasha10（/tmp） | 12,582,912 B |
+| nflasha15（/usr） | 314,572,800 B |
+
+`FLASH_SESSION_20261027.txt` 记有绝对偏移：**nflasha15 @ `0x2D800000`（728 MiB）**；
+另一对话给出 **nflasha10 @ `0x0AC00000`（172 MiB）**。
+
+### 124.2 我们的镜像与之不符
+
+* 我们把 **usr 写在 732 MiB**（`0x2DC00000`），比真机多 4 MiB；
+* rootfs 起点用 168 MiB、写入窗口 8 MiB（168–176），**覆盖了 172 MiB**；
+* 直接把真机 `nflasha10.img` 写到 172 MiB → **rootfs `e2fsck` 立即失败**（重叠成立）；
+* 扫描整盘 FAT12/SUBS 分布，与真机偏移不能一一对应，说明我们的镜像布局自成一套。
+
+⇒ **结论：在修正分区映射之前，不能靠"直接 dd 分区镜像"补 /tmp。**
+QEMU 机型里也有注释提到分区信息来自镜像内的 *information table*（`hw/arm/bionz.c:1449`
+"Information table is invalid → nflasha 拿不到分区表"），也就是说偏移由该表决定，
+而不是我们任意摆放。
+
+### 124.3 下一步（顺序明确）
+
+1. 解析镜像内的 **information table**，取出真机各 nflasha 的偏移/长度；
+2. 按该表重排我们的镜像：nflasha7（8 MiB）、nflasha10（12 MiB，含字体）、nflasha15（300 MiB）；
+3. 重跑，检查 `TEXTRM_FONT_LIST` 是否通过、`viewUnified2` 是否继续初始化。
+
+### 124.4 已经确认的两处"我们做错了"
+
+1. **配置读取一律返回失败** → 视图库从不加载（§122，恢复填值后 `viewUnified2`/`CautionConfig`
+   首次被加载）；
+2. **分区布局与真机不一致** → `/tmp` 从未存在，字体缺失（本节）。
+
+`GRM2` 无记录、`/dev/dmpgles2` 未打开、`/dev/stream` 未变，**菜单未显示，目标未完成**。
