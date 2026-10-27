@@ -178,3 +178,28 @@ GOT/PLT 与共享页都在和我们作对）。放弃补丁方案。
 libObj 里有 `/dev/gpio`、`EXEC_POWERON_REC_KEYSCAN_STOP` 等字符串，说明真机是
 **keyscan（另一进程）+ InfraInput** 的结构。如果确认 App 最终从某个 fd 拿键，
 用"喂 fd"的方式注入会比任何 hook 都稳。
+
+## 149. 2026-10-28 注入器改用"只读发现"：进展与新的坑
+
+### 149.1 无侵入版本可以正常出菜单
+
+新库 `libkeyinject3.so` **完全不改代码段**，App 依然能画出菜单（`export_ready=0x1`），
+说明"预加载本库"本身是无害的——问题只在改写 `.text`。
+
+### 149.2 发现链路上的三个坑
+
+1. `dlsym(RTLD_DEFAULT, "InfraInput::GetInstance")` 失败 → App 用 `RTLD_LOCAL` 加载 libObj，
+   符号不在全局作用域；
+2. 拦截 `dlopen` 捕获 handle 也没成（`handle=(nil)`），而且这一版很可能把 App 的
+   dlopen 弄坏了（该次运行菜单没画出来）——`dlvsym(RTLD_NEXT,"dlopen","GLIBC_2.4")`
+   失败时就 return NULL，等于禁掉 dlopen。**必须加 dlsym 兜底**；
+3. `/proc/self/maps` 里找不到 `libObj.so` 字符串（3.0 内核对路径显示与预期不同）。
+
+### 149.3 下一轮
+
+1. 修 `dlopen` 兜底：`native = dlvsym(...) ?: dlsym(RTLD_NEXT,"dlopen")`，仍失败则直接
+   用 `syscall(SYS_open)` 无用——改用在 `dlopen` **之前**记录 path，失败也不影响 App；
+2. 完全照抄对方 `ui-observe.c` 的做法：`dlopen` 里 `strstr(path,"libObj.so")` → 拿到 handle →
+   `dlsym(handle,"ux::wgtsys::WidgetSystem::sys_getInstance")` → `dladdr` 得 base
+   （他们验证过 offset 0x616fe4）→ 再用 base+0x8c22a0 调 `InfraInput::GetInstance`；
+3. 拿到实例后扫描代码指针（`#P`），用 `#I <idx> <hex>` 试注入。
