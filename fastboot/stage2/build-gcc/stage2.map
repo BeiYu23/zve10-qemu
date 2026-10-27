@@ -1,0 +1,361 @@
+
+Discarded input sections
+
+ .text          0x0000000000000000        0x0 build-gcc/delay.o
+ .data          0x0000000000000000        0x0 build-gcc/delay.o
+ .bss           0x0000000000000000        0x0 build-gcc/delay.o
+ .comment       0x0000000000000000       0x33 build-gcc/delay.o
+ .note.GNU-stack
+                0x0000000000000000        0x0 build-gcc/delay.o
+ .ARM.attributes
+                0x0000000000000000       0x31 build-gcc/delay.o
+ .text          0x0000000000000000        0x0 build-gcc/div.o
+ .data          0x0000000000000000        0x0 build-gcc/div.o
+ .bss           0x0000000000000000        0x0 build-gcc/div.o
+ .comment       0x0000000000000000       0x33 build-gcc/div.o
+ .note.GNU-stack
+                0x0000000000000000        0x0 build-gcc/div.o
+ .ARM.attributes
+                0x0000000000000000       0x31 build-gcc/div.o
+ .text          0x0000000000000000        0x0 build-gcc/fb.o
+ .data          0x0000000000000000        0x0 build-gcc/fb.o
+ .bss           0x0000000000000000        0x0 build-gcc/fb.o
+ .comment       0x0000000000000000       0x33 build-gcc/fb.o
+ .note.GNU-stack
+                0x0000000000000000        0x0 build-gcc/fb.o
+ .ARM.attributes
+                0x0000000000000000       0x31 build-gcc/fb.o
+ .text          0x0000000000000000        0x0 build-gcc/keepalive.o
+ .data          0x0000000000000000        0x0 build-gcc/keepalive.o
+ .bss           0x0000000000000000        0x0 build-gcc/keepalive.o
+ .comment       0x0000000000000000       0x33 build-gcc/keepalive.o
+ .note.GNU-stack
+                0x0000000000000000        0x0 build-gcc/keepalive.o
+ .ARM.attributes
+                0x0000000000000000       0x31 build-gcc/keepalive.o
+ .text          0x0000000000000000        0x0 build-gcc/led.o
+ .data          0x0000000000000000        0x0 build-gcc/led.o
+ .bss           0x0000000000000000        0x0 build-gcc/led.o
+ .text.led_init
+                0x0000000000000000       0x2c build-gcc/led.o
+ .text.led_code
+                0x0000000000000000        0xc build-gcc/led.o
+ .text.led_hang
+                0x0000000000000000        0xc build-gcc/led.o
+ .comment       0x0000000000000000       0x33 build-gcc/led.o
+ .note.GNU-stack
+                0x0000000000000000        0x0 build-gcc/led.o
+ .ARM.attributes
+                0x0000000000000000       0x31 build-gcc/led.o
+ .text          0x0000000000000000        0x0 build-gcc/main.o
+ .data          0x0000000000000000        0x0 build-gcc/main.o
+ .bss           0x0000000000000000        0x0 build-gcc/main.o
+ .comment       0x0000000000000000       0x33 build-gcc/main.o
+ .note.GNU-stack
+                0x0000000000000000        0x0 build-gcc/main.o
+ .ARM.attributes
+                0x0000000000000000       0x31 build-gcc/main.o
+ .text          0x0000000000000000        0x0 build-gcc/partitions.o
+ .data          0x0000000000000000        0x0 build-gcc/partitions.o
+ .bss           0x0000000000000000        0x0 build-gcc/partitions.o
+ .comment       0x0000000000000000       0x33 build-gcc/partitions.o
+ .note.GNU-stack
+                0x0000000000000000        0x0 build-gcc/partitions.o
+ .ARM.attributes
+                0x0000000000000000       0x31 build-gcc/partitions.o
+ .text          0x0000000000000000        0x0 build-gcc/sdhci.o
+ .data          0x0000000000000000        0x0 build-gcc/sdhci.o
+ .bss           0x0000000000000000        0x0 build-gcc/sdhci.o
+ .comment       0x0000000000000000       0x33 build-gcc/sdhci.o
+ .note.GNU-stack
+                0x0000000000000000        0x0 build-gcc/sdhci.o
+ .ARM.attributes
+                0x0000000000000000       0x31 build-gcc/sdhci.o
+ .data          0x0000000000000000        0x0 build-gcc/shim.o
+ .bss           0x0000000000000000        0x0 build-gcc/shim.o
+ .comment       0x0000000000000000       0x33 build-gcc/shim.o
+ .note.GNU-stack
+                0x0000000000000000        0x0 build-gcc/shim.o
+ .ARM.attributes
+                0x0000000000000000       0x33 build-gcc/shim.o
+ .text          0x0000000000000000        0x0 build-gcc/start.o
+ .data          0x0000000000000000        0x0 build-gcc/start.o
+ .bss           0x0000000000000000        0x0 build-gcc/start.o
+ .note.GNU-stack
+                0x0000000000000000        0x0 build-gcc/start.o
+ .ARM.attributes
+                0x0000000000000000       0x1f build-gcc/start.o
+
+Memory Configuration
+
+Name             Origin             Length             Attributes
+STAGE2           0x00000000fe300000 0x0000000000010000 xrw
+*default*        0x0000000000000000 0xffffffffffffffff
+
+Linker script and memory map
+
+
+.text           0x00000000fe300000     0x1c00
+ *(.text.start)
+ .text.start    0x00000000fe300000       0x28 build-gcc/start.o
+                0x00000000fe300000                _start
+ *(.text .text.*)
+ .text.udelay   0x00000000fe300028       0x54 build-gcc/delay.o
+                0x00000000fe300028                udelay
+ .text.mdelay   0x00000000fe30007c       0x14 build-gcc/delay.o
+                0x00000000fe30007c                mdelay
+ .text.__aeabi_uidiv
+                0x00000000fe300090       0x32 build-gcc/div.o
+                0x00000000fe300090                __aeabi_uidiv
+ .text.__aeabi_uidivmod
+                0x00000000fe3000c2       0x38 build-gcc/div.o
+                0x00000000fe3000c2                __aeabi_uidivmod
+ .text.eq       0x00000000fe3000fa       0x1e build-gcc/fb.o
+ .text.after    0x00000000fe300118       0x16 build-gcc/fb.o
+ *fill*         0x00000000fe30012e        0x2 
+ .text.reply    0x00000000fe300130       0x40 build-gcc/fb.o
+ .text.okay     0x00000000fe300170        0xc build-gcc/fb.o
+ .text.fail     0x00000000fe30017c        0xc build-gcc/fb.o
+ .text.parse_hex
+                0x00000000fe300188       0x2e build-gcc/fb.o
+ *fill*         0x00000000fe3001b6        0x2 
+ .text.hex8     0x00000000fe3001b8       0x24 build-gcc/fb.o
+ .text.value    0x00000000fe3001dc       0x34 build-gcc/fb.o
+ .text.unlikely.rd32
+                0x00000000fe300210       0x16 build-gcc/fb.o
+ .text.hex_field
+                0x00000000fe300226       0x60 build-gcc/fb.o
+ .text.ka_field
+                0x00000000fe300286       0x24 build-gcc/fb.o
+ *fill*         0x00000000fe3002aa        0x2 
+ .text.pt_line  0x00000000fe3002ac       0x60 build-gcc/fb.o
+ .text.ensure_user_area
+                0x00000000fe30030c       0x28 build-gcc/fb.o
+ .text.unlikely.leave_boot_area
+                0x00000000fe300334       0x18 build-gcc/fb.o
+ .text.emmc_ready
+                0x00000000fe30034c       0x40 build-gcc/fb.o
+ .text.select_area.isra.5
+                0x00000000fe30038c       0x48 build-gcc/fb.o
+ .text.fb_loop  0x00000000fe3003d4      0xb10 build-gcc/fb.o
+                0x00000000fe3003d4                fb_loop
+ .text.keepalive_tick
+                0x00000000fe300ee4      0x154 build-gcc/keepalive.o
+                0x00000000fe300ee4                keepalive_tick
+ .text.led_set  0x00000000fe301038       0x40 build-gcc/led.o
+                0x00000000fe301038                led_set
+ .text.led_tick
+                0x00000000fe301078       0x98 build-gcc/led.o
+                0x00000000fe301078                led_tick
+ .text.diag_emmc_init
+                0x00000000fe301110       0x28 build-gcc/main.o
+                0x00000000fe301110                diag_emmc_init
+ .text.stage2_main
+                0x00000000fe301138       0x10 build-gcc/main.o
+                0x00000000fe301138                stage2_main
+ .text.str_eq   0x00000000fe301148       0x1e build-gcc/partitions.o
+ *fill*         0x00000000fe301166        0x2 
+ .text.part_reset
+                0x00000000fe301168       0x28 build-gcc/partitions.o
+                0x00000000fe301168                part_reset
+ .text.part_block0_word
+                0x00000000fe301190       0x14 build-gcc/partitions.o
+                0x00000000fe301190                part_block0_word
+ .text.part_load
+                0x00000000fe3011a4      0x13c build-gcc/partitions.o
+                0x00000000fe3011a4                part_load
+ .text.part_count
+                0x00000000fe3012e0        0xc build-gcc/partitions.o
+                0x00000000fe3012e0                part_count
+ .text.part_get
+                0x00000000fe3012ec       0x28 build-gcc/partitions.o
+                0x00000000fe3012ec                part_get
+ .text.part_find
+                0x00000000fe301314       0xdc build-gcc/partitions.o
+                0x00000000fe301314                part_find
+ .text.expired  0x00000000fe3013f0       0x2c build-gcc/sdhci.o
+ .text.wait_inhibit
+                0x00000000fe30141c       0x48 build-gcc/sdhci.o
+ .text.sdhci_set_clock
+                0x00000000fe301464       0x74 build-gcc/sdhci.o
+ .text.sdhci_reset.constprop.4
+                0x00000000fe3014d8       0x48 build-gcc/sdhci.o
+ .text.sdhci_recover
+                0x00000000fe301520       0x1c build-gcc/sdhci.o
+ .text.wait_int
+                0x00000000fe30153c       0x74 build-gcc/sdhci.o
+ .text.send_cmd
+                0x00000000fe3015b0       0xb0 build-gcc/sdhci.o
+ .text.mmc_raw_cmd
+                0x00000000fe301660       0x38 build-gcc/sdhci.o
+ .text.mmc_init
+                0x00000000fe301698      0x264 build-gcc/sdhci.o
+                0x00000000fe301698                mmc_init
+ .text.mmc_read_blocks
+                0x00000000fe3018fc       0xb8 build-gcc/sdhci.o
+                0x00000000fe3018fc                mmc_read_blocks
+ .text.mmc_write_blocks
+                0x00000000fe3019b4       0xbc build-gcc/sdhci.o
+                0x00000000fe3019b4                mmc_write_blocks
+ .text.mmc_read_ext_csd
+                0x00000000fe301a70       0x80 build-gcc/sdhci.o
+                0x00000000fe301a70                mmc_read_ext_csd
+ .text.mmc_boot_partition_sectors
+                0x00000000fe301af0       0x20 build-gcc/sdhci.o
+                0x00000000fe301af0                mmc_boot_partition_sectors
+ .text.mmc_select_partition
+                0x00000000fe301b10       0x6c build-gcc/sdhci.o
+                0x00000000fe301b10                mmc_select_partition
+ .text          0x00000000fe301b7c       0x84 build-gcc/shim.o
+                0x00000000fe301b7c                memset
+                0x00000000fe301b8c                memcpy
+                0x00000000fe301ba2                memmove
+                0x00000000fe301bd2                memcmp
+                0x00000000fe301bf0                strlen
+
+.glue_7         0x00000000fe301c00        0x0
+ .glue_7        0x00000000fe301c00        0x0 linker stubs
+
+.glue_7t        0x00000000fe301c00        0x0
+ .glue_7t       0x00000000fe301c00        0x0 linker stubs
+
+.vfp11_veneer   0x00000000fe301c00        0x0
+ .vfp11_veneer  0x00000000fe301c00        0x0 linker stubs
+
+.v4_bx          0x00000000fe301c00        0x0
+ .v4_bx         0x00000000fe301c00        0x0 linker stubs
+
+.iplt           0x00000000fe301c00        0x0
+ .iplt          0x00000000fe301c00        0x0 build-gcc/delay.o
+
+.rodata         0x00000000fe301c00      0x354
+ *(.rodata .rodata.*)
+ .rodata.digits
+                0x00000000fe301c00       0x11 build-gcc/fb.o
+ .rodata.fail.str1.1
+                0x00000000fe301c11        0x5 build-gcc/fb.o
+ .rodata.fb_loop.str1.1
+                0x00000000fe301c16      0x304 build-gcc/fb.o
+                                        0x314 (size before relaxing)
+ .rodata.okay.str1.1
+                0x00000000fe301f1a        0x5 build-gcc/fb.o
+ .rodata.pt_line.str1.1
+                0x00000000fe301f1f       0x17 build-gcc/fb.o
+ .rodata.stage2_build_id
+                0x00000000fe301f36       0x16 build-gcc/fb.o
+                0x00000000fe301f36                stage2_build_id
+ .rodata.part_find.str1.1
+                0x00000000fe301f4c       0x1c build-gcc/partitions.o
+ .rodata.prefix.4908
+                0x00000000fe301f4c        0x8 build-gcc/partitions.o
+
+.rel.dyn        0x00000000fe301f54        0x0
+ .rel.iplt      0x00000000fe301f54        0x0 build-gcc/delay.o
+
+.data           0x00000000fe301f58        0xc
+ *(.data .data.*)
+ .data.timer_running
+                0x00000000fe301f58        0x4 build-gcc/delay.o
+                0x00000000fe301f58                timer_running
+ .data.emmc_init_rc
+                0x00000000fe301f5c        0x4 build-gcc/main.o
+                0x00000000fe301f5c                emmc_init_rc
+ .data.part_load_rc
+                0x00000000fe301f60        0x4 build-gcc/main.o
+                0x00000000fe301f60                part_load_rc
+
+.igot.plt       0x00000000fe301f64        0x0
+ .igot.plt      0x00000000fe301f64        0x0 build-gcc/delay.o
+
+.bss            0x00000000fe301f80     0x8ac8
+                0x00000000fe301f80                __bss_start = .
+ *(.bss .bss.*)
+ .bss.cmd_buf   0x00000000fe301f80      0x200 build-gcc/fb.o
+ .bss.dl_got    0x00000000fe302180        0x4 build-gcc/fb.o
+ .bss.dl_size   0x00000000fe302184        0x4 build-gcc/fb.o
+ .bss.last_usb_error
+                0x00000000fe302188        0x4 build-gcc/fb.o
+ .bss.left_user
+                0x00000000fe30218c        0x1 build-gcc/fb.o
+ *fill*         0x00000000fe30218d       0x33 
+ .bss.read_buf  0x00000000fe3021c0      0x200 build-gcc/fb.o
+ .bss.resp_buf  0x00000000fe3023c0       0x40 build-gcc/fb.o
+ .bss.up_buf    0x00000000fe302400     0x8000 build-gcc/fb.o
+ .bss.write_limit
+                0x00000000fe30a400        0x4 build-gcc/fb.o
+ .bss.ka_armed  0x00000000fe30a404        0x4 build-gcc/keepalive.o
+ .bss.ka_busy   0x00000000fe30a408        0x4 build-gcc/keepalive.o
+                0x00000000fe30a408                ka_busy
+ .bss.ka_init_done
+                0x00000000fe30a40c        0x4 build-gcc/keepalive.o
+ .bss.ka_last   0x00000000fe30a410        0x4 build-gcc/keepalive.o
+ .bss.ka_rx0    0x00000000fe30a414        0x4 build-gcc/keepalive.o
+                0x00000000fe30a414                ka_rx0
+ .bss.ka_rx13   0x00000000fe30a418        0x4 build-gcc/keepalive.o
+                0x00000000fe30a418                ka_rx13
+ .bss.ka_rx_ok  0x00000000fe30a41c        0x4 build-gcc/keepalive.o
+                0x00000000fe30a41c                ka_rx_ok
+ .bss.ka_sent   0x00000000fe30a420        0x4 build-gcc/keepalive.o
+                0x00000000fe30a420                ka_sent
+ .bss.ka_spins  0x00000000fe30a424        0x4 build-gcc/keepalive.o
+ .bss.ka_timer_ok
+                0x00000000fe30a428        0x4 build-gcc/keepalive.o
+                0x00000000fe30a428                ka_timer_ok
+ .bss.code      0x00000000fe30a42c        0x4 build-gcc/led.o
+ .bss.done      0x00000000fe30a430        0x4 build-gcc/led.o
+ .bss.phase     0x00000000fe30a434        0x4 build-gcc/led.o
+ .bss.t0        0x00000000fe30a438        0x4 build-gcc/led.o
+ .bss.boot_stack_sp
+                0x00000000fe30a43c        0x4 build-gcc/main.o
+                0x00000000fe30a43c                boot_stack_sp
+ .bss.count     0x00000000fe30a440        0x4 build-gcc/partitions.o
+ .bss.loaded    0x00000000fe30a444        0x4 build-gcc/partitions.o
+ .bss.parts     0x00000000fe30a448      0x3c0 build-gcc/partitions.o
+ .bss.table_block
+                0x00000000fe30a808      0x200 build-gcc/partitions.o
+ .bss.virt      0x00000000fe30aa08       0x20 build-gcc/partitions.o
+ .bss.mmc_last_cmd
+                0x00000000fe30aa28        0x4 build-gcc/sdhci.o
+                0x00000000fe30aa28                mmc_last_cmd
+ .bss.mmc_last_error
+                0x00000000fe30aa2c        0x2 build-gcc/sdhci.o
+                0x00000000fe30aa2c                mmc_last_error
+ *fill*         0x00000000fe30aa2e        0x2 
+ .bss.mmc_last_r1
+                0x00000000fe30aa30        0x4 build-gcc/sdhci.o
+                0x00000000fe30aa30                mmc_last_r1
+ .bss.mmc_ocr   0x00000000fe30aa34        0x4 build-gcc/sdhci.o
+                0x00000000fe30aa34                mmc_ocr
+ .bss.mmc_rca   0x00000000fe30aa38        0x4 build-gcc/sdhci.o
+                0x00000000fe30aa38                mmc_rca
+ .bss.mmc_ready
+                0x00000000fe30aa3c        0x4 build-gcc/sdhci.o
+                0x00000000fe30aa3c                mmc_ready
+ .bss.mmc_step  0x00000000fe30aa40        0x4 build-gcc/sdhci.o
+                0x00000000fe30aa40                mmc_step
+ .bss.part_cfg  0x00000000fe30aa44        0x1 build-gcc/sdhci.o
+ .bss.part_cfg_valid
+                0x00000000fe30aa45        0x1 build-gcc/sdhci.o
+ *(COMMON)
+                0x00000000fe30aa48                . = ALIGN (0x8)
+ *fill*         0x00000000fe30aa46        0x2 
+                0x00000000fe30aa48                __bss_end = .
+
+/DISCARD/
+ *(.comment)
+ *(.note.*)
+ *(.eh_frame)
+ *(.ARM.attributes)
+ *(.ARM.exidx*)
+                0x0000000000000001                ASSERT ((((__bss_start & 0x3) == 0x0) && ((__bss_end & 0x3) == 0x0)), BSS must be word aligned)
+LOAD build-gcc/delay.o
+LOAD build-gcc/div.o
+LOAD build-gcc/fb.o
+LOAD build-gcc/keepalive.o
+LOAD build-gcc/led.o
+LOAD build-gcc/main.o
+LOAD build-gcc/partitions.o
+LOAD build-gcc/sdhci.o
+LOAD build-gcc/shim.o
+LOAD build-gcc/start.o
+OUTPUT(build-gcc/stage2.elf elf32-littlearm)

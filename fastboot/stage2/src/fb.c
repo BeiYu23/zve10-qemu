@@ -1,5 +1,9 @@
 #include "io.h"
 #include "optlog.h"
+
+/* Power-MCU heartbeat; without it the camera resets at ~245 s. */
+void keepalive_tick(void);
+static void ka_cs_txn(u32 port, u32 bit, unsigned char *rx, u32 *busy_out);
 #include "sdhci.h"
 #include "partitions.h"
 #include "usb_link.h"
@@ -274,6 +278,7 @@ static void single_download(const char *args)
         u32 n;
         if (want > 0x10000u)
             want = 0x10000u;
+        keepalive_tick();
         n = usb_bulk_recv(dl_buf + dl_got, want);
         if (!n)
             break;
@@ -380,6 +385,8 @@ static int sparse_validate(const struct partition *p, u32 *chunks_off)
 
     for (i = 0; i < total_chunks; i++) {
         u32 type, chunk_blks, total_sz, data_len;
+
+        keepalive_tick();
 
         if (off > dl_size || chunk_hdr_sz > dl_size - off)
             return -1;
@@ -598,6 +605,120 @@ static char *ka_field(char *p, const char *tag, u32 v)
     return p;
 }
 
+
+/*
+ * oem kacs:<port>:<bit>  -- probe one candidate XCS (chip select) pin.
+ *
+ * Darwin only answers when the chip select is asserted around the exchange
+ * (see docs/DARWIN_PORT.md).  The pin is unknown for this model, so this
+ * command configures one candidate as a GPIO output idling high, hands the
+ * three SIO pads back to the SIO block, runs one 0x80-byte transaction and
+ * reports the reply bytes.  Scanning port/bit combinations for rx13 == 1
+ * finds the right pin without guessing in an image build.
+ *
+ * GPIO layout (docs/DARWIN_PORT.md): base 0xF2910000, stride 0x100,
+ * DIR set/clr +0x04/+0x08, FUNC set/clr +0x34/+0x38, level set/clr +0x44/+0x48.
+ */
+/* SIO channel 0 (same map keepalive.c uses; private there, so repeat here). */
+#define SIO_REG   0xF2405000u
+#define SIO_DATA  0xF2405100u
+#define SIO_CTRL  (SIO_REG + 0x00u)
+#define SIO_CTRL2 (SIO_REG + 0x04u)
+#define SIO_R08   (SIO_REG + 0x08u)
+#define SIO_LEN   (SIO_REG + 0x0Cu)
+#define SIO_CFG   (SIO_REG + 0x10u)
+#define SIO_RL    (SIO_REG + 0x14u)
+#define SIO_RH    (SIO_REG + 0x18u)
+
+#define KA_GPIO_BASE   0xF2910000u
+#define KA_GPIO_STRIDE 0x100u
+#define KA_GPIO_DIR_S  (KA_GPIO_BASE + 0x04u)
+#define KA_GPIO_DIR_C  (KA_GPIO_BASE + 0x08u)
+#define KA_GPIO_FN_S   (KA_GPIO_BASE + 0x34u)
+#define KA_GPIO_FN_C   (KA_GPIO_BASE + 0x38u)
+#define KA_GPIO_HI     (KA_GPIO_BASE + 0x44u)
+#define KA_GPIO_LO     (KA_GPIO_BASE + 0x48u)
+#define KA_SIO_PINS    (1u | 2u | 8u)      /* bit0 clk, bit1 data, bit3 3rd */
+
+static void ka_cs_txn(u32 port, u32 bit, u8 *rx, u32 *busy_out)
+{
+    u32 gpio = KA_GPIO_BASE + KA_GPIO_STRIDE * port;
+    volatile u8 *p = (volatile u8 *)SIO_DATA;
+    u32 start, guard;
+
+    /* Idle high, drive, and keep XCS as GPIO. */
+    write32(KA_GPIO_FN_S, 1u << bit);
+    write32(KA_GPIO_DIR_S, 1u << bit);
+    write32(KA_GPIO_HI, 1u << bit);
+
+    if (port <= 7u) {
+        /* Return the three SIO pads to their hardware function. */
+        write32(gpio + 0x38u, KA_SIO_PINS);
+        write32(gpio + 0x08u, KA_SIO_PINS);
+    }
+
+    /* SIO setup, then the transaction with CS asserted. */
+    write32(SIO_CFG, 0x01000000u);
+    write32(SIO_RL, 0x04000000u);
+    write32(SIO_RH, 0);
+    write32(SIO_CTRL2, 0x68000000u);
+    write32(SIO_CTRL, 0xD8000000u);
+
+    write32(KA_GPIO_LO, 1u << bit);            /* assert */
+    mdelay(1);                                  /* 150 us minimum setup */
+
+    for (u32 i = 0; i < 0x80u; i++)
+        p[i] = (i == 0) ? 0xB0 : 0;
+    write32(SIO_R08, 0);
+    write32(SIO_LEN, (0x80u - 1u) << 24);
+    write32(SIO_CTRL, read32(SIO_CTRL) | 0x20000000u);
+
+    start = timer_ticks();
+    guard = 20000u;
+    *busy_out = 0;
+    while (read32(SIO_CTRL) & 0x20000000u) {
+        if (!--guard || (timer_running && timer_ticks() - start > 20000u)) {
+            *busy_out = 1;
+            break;
+        }
+    }
+
+    for (u32 i = 0; i < 0x80u; i++)
+        rx[i] = p[i];
+
+    write32(KA_GPIO_HI, 1u << bit);            /* deassert */
+    mdelay(1);                                  /* hold */
+}
+
+static void cmd_kacs(const char *args)
+{
+    u32 port = 0, bit = 0;
+    const char *colon;
+    u8 rx[8];
+    u8 full[0x80];
+    u32 busy = 0;
+    char line[64];
+    char *q = line;
+
+    if (!parse_hex(args, &port)) { fail("usage: oem kacs:port:bit"); return; }
+    colon = args;
+    while (*colon && *colon != ':') colon++;
+    if (*colon != ':') { fail("usage: oem kacs:port:bit"); return; }
+    if (!parse_hex(colon + 1, &bit)) { fail("bad bit"); return; }
+    if (port > 63u || bit > 31u) { fail("range"); return; }
+
+    ka_cs_txn(port, bit, full, &busy);
+    rx[0] = full[0]; rx[1] = full[13];
+
+    q = ka_field(q, "port=", port);
+    q = ka_field(q, "bit=", bit);
+    q = ka_field(q, "rx0=", rx[0]);
+    q = ka_field(q, "rx13=", rx[1]);
+    q = ka_field(q, "busy=", busy);
+    *q = 0;
+    okay(line);
+}
+
 static void cmd_ka_probe(void)
 {
     char line[64];
@@ -711,6 +832,7 @@ static void dispatch(const char *cmd)
         else { opt_str("TX FAIL"); fail("init failed"); }
     }
     else if(eq(cmd,"oem ka")) cmd_ka_probe();
+    else if((rest=after(cmd,"oem kacs:"))) cmd_kacs(rest);
     else if(eq(cmd,"oem partition")) cmd_oem_partition();
     else if((rest=after(cmd,"oem read-block:"))) read_block(rest);
     else if((rest=after(cmd,"oem upload:"))) upload(rest);
@@ -726,6 +848,7 @@ static void dispatch(const char *cmd)
 void fb_loop(void)
 {
     for (;;) {
+        keepalive_tick();
         usb_bulk_enable_pending();
         if(usb_bulk_error) {
             last_usb_error=(u32)usb_bulk_error;
