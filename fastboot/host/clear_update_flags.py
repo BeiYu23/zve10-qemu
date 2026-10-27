@@ -2,7 +2,7 @@
 """Clear the SD-update trigger flags so the camera stops re-entering the updater.
 
 /setting (nflasha2) is FAT12: bps=512 spc=32 rsvd=1 nfats=1 rootent=512 fatsz=4
-  base LBA 0x6000, root dir 0x6005, data area 0x6025
+  base LBA 0x4000, root dir 0x4005, data area 0x4025
   updater/ = cluster 5 -> LBA 0x6085  (confirmed against our nflasha2 backup)
 
 A dirent is removed the FAT way: 0xE5 into its first name byte, plus the same
@@ -24,9 +24,10 @@ from bootstrap import Device, wait_for_device, download
 from sparse_block import build_single_block, BLK
 from read_updater_log import upload_blocks
 
-BASE = 0x6000
+PART_START_BYTES = 0x00800000   # nflasha2
+BASE = PART_START_BYTES // 512  # 0x4000
 ROOT_LBA = BASE + 5
-UPDATER_LBA = BASE + 0x25 + (5 - 2) * 32      # 0x6085
+UPDATER_LBA = BASE + 0x25 + (5 - 2) * 32      # 0x4085
 SPC = 32
 BPS = 512
 UPDATER_BYTE_OFF = UPDATER_LBA * 512
@@ -108,6 +109,18 @@ def main(argv):
         if a.list or not a.delete:
             return 0
 
+        # Refuse to touch anything that does not look like /setting/updater.
+        # A stale cluster guess would otherwise delete dirents in some other
+        # directory that happens to hold a file called "mode".
+        names = {(e['name'] or e['short']).lower() for e in ents}
+        identity_ok = bool(names & {'dat4', 'dat2', 'dat3', 'uincomp', 'comp',
+                                    'mode', 'mode1', 'mode5', 'mode6'})
+        if not identity_ok:
+            raise SystemExit(
+                'REFUSING: cluster 5 does not look like /setting/updater '
+                '(entries: %s). Re-derive the cluster before writing.'
+                % (', '.join(sorted(names)) or 'empty'))
+
         want = [x.strip() for x in a.delete.split(',') if x.strip()]
         hits = []
         for w in want:
@@ -131,14 +144,20 @@ def main(argv):
                 blocks.setdefault(base, set()).add(absb - base)
 
         for base, offs in sorted(blocks.items()):
+            # base is an ABSOLUTE byte offset; build_single_block wants an
+            # offset inside the partition, because stage2 starts the sparse
+            # image at p->start_bytes.
+            if base < PART_START_BYTES:
+                raise SystemExit('block 0x%X is before the partition' % base)
+            rel = base - PART_START_BYTES
             orig = fetch(d, base // 512, BLK // 512)
             Path('/tmp/updater_block_0x%X.bin' % base).write_bytes(orig)
             mod = bytearray(orig)
             for o in sorted(offs):
                 mod[o] = 0xE5
-            img = build_single_block(base, bytes(mod), part_bytes)
-            print('  block 0x%X: clearing %d byte(s), sparse image %d B'
-                  % (base, len(offs), len(img)))
+            img = build_single_block(rel, bytes(mod), part_bytes)
+            print('  block: absolute 0x%X, in-partition 0x%X, clearing %d byte(s), image %d B'
+                  % (base, rel, len(offs), len(img)))
             download(d, img)
             d.require('flash:nflasha2')
             back = fetch(d, base // 512, BLK // 512)
