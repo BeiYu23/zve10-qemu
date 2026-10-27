@@ -5501,3 +5501,42 @@ PC is at cache_grow+0x12c/0x328
 3. 若确认是换算基址问题，优先让 `dmm.ko` 看到的映射与真机一致（而非改模块）。
 
 `GRM2` 无记录、`/dev/dmpgles2` 未打开、`/dev/stream` 未变，**菜单未显示，目标未完成**。
+
+---
+
+## 133. 2026-10-27 ★ 换用 Sony 原版内核源码后：14 模块全通、bootin 起来了、notifyDraw 已触发
+
+### 133.1 关键更正
+
+之前用我们自己的 `a7c-kernel` 树（打对方补丁时 `fs/proc/root.c` 有 -8 行偏移），
+`dmm.ko` 一加载就崩。改用 **`setup.md` 指定的 Sony 原包**
+（`ZV-E10_Ver.2.02/linux-kernel.tar.gz`）后，补丁**干净应用、零偏移**，
+`dmm.ko` 立刻正常。⇒ 之前的崩溃是**内核源码版本不同**造成的，不是机型/内存布局。
+
+### 133.2 现在的运行结果（对方机型 `-M zve10`、对方 cmdline）
+
+```
+MODULE_END devno/dmac/osal_utm/osal_uipc/dma330_stub/backup/utimer/osal_ulogio
+MODULE_END kikilog/stream/stream2/dmm/grm_ma/grm_gles     ← 全部 status=0
+BOOTIN_PID=97
+UI_OBSERVE library.loaded=0x1
+UI_OBSERVE native.menu.views.base=0x30810000
+UI_OBSERVE notifyDraw.enter / notifyDraw.return
+UI_OBSERVE FONT.request / LDEC.cpu.decoded=0x1f80 / FONT.multiline.complete
+```
+
+App 走的是原厂 `bootin.elf target=qemu` 链，`libuiobserve.so` 已装好，
+**绘图入口 `notifyDraw` 被调用，字体与图像解码都在跑**。
+
+### 133.3 剩余卡点：线程退出时内核 oops，帧未完成
+
+```
+PC is at ida_remove+0x7c/0x10c
+[<60298b98>] (ida_remove+0x0/0x10c) from [<602284e8>] (pde_put+0x54/0x8c)
+```
+
+即 `/proc` pde 释放路径（`pde_put → ida_remove`）空指针。对方补丁确实动了
+`fs/proc/generic.c` / `fs/proc/root.c`，需核对该 oops 是否与他们修的那处相关；
+`notifyDraw` 只出现 3 次，`UI_CAPTURE_META/READY` 未出现 ⇒ **还没有完成一帧**。
+
+`GRM2` 无记录、`/dev/dmpgles2` 未打开、`/dev/stream` 未变，**菜单未显示，目标未完成**。
