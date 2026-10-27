@@ -156,3 +156,25 @@ App 仍在跑初始化（`InfraFsys_Init`/`infra_lanc_init` …），本轮未�
    * 通过 PLT/GOT 替换（只能替换导入符号）；
    * 或找到 InfraInput 内部保存回调/事件队列的**全局变量**，直接写数据触发，
      完全不碰代码段。
+
+## 148. 2026-10-28 结论：不做代码补丁，改走"读指针 + 直接调用"
+
+试过的全部失败（App 都停在 `infra_lanc_init`）：替换式 hook、trampoline 链式调用、
+修正 trampoline 的 Thumb 位、静默 capture。而完全 no-op 的同一套 preload 库**能正常出菜单**。
+
+⇒ 结论：**在这棵 3.0.27 + Sony 原库上直接改写 `.text` 风险过高**（Thumb-2 指令边界、
+GOT/PLT 与共享页都在和我们作对）。放弃补丁方案。
+
+### 新方案（只读 + 调用）
+
+1. `InfraInput::GetInstance()`（libObj 导出，0x8c22a0）可在我们的库里**直接 dlsym 调用**，拿到单例；
+2. 单例对象里保存着 App 注册的回调（`SetCallback` 反汇编显示它会往对象 +0x1c/+0x20 附近存 ctx/fn）；
+3. 我们的线程只**读取**这些字段，确认指针落在 libObj 的代码区间后，直接调用它注入事件
+   —— 全程不写任何代码页；
+4. 事件字节仍通过数据驱动（`#M <hex>`）在运行时试布局。
+
+### 另外要查的输入来源
+
+libObj 里有 `/dev/gpio`、`EXEC_POWERON_REC_KEYSCAN_STOP` 等字符串，说明真机是
+**keyscan（另一进程）+ InfraInput** 的结构。如果确认 App 最终从某个 fd 拿键，
+用"喂 fd"的方式注入会比任何 hook 都稳。
