@@ -5318,3 +5318,29 @@ IMOPEN OK /usr/lib/libObj.so
 再跑一次。RT 重入锁很可能就来自原厂 init 额外加载的那些模块。
 
 `GRM2` 无记录、`/dev/dmpgles2` 未打开、`/dev/stream` 未变，**菜单未显示，目标未完成**。
+
+---
+
+## 128. 2026-10-27 下一步已备好：把 init 换成对方的最小模块集
+
+新增 `emulator/menu/init-ui-adapted.sh`（仿 `chocotan/zve10-qemu` 的 `init-ui.sh`，改成本机设备名）：
+
+```
+mount proc/sys/devtmpfs
+mount -t ext2 /dev/dnflasha7 /rootfs
+mount -t ext2 /dev/dnflasha15 /usr   (失败则 -o no-compress)
+load /kmod/devno.ko /kmod/dmac.ko /usr/kmod/osal_utm.ko /usr/kmod/osal_uipc.ko
+     /kmod/dma330_stub.ko /usr/kmod/backup.ko Backup_load=1 /usr/kmod/utimer.ko
+     /usr/kmod/osal_ulogio.ko ... /usr/kmod/dmm.ko DmmConfig=... /usr/kmod/grm_ma.ko /usr/kmod/grm_gles.ko
+mknod uipc 251 207 / backup 251 208 / dmpgles2 248 29 / stream 249 7 / stream2 249 8 / ldec 251 205
+/usr/bin/bootin.elf 'target=qemu ' dmode=3 amode=normal
+```
+
+安装方式（未执行，留作下一步）：把该脚本写进 `initrd_q4.img` 的 `/sbin/init`，
+并用当前内核 cmdline（`init=/sbin/init`）启动；`dma330_stub.ko` 需按对方源码
+（`source/modules/dma330-stub`）用本内核构建目录编译后放进 `/kmod`。
+
+**验证目标**：若 rtmutex 重入 BUG 消失，即证明它来自原厂 init 额外加载的模块；
+若仍在，说明触发点在 14 个模块或 bootin 内部。
+
+`GRM2` 无记录、`/dev/dmpgles2` 未打开、`/dev/stream` 未变，**菜单未显示，目标未完成**。
