@@ -64,16 +64,28 @@ python3 diagnose.py
 
 ---
 
-## 方案 B：fastboot 刷 /usr（A 验证了 bind 链路没问题后再做）
+## 方案 B：fastboot 刷 /usr
+
+**（payload 结构、协议一致性、写入计划均已离线验证；预计 317 次 ≤768 KiB 写入，1~2 分钟）**
 
 ```bash
 cd /root/fw/oss/fastboot
+
+# 0) 先演练（不碰硬件）
+python3 host/flash_partition.py --part nflasha15 \
+  --image /mnt/build/nflasha15_v9.ext2 \
+  --part-start 0x2D800000 --chunk-kb 768 --full --plan-only
+#   期望: 3801 blocks = 237.6 MiB, 1 contiguous run, 317 writes
+
+# 1) Pico 注入 stage1
 python3 pico/inject_payload.py --port /dev/ttyACM0 --file prebuilt/stage1.bin --duration 600
+
+# 2) 刷写（每 30 块校验一次）
 python3 host/flash_partition.py --part nflasha15 \
   --image /mnt/build/nflasha15_v9.ext2 \
   --part-start 0x2D800000 --chunk-kb 768 --full --verify-every 30
 ```
-恢复：刷回 `/root/fw/zve10_backup/nflasha15.img`
+恢复：刷回 `/root/fw/zve10_backup/nflasha15.img`（同样先加 `--plan-only` 演练）
 
 **判据（刷完开机后）：**
 ```bash

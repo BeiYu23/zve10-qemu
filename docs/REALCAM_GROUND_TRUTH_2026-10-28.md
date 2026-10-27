@@ -104,3 +104,31 @@ KEYINJECT hooked base=0xa283000        ← InfraInput::SetCallback 已打补丁
 App 仍在跑初始化（`InfraFsys_Init`/`infra_lanc_init` …），本轮未见崩溃。
 下一步：给它足够时间跑到菜单，再通过控制串口发 `#K<code>,<down>` 触发 `InfraInput` 回调，
 观察画面变化。
+
+---
+
+## 146. 2026-10-28 按键注入：hook 装上但控制台通道与稳定性有问题
+
+### 146.1 已完成的工程改动
+
+* 注入库改为**数据驱动**：控制台命令 `#S`（打印状态）、`#K <code> <down>`、`#M <hexbytes>`
+  —— 事件结构不再编进代码，可以直接在运行时试各种字节布局；
+* 只让**找到 libObj 基址的那个进程**（App）去读控制台，避免 init/sh 抢走输入；
+* 新增 `/mnt/build/run_ui.sh`（等价于对方启动脚本，但 `-serial unix:` 便于注入）
+  和 `consd.py`（单连接的串口守护：读日志 + 从 `cmd.txt` 取命令写入）；
+* `KEYINJECT hooked base=0xa567000`、`tty open fd=8` 都出现了。
+
+### 146.2 当前问题
+
+1. 串口日志在 `tty open` 之后就停住（两次运行都停在同样大小 25707 字节），
+   **疑似 hook（对 `Infobase+0x8c2824` 打 thumb 跳转）后 App 停摆**；
+2. 通过 unix socket 发的 `#S` 没有被读到（无 `KEYINJECT read` 日志）。
+
+### 146.3 下一轮计划
+
+1. 先验证"是否 hook 破坏了 App"：加环境变量开关，不 hook 跑一次 → 应能画出菜单；
+2. 若确认是 hook 破坏，改用更安全的注入方式：
+   * 不 patch 代码，而是 hook `InfraInput::SetCallback` 的 **PLT/GOT** 表项；
+   * 或直接调用 App 注册的回调（先通过只读手段拿到指针，例如解析 libObj 里保存回调的全局变量）；
+3. 串口方向改用**内核 kmsg 作为输入**不可行，改为：把控制命令写进 SD 卡文件（SD 已可用），
+   由注入库轮询读取 —— SD 迭代通道已打通（`/mnt/sd` 挂载于 `/usr` 分区）。
