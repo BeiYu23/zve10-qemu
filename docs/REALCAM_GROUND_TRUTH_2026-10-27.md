@@ -5621,3 +5621,49 @@ Process ps (pid: 220)  → sys_getdents64 → pde_put → ida_remove 空指针
 3. 事件到达后 `GEMINI.total.*` 应非零 → `export_ready=1` → 才能导出 PNG。
 
 `GRM2` 无记录、`/dev/dmpgles2` 未打开、`/dev/stream` 未变，**菜单未显示，目标未完成**。
+
+---
+
+## 136. 2026-10-27 定位到等待点：libObj+0x7c0401（队列/引擎排空等待）
+
+### 136.1 关键换算
+
+日志中 `hooks.installed.base=0x98f5000` 即 **libObj 基址**，因此
+
+```
+thread.cond_wait.caller = 0xa15b401  →  libObj + 0x7c0401（thumb）
+```
+
+反汇编该处（`libObj.so`，2.03）：
+
+```
+7c03f6: str r0,[r7,#20]
+7c03f8: ldr.w r0,[r0,#1876]      @ *(+0x754) = 某引擎/通道对象
+7c03fc: add.w r3,r0,#6144        @ r3 = obj + 0x1800
+7c0400: ldr r5,[r3,#20]          @ r5 = *(obj+0x1814)   ← 队列计数
+7c0402: cmp r5,#1
+7c0404: bls 7c0410               @ <=1 直接返回
+7c0406: add.w r0,r0,#6208; adds r0,#56   @ r0 = obj+0x1878（条件变量/信号量）
+7c040c: bl  7858e0               @ ← 真正阻塞在这里
+```
+
+⇒ **App 在等 `obj+0x1814` 这个队列/计数的排空**（引擎命令队列）。
+
+### 136.2 与 QEMU 侧证据一致
+
+* 对方机型只对 **init fence** 造完成中断：
+  `shortcut: only this captured startup fence completes; other GPU packets need a verified decoder`；
+* 我们的日志里 11 个 GPE 包**全部是同一条 init 包**，之后再无 GPU 包；
+* 因此引擎队列无法由"硬件"排空，而对方的 `libuiobserve` 只做**观测**（`ui_cond_wait_impl`
+  只是记录 caller/condition 后调用原生 `pthread_cond_wait`，不注入唤醒），
+  故队列若真非空就会永久阻塞。
+
+### 136.3 下一轮（拿到确定答案的做法）
+
+1. 用对方脚本透传参数起 QEMU：`./start-zve10-ui.sh -s`（不改对方代码），
+   在 `libObj+0x7c0400` 下断，读 `r0`（即 obj），dump `obj+0x1800` 起 0x100 字节，
+   看队列计数/生产者/消费者是谁；
+2. 依此判断该由哪个设备/回调排空，再决定下一步；
+3. 目标仍是 `GEMINI.total.solid/textrect` 非零 + `export_ready=1` → 出 PNG。
+
+`GRM2` 无记录、`/dev/dmpgles2` 未打开、`/dev/stream` 未变，**菜单未显示，目标未完成**。
