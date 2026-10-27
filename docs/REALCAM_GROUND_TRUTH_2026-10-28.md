@@ -282,3 +282,22 @@ libObj 里有 `/dev/gpio`、`EXEC_POWERON_REC_KEYSCAN_STOP` 等字符串，说�
 3. 同时查 `osal_snd_msg` 路线：如果 InfraInput 的输入线程是靠 osal 队列唤醒的，
    直接从我们的库里调用导出的 `osal_snd_msg(queue, msg)` 投递一个合成事件，
    可能比调回调更贴近真实路径（还需要 `_InfraInputEvent` 的消息格式）。
+
+## 153. 2026-10-28 控制通道实验：unix socket 能读不能写，pty 也不通
+
+| 通道 | 读（guest→host） | 写（host→guest） |
+|---|---|---|
+| `-serial unix:...` + 单连接守护 | ✅ 正常（日志完整） | ❌ App 的 `/dev/ttyAM0` read 永远收不到（无 `first-read` 日志） |
+| `-serial pty` | ⚠️ 只读到 5 字节 | 未验证 |
+
+推测原因：QEMU 的 serial0 就是**内核控制台**，console 输入被 tty 层/其它进程（init-ui.sh 里
+的 `sh`）竞争消费；App 进程里的读线程拿不到字节。
+
+### 候选方案（下一轮按顺序试）
+
+1. **用相机 initramfs 起一个交互 shell**（对方 `init-shell.c`）验证 `-serial unix` 的写入是否
+   真能到 guest —— 这能一次判定"通道本身通不通"，与 App 无关；
+2. 若通道本身是通的，就在 App 侧改用**独占**方式读：先 `tcsetattr` 关掉回显/规范模式，
+   并在 App 启动前把 shell 的 stdin 关掉；
+3. 若通道本身不通，改走 **SD 卡命令文件**（hotplug + 轮询），或给"我们自己的机型副本"
+   增加第二路串口（不改他们的 `zve10.c`）。
