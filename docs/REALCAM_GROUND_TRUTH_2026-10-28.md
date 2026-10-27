@@ -414,3 +414,34 @@ ViewBaseForMR::attachEventId(int)                      0x436807
 2. 用 gdb 对"注册节点 +0x1c"下**硬件写/读观察点**，在调用 `RmCallback` 时看谁读它 —— 
    找到真正的消费者路径；
 3. 或直接调用 view 层入口（`#Q`）模拟按键，观察画面 SHA256 是否变化。
+
+## 158. 2026-10-28 ★ 找到"输入状态查询"的真实机制：同步 osal 消息
+
+反汇编 `InfraInput` 内部的 `0x8c1740`：
+
+```
+osal_valloc_msg_wait(...)      ← 申请消息
+osal_snd_sync_msg(qid, msg)    ← ★ 同步问"输入服务"要状态
+osal_free_msg(...)
+```
+
+⇒ App 是**主动向另一个服务同步询问输入状态**的，不是等硬件中断。
+这意味着我们可以在 **PLT 层冒充那个服务**（`osal_snd_sync_msg` 是导入符号，
+LD_PRELOAD 拦截即可，完全不用改代码段），给它回一个"按键按下"的状态。
+
+### 已做
+
+* 新增 `libsynclog.so`：拦截 `osal_snd_sync_msg`，把**每个不同的 qid** 和前 5 个消息字
+  打到日志（`SYNC qid=... w0..w4=...`）；
+* 已加入 `/etc/ld.so.preload`（与注入库并存）。
+
+### 状态
+
+本次运行日志只有 10 KB、`export_ready=0`（还没画到菜单），暂未出现 `SYNC` 行 ——
+需要更长运行才能抓到。
+
+### 下一轮
+
+1. 跑长一点（或先不加新库做对照），确认 `SYNC` 行的 qid；
+2. 找到输入服务的 qid 后，在拦截器里**回填按键状态**并返回成功，观察画面是否变化；
+3. 若 App 用 `osal_snd_msg`（异步）而非 sync，同样拦截。
