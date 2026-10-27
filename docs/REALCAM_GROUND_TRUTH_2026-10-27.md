@@ -5344,3 +5344,44 @@ mknod uipc 251 207 / backup 251 208 / dmpgles2 248 29 / stream 249 7 / stream2 2
 若仍在，说明触发点在 14 个模块或 bootin 内部。
 
 `GRM2` 无记录、`/dev/dmpgles2` 未打开、`/dev/stream` 未变，**菜单未显示，目标未完成**。
+
+---
+
+## 129. 2026-10-27 最小 init 第一次尝试：initrd 里没有 shell，脚本 init 直接 panic
+
+### 129.1 结果
+
+把 `init-ui-adapted.sh` 装成 initrd 的 `/sbin/init`、并把 `dma330_stub.ko` 放进 `/kmod` 后启动：
+
+```
+[<603913f0>] (panic+0x7c/0x1ac) from [<60391104>] (init_post+0xe0/0x110)
+kernel BUG at kernel/panic.c:106!
+```
+
+`init_post` 走 panic 分支 = **内核无法 exec init**。
+
+### 129.2 原因（已核实）
+
+我们的 initrd 里**没有任何 shell**：
+
+```
+/bin/sh      缺失
+/bin/busybox 缺失
+/sbin/sh     缺失
+```
+
+而脚本 init 需要解释器 → exec 失败 → `init_post` panic。
+对方的 `init-ui.sh` 之所以能用，是因为他们的 **cpio initramfs 里带了完整 rootfs（含 /bin/sh）**。
+
+### 129.3 两条出路
+
+| 方案 | 说明 | 代价 |
+|---|---|---|
+| A. 给 initrd 加 shell | 从 rootfs 分区拷 busybox/sh 及依赖 | initrd 仅剩 131 KB 空间 → 必须扩大 initrd（`initrd=0x700000,8M` 需改 16M 并重建） |
+| B. 写静态 C init（推荐） | 仿对方 `init-shell.c`，用 syscall 做 mount/execve，无需 shell | 一次性编译，无空间问题 |
+
+**推荐 B**：一个 ~100 行的静态 C init，顺序执行
+`mount(proc/sys/devtmpfs)` → `mount(dnflasha7→/rootfs, dnflasha15→/usr)` →
+`execve(insmod, 14 个模块)` → `execve(bootin.elf, 'target=qemu ', dmode=3, amode=normal)`。
+
+`GRM2` 无记录、`/dev/dmpgles2` 未打开、`/dev/stream` 未变，**菜单未显示，目标未完成**。
