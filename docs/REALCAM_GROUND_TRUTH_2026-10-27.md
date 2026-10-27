@@ -5272,3 +5272,49 @@ BUG_ON(rt_mutex_owner(lock) == self);   /* rt_spin_lock_slowlock 内 */
 3. 或直接改用对方的内核源码 + 补丁重建内核，消除配置漂移（代价大但一步到位）。
 
 `GRM2` 无记录、`/dev/dmpgles2` 未打开、`/dev/stream` 未变，**菜单未显示，目标未完成**。
+
+---
+
+## 127. 2026-10-27 按方案 A 重建内核：编译成功、能启动，但同样的 rtmutex BUG 仍在
+
+### 127.1 做了什么
+
+以我们这棵 Sony 源码树为基底（`/mnt/build/kz-src`，rsync 自 `a7c-kernel/linux`），
+应用对方 `source/kernel/0001-zve10-qemu.patch`（干净应用，仅 `fs/proc/root.c` 有 -8 行偏移），
+用对方 `source/kernel/zve10_defconfig` 配置并编译：
+
+```
+Linux version 3.0.27_nl-rt106+ (gcc 6.4.0) #1 SMP PREEMPT RT
+Kernel: arch/arm/boot/Image is ready   (3,589,252 B)
+CONFIG_PREEMPT_RT_FULL=y  CONFIG_ARCH_CXD900X0=y
+```
+
+过程中解决了两个环境问题（记录备查）：
+* `make O=` 的 kconfig 解析器需要 `kz-build/scripts/kconfig/{zconf.tab.c,zconf.hash.c,lex.zconf.c}`，
+  新版 bison 生成的文件与 3.0.27 不兼容 → 用源码树里的 `*_shipped` 版本放进 **O= 目录**；
+* 源码树不能带历史构建产物 → 先 `make mrproper`。
+
+### 127.2 启动结果：同样的 rtmutex BUG
+
+用新 `Image` 启动我们那张（已换成 `bootin.elf` 启动链的）镜像：
+
+```
+EXECVE /sbin/modprobe
+IMOPEN OK /usr/lib/libObj.so
+→ kernel BUG at /mnt/build/kz-src/kernel/rtmutex.c:738!
+```
+
+⇒ **排除"内核配置/补丁不同"这一解释**：对方的内核源码+配置在同一现场也触发同一条断言。
+所以触发条件是**运行期装配差异**，不是内核本身。
+
+### 127.3 因此剩下的差异只有两处
+
+1. **模块集合与顺序**：对方只加载 14 个模块（`init-ui.sh` 显式列表，含 `dma330_stub`），
+   而我们走原厂 `/sbin/init`，会加载 ~35 个（input/indctr/usbg/…）。
+2. **init 本体**：对方用 `init-ui.sh`（手写）而不是原厂 init；并且用 `prepare-ui-profile.py`
+   改过 `libIMDB.so`（只清 10 个 USB 模块、保留 appFw/libgrm/libuxengine）。
+
+下一步：把我们镜像的 init 换成对方的 `init-ui.sh` + 他们的模块列表（这是方案 A 的第 3 项），
+再跑一次。RT 重入锁很可能就来自原厂 init 额外加载的那些模块。
+
+`GRM2` 无记录、`/dev/dmpgles2` 未打开、`/dev/stream` 未变，**菜单未显示，目标未完成**。
