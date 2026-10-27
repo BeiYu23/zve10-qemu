@@ -5585,3 +5585,39 @@ Process ps (pid: 220)  → sys_getdents64 → pde_put → ida_remove 空指针
 3. 唤醒后 `GEMINI.total.solid/textrect` 才会非零，`export_ready` 才会变 1，才能导出 PNG。
 
 `GRM2` 无记录、`/dev/dmpgles2` 未打开、`/dev/stream` 未变，**菜单未显示，目标未完成**。
+
+---
+
+## 135. 2026-10-27 深挖：菜单请求已成功，卡在"等事件"而非"画错"
+
+### 135.1 关键证据（把"没画"缩小到"没人唤醒"）
+
+* `native.menu.root` / `native.menu.request.return=0x1` —— 对方 hook 的
+  "打开原厂菜单"入口**调用成功**（`try_original_menu()` 全部前置条件都满足）；
+* GPE 初始化栅栏完成：`ZVE10_GPE_INIT_FENCE irq=76 token=12345678`，
+  11 个包全部是同一条 init 包（对方模型注释也写明只完成这一条）；
+* 呈现通路正常：`GPE.present.destination=0x22c48000`、`GPE.present.copied=0x96000`
+  （落在对方 `map_surface` 允许的 `0x20000000–0x28000000` 区间内）；
+* 表面/字体：`GPE.clear.cleared=0x96000`、`FONT.total.rasters=0x74`、
+  `FONT.raster.nonzero_bytes=0xb36`（字体真有像素）；
+* **`GEMINI.total.solid/textrect/line/quad = 0`** —— 一条几何绘制都没有；
+* 之后 UI 线程：`thread.cond_wait.caller=0xa15b401`、`condition=0xa55a0`，不再醒。
+
+⇒ 结论：**菜单打开调用成功，但菜单内容的绘制命令从未发出**，线程在等一个事件。
+
+### 135.2 已排除
+
+* 不是机型/内存：reserve area、present 目标地址、map_surface 区间都正确；
+* 不是字体/资源：`/tmp/images` 三个字体、`/usr/share/app` 308 个 .uxc、字体请求全 `0x1`；
+* 不是菜单触发：`native.menu.root` + `request.return=0x1` 已出现；
+* 不是 `ps` 的 procfs oops：崩的是 `ps` 自己（pid 220），不是 pid 103 的 App。
+
+### 135.3 下一轮要做
+
+1. 解析 `thread.cond_wait.caller=0xa15b401`（thumb）落在哪个模块：需要 App 的 maps；
+   对方 observe 只打印 `hooks.installed.base` 与 `native.menu.views.base`，
+   可用 `native.menu.views.base`(0x30cbe000) 与 libObj 基址关系反推；
+2. 判定等待的是哪一路事件（GPE 完成中断 / stream 帧 / ulogio）；
+3. 事件到达后 `GEMINI.total.*` 应非零 → `export_ready=1` → 才能导出 PNG。
+
+`GRM2` 无记录、`/dev/dmpgles2` 未打开、`/dev/stream` 未变，**菜单未显示，目标未完成**。
