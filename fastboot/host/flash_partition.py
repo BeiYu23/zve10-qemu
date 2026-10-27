@@ -58,6 +58,18 @@ def sparse_run(offset, data, part_bytes):
     return struct.pack('<IHHHHIIII', MAGIC, 1, 0, 28, 12, BLK, total, len(out), 0) + b''.join(out)
 
 
+def fetch_in_part(d, part_start_lba, byte_off, nbytes):
+    """Read nbytes at in-partition byte_off.
+
+    fetch() takes an absolute LBA, so the partition start has to be added here.
+    Mixing the two up silently reads the wrong area (it reads sector 0 of the
+    whole device, which is the partition table) and looks like a mismatch.
+    """
+    if byte_off % 512 or nbytes % 512:
+        raise ValueError('in-partition read must be 512-aligned')
+    return fetch(d, part_start_lba + byte_off // 512, nbytes // 512)
+
+
 def fetch(d, lba, nsec):
     out, left, cur = b'', nsec, lba
     while left > 0:
@@ -77,6 +89,9 @@ def main(argv):
     ap.add_argument('--block-kb', type=int, default=64,
                     help='granularity for deciding what changed (default 64 KiB)')
     ap.add_argument('--resume-file', default='/tmp/flash_progress.json')
+    ap.add_argument('--part-start', type=lambda v: int(v, 0), required=False,
+                    help='partition start in BYTES (from oem partition); required '
+                         'whenever a reference is used, so reads hit the right LBA')
     ap.add_argument('--plan-only', action='store_true')
     a = ap.parse_args(argv)
 
@@ -134,6 +149,20 @@ def main(argv):
         print('partition: %s = %d B' % (a.part, part_bytes))
         if len(target) > part_bytes:
             raise SystemExit('image larger than partition')
+        if a.part_start is None:
+            if ref is not None:
+                raise SystemExit('--part-start is required with --reference '
+                                 '(bytes, from `oem partition`)')
+            part_start_lba = 0
+        else:
+            if a.part_start % 512:
+                raise SystemExit('--part-start must be 512-aligned')
+            part_start_lba = a.part_start // 512
+        # sanity: the sparse image addresses are partition-relative, so they
+        # must fit inside the partition we resolved.
+        if len(target) > part_bytes:
+            raise SystemExit('image does not fit the partition')
+        print('part-start: 0x%X (LBA 0x%X)' % (a.part_start or 0, part_start_lba))
 
         # --- address proof -------------------------------------------------
         # Before writing anything, confirm the partition really holds the
@@ -150,7 +179,7 @@ def main(argv):
             bad = 0
             for s_idx, e_idx in samples:
                 off = s_idx * bgran
-                got = fetch(d, off // 512, bgran // 512)
+                got = fetch_in_part(d, part_start_lba, off, bgran)
                 want = ref[off:off + bgran]
                 if got != want:
                     print('  MISMATCH at 0x%X: partition does not hold the reference here' % off)
@@ -174,7 +203,7 @@ def main(argv):
                 raise SystemExit('piece too large for download buffer: %d B' % len(img))
             download(d, img)
             d.require('flash:%s' % a.part)
-            back = fetch(d, off // 512, len(data) // 512)
+            back = fetch_in_part(d, part_start_lba, off, len(data))
             if back != data:
                 raise SystemExit('readback mismatch at 0x%X (piece %d)' % (off, idx))
             written += len(data)
