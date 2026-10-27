@@ -4939,3 +4939,56 @@ dmpgles2 出现次数      : 0
 底座可用，**菜单没有显示**。下一步不是继续试调用，而是先把 UX 初始化与 App 主体的并发/时序
 固定下来，取得**可重复的单一崩溃点**，再逐层向上。详细清单见
 [`FINAL_HANDOFF_2026-10-27.md`](FINAL_HANDOFF_2026-10-27.md)。
+
+---
+
+## 120. 2026-10-27 更正 UI 归属：viewUnified 是**老**菜单，appFw 是**新**菜单
+
+### 120.1 更正
+
+本文档早前把两者说反了。按用户指正并复核后：
+
+| 归属 | 组成 | 证据 |
+|---|---|---|
+| **老菜单** | `viewUnified2..8.so` + `libObj` 内的 ux 引擎（GraphicsEngine / WidgetSystem / ResourceManager） | `viewUnified2.so` 导入 **163** 个 `_ZN2ux*` 符号；这些引擎类**只由 libObj 定义** |
+| **新菜单** | `appFw`：`libObj` 内的 `ViewManager` / `View` / `Model*ToInstance`（163 个相关符号） | `pViewManager`、`View::View(ViewManager*)` 等均在 libObj |
+
+### 120.2 关键事实：新菜单并不能绕过我们的卡点
+
+appFw 启动线程体的**第一条实质调用**就是 ux 引擎初始化：
+
+```
+8a2398: ...  bl 0x6271d4      ; uxengine 真体
+6271f4:      bl 0x610f74      ; ★ 正是我们卡住的那个函数
+6271f8:      bl 0x627164      ; 其后这里需要 p4（无写者）
+```
+
+而 ux 引擎（`_ZN2ux6gfxeng14GraphicsEngine*` 等）**只在 libObj 中定义**，
+`viewUnified2` / `libmpr` / `libMWF` 中定义数为 **0**。
+
+⇒ ux 引擎是**两套菜单共享的底座**，不是老菜单专属。
+把它初始化跑完，是走任何一套菜单的必经之路。
+
+### 120.3 a7c2-re 里哪些能复用（逐项核对）
+
+| 可复用 | 依据 |
+|---|---|
+| 可以：方法论（用户态 API 边界替换、保留真实构造与生命周期） | 与具体 API 无关 |
+| 可以：Sony LZ77 资源解码 | 同一格式，`port_a7c2` 已移植到 ARMv7 并通过自测 |
+| 可以：帧提交/消费契约、ramfb 呈现思路 | 我们已有 `bionz-streamfb` |
+| **不行**：GPE 拦截层（`mpgpe::Gperm*`） | **ZV-E10 全固件没有 `mpgpe` 符号**（扫描 0 处）；绘制 API 是 libObj 的 `GRM_*`，语义需另行反汇编 |
+| **不行**：九参数菜单切换入口 | 需在 ZV-E10 重新定位，且前提是 manager 已存在 |
+
+### 120.4 难度对比结论
+
+**新菜单更难**，原因不是"组件多"，而是：
+
+1. 它建立在 appFw 之上，而 appFw 的启动第一步就是我们卡住的 ux 引擎初始化；
+2. 它还额外需要 `ViewManager` 等对象——而我们已实测 `pViewManager` 恒为 0、
+   `libObj+0x145CBC4` 无写者。
+
+⇒ 换菜单不改变阻塞层。要继续只能先让"ux 引擎初始化"跑完，那对两套菜单都是必经之路。
+
+### 120.5 判据状态
+
+`GRM2` 无记录、`/dev/dmpgles2` 未打开、`/dev/stream` 未变，**菜单未显示，目标未完成**。
