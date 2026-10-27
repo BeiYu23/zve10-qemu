@@ -203,3 +203,26 @@ libObj 里有 `/dev/gpio`、`EXEC_POWERON_REC_KEYSCAN_STOP` 等字符串，说�
    `dlsym(handle,"ux::wgtsys::WidgetSystem::sys_getInstance")` → `dladdr` 得 base
    （他们验证过 offset 0x616fe4）→ 再用 base+0x8c22a0 调 `InfraInput::GetInstance`；
 3. 拿到实例后扫描代码指针（`#P`），用 `#I <idx> <hex>` 试注入。
+
+## 150. 2026-10-28 注入器 v4：**基址与单例都拿到了**（只读，不碰代码）
+
+做法（照对方 `ui-observe.c`）：
+1. 只用 **App 进程**（读 `/proc/self/cmdline` 含 `bootin`）才启动线程 —— 否则会在 sh/init 里
+   误 dlopen libObj 并执行它的构造函数，直接把系统打崩（实测 `Code: bad PC value`）；
+2. 在 App 进程里 `dlopen("/usr/lib/libObj.so")`（已加载，返回同一 handle）；
+3. `dlsym(handle, "ux::wgtsys::WidgetSystem::sys_getInstance")` + `dladdr` → **base=0x04dd6000**；
+4. `base + 0x8c22a0` 调 `InfraInput::GetInstance()` → 返回 `0x0001d4a0`。
+
+### 待解释
+
+`inst=0x1d4a0` 看起来更像**句柄/索引**而不是对象指针（App 低地址布局），
+且这次 `cands=0`（没有扫到代码指针），菜单也没画出（可能只是慢，也可能调 GetInstance
+时机太早干扰了初始化）。
+
+### 下一轮
+
+1. 把 `GetInstance` 的调用推迟到"App 已经开始绘制之后"（例如等 libuiobserve 输出
+   第一条 `drawFramebuffer` 再调），避免干扰初始化；
+2. dump `inst` 前后 0x100 字节，确认它是对象还是句柄；若是句柄，找 `0x1d4a0` 对应的真实对象
+   （很可能在 App 的固定映射区，参考 `CONFIG_TASK_MMAP_OFFSET=0x04000000` 那类布局）；
+3. 目标仍是：拿到 App 注册的输入回调并直接调用（不覆写任何指令）。
