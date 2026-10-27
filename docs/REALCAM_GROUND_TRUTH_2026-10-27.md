@@ -5752,3 +5752,32 @@ headless.export_ready = 0x1        ← ★ 非均匀帧就绪（此前一直是 
 再用对方 `capture-menu.py` 里的 RGBA4444 解码逻辑转 PNG。
 
 `GRM2` 无记录、`/dev/dmpgles2` 未打开、`/dev/stream` 未变，**菜单未显示，目标未完成**。
+
+---
+
+## 139. 2026-10-27 取帧通道打通（不依赖对方 capture 脚本）
+
+* 直接从 **QEMU 进程的 `/proc/<pid>/mem`** 里按物理地址读客户机 RAM：
+  找到 1 GiB 的 `rw` 映射（TCG RAMBlock），`base + 0x22c48000` 即呈现缓冲；
+* 已验证可读（614400 字节），并用"distinct 16-bit 像素对数"判定是否均匀：
+  当前"未渲染"的运行读出来 `distinct_pairs = 1`（纯色），符合预期；
+* 配上 `capture-menu.py` 里的 RGBA4444 解码即可成 PNG（脚本已备：`/mnt/build/dump_frame.py`）。
+
+## 140. 2026-10-27 仍未出图：渲染状态不稳定复现
+
+对比两次运行的事件集合（`UI_OBSERVE` 去重键数）：
+
+| 运行 | 键数 | 深层绘制事件 | textrect | export_ready |
+|---|---|---|---|---|
+| long1（22:15） | **414** | 有 `FONT.child.draw`、`GEMINI.color.*`、`GEMINI.cpu.glyph_draw` | 0x194 | **0x1** |
+| w1（23:5x） | 216 | 无 | 0 | 0 |
+
+⇒ 只有部分冷启动能走过"视图挂载 → 字形绘制"这一段；其余停在浅层（216 键）。
+已排除：字体槽位/FONT.driver 完全一致、机型/内存保留区/present 地址一致、
+`native.menu.root` 两次都出现。属启动时序竞态。
+
+正在做：循环冷启动（`/mnt/build/hunt.sh`，最多 8 次，每次最多 10 分钟），
+一旦出现 `GEMINI.cpu.glyph_draw` / `export_ready=0x1` / `FONT.child.draw`
+立即用 `dump_frame.py` 导出 PNG。
+
+`GRM2` 无记录、`/dev/dmpgles2` 未打开、`/dev/stream` 未变，**菜单未显示，目标未完成**。

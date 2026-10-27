@@ -164,3 +164,80 @@ E10 的 libInfraLensCommunicator.so
 5. ❌ 不要只换 5 个 lib —— mpr::/sidb:: 符号缺口会让 appFw 调不通
 6. ❌ 不要忘记换 `/usr/share/app` —— style_cmn 是 schema 4
 7. ❌ 不要碰 `im.elf`（agent 靠它加载）
+
+---
+
+# 收工后的静态分析（2026-10-28 00:05）
+
+## ★ 一、`/usr` 的运行时写入【不持久】—— Pico 是硬约束
+
+```
+实验: 通过 agent remount rw /usr → 写 bootin.elf 为启动器脚本(291B) → 备份 bootin.real → sync → 重启
+结果: 重启后 bootin.elf 变回 15,336 B 原厂 ELF（md5 d8bfb4f7）
+      但新建的 bootin.real 仍然存在
+      /tmp/BOOTIN_REACHED 不存在（启动器从未执行）
+
+⇒ 覆盖已有文件的写入被丢弃，新建文件能留下
+⇒ SAFETY_RULES.md 那句"写路径是空桩"反过来也成立: 改了也不生效
+⇒ 结论: /usr 的任何改动只能走 fastboot 裸块写
+⇒ 但可以稀疏写: 只改 1 个文件 = 5 个 64KiB 块 = 0.3 MB，1 秒
+```
+
+## ★ 二、分层审计结果：hybrid 的完整度等同于 M2 原厂
+
+```
+M2 的 libIMDB 表: .data.rel.ro @0xf00c, record base 0xf090, 228 条 × 44 B
+  profile 位: default 0x01 / qemu 0x06 / nfs 0x08 / set 0x10 / USBJ 0x20 / RE-SUB 0x40
+  default(0x01) 要装载 131 个模块
+
+对照 hybrid(nflasha15_v5) vs M2 原厂 /usr:
+  hybrid 缺 81 个
+  M2 自己也缺 84 个
+  ★ hybrid 比 M2 多缺的 = 0 个
+
+⇒ 我们的分层（lib+share 取 M2、其余取 E10）没有引入任何额外缺口
+⇒ 失败原因不在"缺文件"
+```
+
+## ★ 三、入口模块只差一个名字
+
+```
+E10 libIMDB: idx=140  enable=0x01  appFw.so      + Application_System_Init   （文件不存在，容忍）
+M2  libIMDB: idx=145  enable=0x01  appFwBoot.so  + Application_System_Init   ← 名字不同
+             idx=145  同一记录还引用 AdjChkConfig.so / AppConfig.so（后者两边都没有）
+             idx=148  enable=0x01  gui.so + DPro_App_UI_init（文件两边都没有）
+⇒ 换 M2 的 libIMDB 后，E10 的 im.elf 会去 dlopen appFwBoot.so 并 dlsym Application_System_Init
+```
+
+## ★ 四、`sabin`（DSP 固件）属平台层，保留 E10 是对的
+
+```
+两版 sabin 差异: 23 个同名不同内容（dcv_psf_table_still 57848→525968 等）+ 仅E10 5个 + 仅M2 14个
+但: 没有任何用户态库/二进制按路径或裸名引用 sa_*.bin
+⇒ DSP 固件由 CP/RTOS（av-cam.bin）侧加载，必须与 /system 的 CP 固件配套
+⇒ 保留 E10 的 sabin 正确 ✓
+```
+
+## ★ 五、下一步静态分析（不用动相机）
+
+```
+最可疑的剩余点: E10 的 im.elf 与 M2 的 appFwBoot.so 之间
+  Application_System_Init 的【签名/行为】是否一致
+
+  E10: libObj.so 导出 Application_System_Init @0x8a2408（21 MB 单体引擎）
+  M2 : appFwBoot.so 导出 Application_System_Init @0x1270（8 KB 桥）
+  ⇒ 若参数含义不同（例如 E10 版期望某个结构体指针，M2 版按无参处理）
+    ⇒ 调用即崩或返回后无屏 ⇒ 完全符合"无 UI、无日志"的现象
+
+查法（纯静态）:
+  1. 各自反汇编该函数前 40 条指令，看它读了哪些入参寄存器、写了什么全局
+  2. 看 im.elf 调用点（0xaf14 附近的 IMDB 装载流程）传什么参数
+  3. 对比两版对 R0-R3 的用法
+```
+
+## 六、本轮全部结论汇总（一句话版）
+
+```
+/usr 能挂载；不能运行时改；M2 应用层文件足够；坑在运行时 ABI/协议层。
+下一步只做静态分析：对比 Application_System_Init 的调用约定。
+```
