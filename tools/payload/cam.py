@@ -54,6 +54,14 @@ def cmd_pull(s, path):
     n = int(hdr[5:])
     return read_exact(s, n), hdr
 
+def cmd_push(s, path, data):
+    """PUSH <n>\n + "path\0data"  → "OK" / "ERR ..." """
+    p = path.encode()
+    blob = p + b"\0" + data
+    s.sendall(b"PUSH %d\n" % len(blob) + blob)
+    return read_line(s).decode(errors="replace").strip()
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("action", choices=("ping","run","pull","push"))
@@ -61,6 +69,7 @@ def main():
     ap.add_argument("--ip", default="10.42.0.158")
     ap.add_argument("--port", type=int, default=7777)
     ap.add_argument("--out", help="pull 时保存到本地文件")
+    ap.add_argument("--file", help="push 时的本地源文件")
     a = ap.parse_args()
 
     try:
@@ -82,6 +91,11 @@ def main():
                 print("已保存 %s (%d B)" % (a.out, len(body)))
             else:
                 sys.stdout.buffer.write(body)
+        elif a.action == "push":
+            if not a.file:
+                print("push 需要 --file", file=sys.stderr); return 1
+            data = open(a.file, "rb").read()
+            print(cmd_push(s, a.arg, data))
         s.close()
         return 0
     except Exception as e:

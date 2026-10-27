@@ -9,6 +9,8 @@ LOGDIR = "/mnt/build/tmp/webui"
 SPAN = 640 * 480 * 2          # RGBA4444 frame
 PHYS = (0x22c48000, 0x22bb2000)
 PORT = int(os.environ.get("PORT", "8099"))
+HOST = os.environ.get("HOST", "0.0.0.0")
+TOKEN = os.environ.get("TOKEN", "")
 os.makedirs(LOGDIR, exist_ok=True)
 LOG = os.path.join(LOGDIR, "serial.log")
 
@@ -106,10 +108,26 @@ class H(BaseHTTPRequestHandler):
         self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(len(body)))
         for k, v in (extra or {}).items(): self.send_header(k, v)
+        ck = getattr(self, "_cookie", None)
+        if ck: self.send_header("Set-Cookie", ck)
         self.end_headers()
         self.wfile.write(body)
     def do_GET(self):
-        path = self.path.split("?")[0]
+        raw_path = self.path
+        path = raw_path.split("?")[0]
+        if TOKEN:
+            from urllib.parse import parse_qs, urlparse
+            q = parse_qs(urlparse(raw_path).query)
+            cookie = (self.headers.get("Cookie") or "")
+            ok = (q.get("k", [""])[0] == TOKEN) or (f"k={TOKEN}" in cookie)
+            if ok and q.get("k", [""])[0] == TOKEN:
+                self._cookie = f"k={TOKEN}; Path=/; Max-Age=86400"
+            elif ok:
+                self._cookie = None
+            else:
+                return self._send(403, "需要访问令牌：在网址后加 ?k=你的TOKEN")
+        else:
+            self._cookie = None
         if path == "/":
             return self._send(200, PAGE, "text/html; charset=utf-8")
         if path == "/frame.jpg":
@@ -188,5 +206,5 @@ async function snap(){const r=await fetch('/snap');alert(await r.text());}
 </script></html>"""
 
 if __name__ == "__main__":
-    print(f"http://127.0.0.1:{PORT}")
-    ThreadingHTTPServer(("127.0.0.1", PORT), H).serve_forever()
+    print(f"http://{HOST}:{PORT}/" + (f"?k={TOKEN}" if TOKEN else ""), flush=True)
+    ThreadingHTTPServer((HOST, PORT), H).serve_forever()
