@@ -5667,3 +5667,44 @@ thread.cond_wait.caller = 0xa15b401  →  libObj + 0x7c0401（thumb）
 3. 目标仍是 `GEMINI.total.solid/textrect` 非零 + `export_ready=1` → 出 PNG。
 
 `GRM2` 无记录、`/dev/dmpgles2` 未打开、`/dev/stream` 未变，**菜单未显示，目标未完成**。
+
+---
+
+## 137. 2026-10-27 用 gdbstub 复核等待点：caller 不固定，说明是常态阻塞而非单点死锁
+
+### 137.1 验证 `hooks.installed.base` 就是 libObj 基址
+
+`ui-observe.c` 里 `object_base = base; record("hooks.installed.base", base);`，
+且 `install_rm_hook(base,0x775260,...)` 的 12 字节特征码**匹配成功**
+（`RM.hooks.installed=1`、`FONT.raster.hook_installed=1`）⇒ base 确实是 libObj 基址。
+
+### 137.2 但 caller 每次不同
+
+| run | base | cond_wait.caller | delta |
+|---|---|---|---|
+| u6 | 0x30cbe000 视图基址 / object 0x98f5000 | 0xa15b401 | ≈0x7c0401 |
+| g1 | 0x99e7000 | 0xa24d401 | ≈0x8xxxxx |
+
+⇒ 阻塞点是**多处**，属于线程常态等待（事件循环），不适合当作"死锁点"来修。
+
+### 137.3 真正症状（更准确）
+
+```
+Application_System_Init.return = 0x4
+drawFramebuffer.enter = 1        ← 只画过一帧
+notifyDraw.enter      = 2
+RM.record            = 448       ← 资源管理在跑
+native.menu.root      = 1        ← 菜单入口已调用
+```
+
+即：**启动阶段画过一帧后就再没有帧驱动**，`GEMINI.total.*` 始终 0。
+App 不是"卡死"，而是"没人让它继续画"。
+
+### 137.4 下一轮方向
+
+1. 找出驱动帧循环的一方：对方机型的 `sony_hwtimer`（9 路）与 `gpe`(irq 76) 谁负责 tick；
+   可用对方模型自带的 `ZVE10_NO_TIMER_IRQ` 环境变量做对照实验（不改代码）；
+2. 或用 gdbstub 在 `drawFramebuffer` 入口断下，记录首帧后 30 秒内是否有任何线程进入绘制路径；
+3. 目标不变：`GEMINI.total.solid/textrect` 非零 → `export_ready=1` → 出 PNG。
+
+`GRM2` 无记录、`/dev/dmpgles2` 未打开、`/dev/stream` 未变，**菜单未显示，目标未完成**。
