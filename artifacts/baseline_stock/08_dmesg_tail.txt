@@ -1,0 +1,91 @@
+ wlanMemoryAllocator: Provide Allocated Memory. g_pMemGfpAtomic_SS[0] = 69f8c000
+[  750.516006] wlanMemoryAllocator: [DEBUG] pt:69f8c000
+[  750.516130] wlanMemoryAllocator: [DEBUG] size:73376
+[  750.516285] wlanMemoryAllocator: Provide Allocated Memory. g_pMemGfpAtomic[0] = 69fa0000
+[  750.516418] wlanMemoryAllocator: [DEBUG] pt:69fa0000
+[  750.516553] cfg80211: Updating information on frequency 2412 MHz for a 20 MHz width channel with regulatory rule:
+[  750.516589] cfg80211: 2402000 KHz - 2482000 KHz @ 40000 KHz), (600 mBi, 2000 mBm)
+[  750.516616] cfg80211: Updating information on frequency 2417 MHz for a 20 MHz width channel with regulatory rule:
+[  750.516647] cfg80211: 2402000 KHz - 2482000 KHz @ 40000 KHz), (600 mBi, 2000 mBm)
+[  750.516673] cfg80211: Updating information on frequency 2422 MHz for a 20 MHz width channel with regulatory rule:
+[  750.516705] cfg80211: 2402000 KHz - 2482000 KHz @ 40000 KHz), (600 mBi, 2000 mBm)
+[  750.516731] cfg80211: Updating information on frequency 2427 MHz for a 20 MHz width channel with regulatory rule:
+[  750.516763] cfg80211: 2402000 KHz - 2482000 KHz @ 40000 KHz), (600 mBi, 2000 mBm)
+[  750.516789] cfg80211: Updating information on frequency 2432 MHz for a 20 MHz width channel with regulatory rule:
+[  750.516820] cfg80211: 2402000 KHz - 2482000 KHz @ 40000 KHz), (600 mBi, 2000 mBm)
+[  750.516846] cfg80211: Updating information on frequency 2437 MHz for a 20 MHz width channel with regulatory rule:
+[  750.516878] cfg80211: 2402000 KHz - 2482000 KHz @ 40000 KHz), (600 mBi, 2000 mBm)
+[  750.516904] cfg80211: Updating information on frequency 2442 MHz for a 20 MHz width channel with regulatory rule:
+[  750.516936] cfg80211: 2402000 KHz - 2482000 KHz @ 40000 KHz), (600 mBi, 2000 mBm)
+[  750.516962] cfg80211: Updating information on frequency 2447 MHz for a 20 MHz width channel with regulatory rule:
+[  750.516993] cfg80211: 2402000 KHz - 2482000 KHz @ 40000 KHz), (600 mBi, 2000 mBm)
+[  750.517766] cfg80211: Updating information on frequency 2452 MHz for a 20 MHz width channel with regulatory rule:
+[  750.517804] cfg80211: 2402000 KHz - 2482000 KHz @ 40000 KHz), (600 mBi, 2000 mBm)
+[  750.521233] cfg80211: Updating information on frequency 2457 MHz for a 20 MHz width channel with regulatory rule:
+[  750.521269] cfg80211: 2402000 KHz - 2482000 KHz @ 40000 KHz), (600 mBi, 2000 mBm)
+[  750.521296] cfg80211: Updating information on frequency 2462 MHz for a 20 MHz width channel with regulatory rule:
+[  750.521328] cfg80211: 2402000 KHz - 2482000 KHz @ 40000 KHz), (600 mBi, 2000 mBm)
+[  750.521354] cfg80211: Updating information on frequency 2467 MHz for a 20 MHz width channel with regulatory rule:
+[  750.521386] cfg80211: 2402000 KHz - 2482000 KHz @ 40000 KHz), (600 mBi, 2000 mBm)
+[  750.522302] cfg80211: Updating information on frequency 2472 MHz for a 20 MHz width channel with regulatory rule:
+[  750.522336] cfg80211: 2402000 KHz - 2482000 KHz @ 40000 KHz), (600 mBi, 2000 mBm)
+[  750.522511] cfg80211: Updating information on frequency 2484 MHz for a 20 MHz width channel with regulatory rule:
+[  750.522769] cfg80211: 2474000 KHz - 2494000 KHz @ 20000 KHz), (600 mBi, 2000 mBm)
+[  750.523291] cfg80211: Ignoring regulatory request Set by core since the driver uses its own custom regulatory domain
+[  750.526770] p2p0: P2P Interface Registered
+[  750.526911] CFG80211-ERROR) wl_event_handler : tsk Enter, tsk = 0x69fa1c34
+[  750.527422] dhd_deferred_work_init: work queue initialized 
+[  750.527523] wlanMemoryAllocator: [DEBUG] size:10300
+[  750.527670] wlanMemoryAllocator: Provide Allocated Memory. g_pMemGfpAtomic[1] = 69fc0000
+[  750.528081] wlanMemoryAllocator: [DEBUG] pt:69fc0000
+[  750.529263] wlanMemoryAllocator: [DEBUG] size:65536
+[  750.529515] wlanMemoryAllocator: Provide Allocated Memory. g_pMemGfpAtomic[2] = 69fe0000
+[  750.529657] wlanMemoryAllocator: [DEBUG] pt:69fe0000
+[  751.124064] dhd_bus_init: enable 0x06, ready 0x06 (waited 0us)
+[  751.139327] Firmware up: op_mode=0x0005, MAC=7c:b8:da:ee:91:05
+[  751.160089] Firmware version = wl0: Mar 15 2020 23:58:13 version 6.37.39.113 (r722271 CY)
+[  751.163718] dhd_wlfc_init(): successfully enabled bdcv2 tlv signaling, 79
+[  751.164563] dhd_wlfc_init(): wlfc_mode=0x0, ret=-23
+[  751.165814] 
+[  751.165822] Dongle Host Driver, version 1.141.67 (r489825)
+[  751.165834] Compiled from 
+[  751.167791] Register interface [wlan0]  MAC: 7c:b8:da:ee:91:05
+[  751.167805] 
+[  751.237711] CFG80211-ERROR) wl_cfg80211_attach_post : p2p0: p2p_dev_addr=7e:b8:da:ee:91:05
+[  751.321382] wlanMemoryAllocator: [DEBUG] size:22712
+[  751.321540] wlanMemoryAllocator: Provide Allocated Memory. g_pMemGfpAtomic_S[0] = 69f90000
+[  751.321675] wlanMemoryAllocator: [DEBUG] pt:69f90000
+[  751.321777] wlanMemoryAllocator: [DEBUG] size:49180
+[  751.321910] wlanMemoryAllocator: Provide Allocated Memory. g_pMemGfpAtomic_S[1] = 66800000
+[  751.322043] wlanMemoryAllocator: [DEBUG] pt:66800000
+[  751.339557] cfg80211: Updating information on frequency 2412 MHz for a 20 MHz width channel with regulatory rule:
+[  751.339597] cfg80211: 2402000 KHz - 2482000 KHz @ 40000 KHz), (600 mBi, 2000 mBm)
+[  751.339624] cfg80211: Updating information on frequency 2417 MHz for a 20 MHz width channel with regulatory rule:
+[  751.339656] cfg80211: 2402000 KHz - 2482000 KHz @ 40000 KHz), (600 mBi, 2000 mBm)
+[  751.339682] cfg80211: Updating information on frequency 2422 MHz for a 20 MHz width channel with regulatory rule:
+[  751.339714] cfg80211: 2402000 KHz - 2482000 KHz @ 40000 KHz), (600 mBi, 2000 mBm)
+[  751.339740] cfg80211: Updating information on frequency 2427 MHz for a 20 MHz width channel with regulatory rule:
+[  751.339771] cfg80211: 2402000 KHz - 2482000 KHz @ 40000 KHz), (600 mBi, 2000 mBm)
+[  751.339797] cfg80211: Updating information on frequency 2432 MHz for a 20 MHz width channel with regulatory rule:
+[  751.339828] cfg80211: 2402000 KHz - 2482000 KHz @ 40000 KHz), (600 mBi, 2000 mBm)
+[  751.339854] cfg80211: Updating information on frequency 2437 MHz for a 20 MHz width channel with regulatory rule:
+[  751.339886] cfg80211: 2402000 KHz - 2482000 KHz @ 40000 KHz), (600 mBi, 2000 mBm)
+[  751.339912] cfg80211: Updating information on frequency 2442 MHz for a 20 MHz width channel with regulatory rule:
+[  751.339943] cfg80211: 2402000 KHz - 2482000 KHz @ 40000 KHz), (600 mBi, 2000 mBm)
+[  751.339969] cfg80211: Updating information on frequency 2447 MHz for a 20 MHz width channel with regulatory rule:
+[  751.340085] cfg80211: 2402000 KHz - 2482000 KHz @ 40000 KHz), (600 mBi, 2000 mBm)
+[  751.340113] cfg80211: Updating information on frequency 2452 MHz for a 20 MHz width channel with regulatory rule:
+[  751.340144] cfg80211: 2402000 KHz - 2482000 KHz @ 40000 KHz), (600 mBi, 2000 mBm)
+[  751.340170] cfg80211: Updating information on frequency 2457 MHz for a 20 MHz width channel with regulatory rule:
+[  751.340202] cfg80211: 2402000 KHz - 2482000 KHz @ 40000 KHz), (600 mBi, 2000 mBm)
+[  751.340228] cfg80211: Updating information on frequency 2462 MHz for a 20 MHz width channel with regulatory rule:
+[  751.340259] cfg80211: 2402000 KHz - 2482000 KHz @ 40000 KHz), (600 mBi, 2000 mBm)
+[  751.340285] cfg80211: Updating information on frequency 2467 MHz for a 20 MHz width channel with regulatory rule:
+[  751.340317] cfg80211: 2402000 KHz - 2482000 KHz @ 40000 KHz), (600 mBi, 2000 mBm)
+[  751.340342] cfg80211: Updating information on frequency 2472 MHz for a 20 MHz width channel with regulatory rule:
+[  751.340374] cfg80211: 2402000 KHz - 2482000 KHz @ 40000 KHz), (600 mBi, 2000 mBm)
+[  755.701208] CFG80211-ERROR) wl_cfg80211_connect : Connectting with06:61:0a:d9:6d:11 channel (6) ssid "TomoriNao", len (9)
+[  755.701336] 
+[  755.791527] wl_bss_connect_done succeeded with 06:61:0a:d9:6d:11
+[  755.798548] cfg80211: Pending regulatory request, waiting for it to be processed...
+[  755.835362] wl_bss_connect_done succeeded with 06:61:0a:d9:6d:11

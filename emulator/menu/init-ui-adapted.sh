@@ -13,6 +13,7 @@ mkdir -p /rootfs /usr /tmp /setting
 
 # same mounts the vendor init performs, but without loading the 35-module set
 mount -t ext2 /dev/dnflasha7  /rootfs
+rmdir /setting 2>/dev/null; ln -s /rootfs/setting /setting
 mount -t ext2 /dev/dnflasha15 /usr  || mount -t ext2 -o no-compress /dev/dnflasha15 /usr
 [ -d /usr/lib ] || echo UI_NO_USR
 

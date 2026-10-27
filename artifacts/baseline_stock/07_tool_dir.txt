@@ -1,0 +1,7 @@
+drwxr-xr-x    2 57285    1000          1024 Jun  4  2026 .
+drwxr-xr-x   14 0        0             1024 Jun  4  2026 ..
+-rwxrwxrwx    1 57285    1000           689 Jun  4  2026 LeakCheck
+-rwxrwxrwx    1 57285    1000         31128 Jun  4  2026 LeakTracer.so
+lrwxrwxrwx    1 57285    1000            20 Jun  4  2026 libjemalloc.so -> libjemalloc_tsh.so.1
+lrwxrwxrwx    1 57285    1000            20 Jun  4  2026 libjemalloc_tsh.so -> libjemalloc_tsh.so.1
+-rwxrwxrwx    1 57285    1000        115504 Jun  4  2026 libjemalloc_tsh.so.1

@@ -1,0 +1,17 @@
+rootfs / rootfs rw 0 0
+proc /proc proc rw,relatime 0 0
+/dev/nflasha7 / ext2 ro,relatime,errors=continue 0 0
+/dev/nflasha15 /usr ext2 ro,relatime,errors=continue 0 0
+/dev/nflasha10 /tmp vfat rw,sync,dirsync,noatime,fmask=0022,dmask=0022,codepage=cp437,iocharset=ascii,shortname=mixed,posix_attr,avoid_dlink,errors=remount-ro 0 0
+/dev/nflasha10 /etc vfat rw,sync,dirsync,noatime,fmask=0022,dmask=0022,codepage=cp437,iocharset=ascii,shortname=mixed,posix_attr,avoid_dlink,errors=remount-ro 0 0
+/dev/nflasha3 /system vfat rw,sync,dirsync,noatime,fmask=0022,dmask=0022,codepage=cp437,iocharset=ascii,shortname=mixed,posix_attr,avoid_dlink,errors=remount-ro 0 0
+/dev/nflasha2 /setting vfat rw,sync,dirsync,noatime,fmask=0022,dmask=0022,codepage=cp437,iocharset=ascii,shortname=mixed,posix_attr,avoid_dlink,errors=remount-ro 0 0
+/dev/nflasha18 /lens vfat rw,sync,dirsync,noatime,fmask=0022,dmask=0022,codepage=cp437,iocharset=ascii,shortname=mixed,posix_attr,avoid_dlink,errors=remount-ro 0 0
+/dev/nflasha12 /cert vfat rw,dirsync,noatime,fmask=0022,dmask=0022,codepage=cp437,iocharset=ascii,shortname=mixed,batch_sync,posix_attr,avoid_dlink,errors=remount-ro 0 0
+/dev/nflasha11 /log vfat rw,dirsync,noatime,fmask=0022,dmask=0022,codepage=cp437,iocharset=ascii,shortname=mixed,batch_sync,posix_attr,avoid_dlink,errors=remount-ro 0 0
+none /sys sysfs rw,relatime 0 0
+none /dev/pts devpts rw,relatime,mode=600 0 0
+none /tmp_ipsec tmpfs rw,sync,dirsync,noatime,size=128k 0 0
+none /tmp_bt tmpfs rw,sync,dirsync,noatime,size=1024k 0 0
+none /tmp_network tmpfs rw,sync,dirsync,noatime,size=1024k 0 0
+/dev/nflasha6 /tmp/jiritsu vfat rw,sync,dirsync,noatime,fmask=0022,dmask=0022,codepage=cp437,iocharset=ascii,shortname=mixed,avoid_dlink,errors=remount-ro 0 0

@@ -1,0 +1,1 @@
+sh: wc: not found

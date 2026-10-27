@@ -1,0 +1,4 @@
+sh: wc: not found
+ls: /proc/1319: No such file or directory
+/proc/149 bootin.elf
+/proc/157 im.elf
