@@ -388,3 +388,29 @@ KEYINJECT Q call 0000027f len=8      ← 调用真的执行了
 2. 把 `#Q` 改成**在独立线程里调用**（避免一次阻塞把注入通道卡死），并加超时日志；
 3. 拿到真回调后，用 `#Q <回调> <事件字节>` 试各种 `_InfraInputEvent` 布局，
    以画面 SHA256 变化作为"注入生效"的判据。
+
+## 157. 2026-10-28 输入分发结构进一步明确
+
+* `0x8c2890`（`SetCallback+0x6c`）是**链表查找**：`for (n=this+0x9c; n; n=n->next)
+  if (n->id(+0x14) == key) return n;` —— 按 id 找注册节点；
+* `GetEventStatus` 也走它找节点，然后调用内部 `0x8c1740` 读状态；
+* `RmCallback` 找到节点后：`osal_valloc_msg_wait()` → `osal_snd_msg(node+0x18)`，
+  即**用 osal 消息通知监听者**，事件细节由监听者再查。
+
+⇒ 注入要么"造硬件状态"让 `GetEventStatus` 读到，要么"投递 osal 消息 + 造细节"。
+
+### view 层可用的入口（viewUnified2.so 导出）
+
+```
+WrapperSettingUtil::getKeyEventStatus(unsigned, int)   0x6e4b7d
+ViewBaseProduct::getRepeatKeyEventStatus(unsigned)     0x59d31d
+CmnViewExpMode::mapKeyCode(int)                        0x6d1b59   ← 键码映射
+ViewBaseForMR::attachEventId(int)                      0x436807
+```
+
+### 下一轮
+
+1. 反汇编 `CmnViewExpMode::mapKeyCode` 得到键码空间；
+2. 用 gdb 对"注册节点 +0x1c"下**硬件写/读观察点**，在调用 `RmCallback` 时看谁读它 —— 
+   找到真正的消费者路径；
+3. 或直接调用 view 层入口（`#Q`）模拟按键，观察画面 SHA256 是否变化。
