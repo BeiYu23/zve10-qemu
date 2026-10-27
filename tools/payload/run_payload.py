@@ -58,6 +58,8 @@ def main():
     ap.add_argument("--service-pid", default="0x0336")
     ap.add_argument("--timeout", type=float, default=40.0)
     ap.add_argument("--keep", action="store_true", help="不发送 STOP_SENSER")
+    ap.add_argument("--no-read", action="store_true",
+                    help="跳过读回（读回常失败，且失败会阻止 STOP_SENSER）")
     a = ap.parse_args()
 
     data = open(a.payload, "rb").read()
@@ -82,17 +84,23 @@ def main():
         print("[3/4] 等载荷执行 %.1fs…" % a.wait)
         time.sleep(a.wait)
 
-        print("[4/4] 读回 %s…" % a.read)
-        s2, g2 = read_frame(a.read)
-        c,b = ch.send(legacy.PFUNC_ADJUST_CONTROL, body=s2); print("      select  code=%s" % c)
-        c,b = ch.send(legacy.PFUNC_ADJUST_CONTROL, body=g2)
-        print("      read    code=%s len=%d" % (c, len(b)))
-        if len(b) > 4:
-            print("--- content ---")
-            print(b[4:].decode("utf-8", errors="replace"))
-            print("--- end ---")
+        if a.no_read:
+            print("[4/4] 跳过读回（--no-read）")
         else:
-            print("      raw: " + b.hex())
+            print("[4/4] 读回 %s…" % a.read)
+            try:
+                s2, g2 = read_frame(a.read)
+                c,b = ch.send(legacy.PFUNC_ADJUST_CONTROL, body=s2); print("      select  code=%s" % c)
+                c,b = ch.send(legacy.PFUNC_ADJUST_CONTROL, body=g2)
+                print("      read    code=%s len=%d" % (c, len(b)))
+                if len(b) > 4:
+                    print("--- content ---")
+                    print(b[4:].decode("utf-8", errors="replace"))
+                    print("--- end ---")
+                else:
+                    print("      raw: " + b.hex())
+            except Exception as e:
+                print("      读回失败（不影响载荷已写入）: %s" % type(e).__name__)
 
         if not a.keep:
             legacy.vendor_request_out(t.device, legacy.STOP_SENSER)
