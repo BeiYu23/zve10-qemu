@@ -329,3 +329,40 @@ guest 或我们的库。
 1. 试 `-chardev socket,id=ctl,path=...,server=on,wait=off,mux=off -serial chardev:ctl` 的显式写法；
 2. 试 `-serial mon:stdio` / `-chardev stdio` 的对照；
 3. 若都不通，改用 **SD 卡命令文件**（SD 已可用）+ QMP 热插，彻底绕开串口。
+
+## 155. 2026-10-28 ★ 控制通道彻底打通（关键修复：常开 fd）
+
+```
+KEYINJECT tty ok fd=4
+KEYINJECT first-read n=3        ← 收到 host 的 "#S\n"
+KEYINJECT state inst=0001d4a8 cands=0
+```
+
+**根因**：注入库每轮 `open/read/close` tty，tty 在无读者时丢输入。
+改成**一次打开、持续读**后立刻可用。控制通道 = **ttyAM1（第二路串口，cfg.uart=3）**，
+与相机控制台完全隔离，用 `socat - UNIX-CONNECT:/mnt/build/tmp/kbd.sock` 发命令。
+
+### InfraInput 对象实测布局（菜单已绘制时）
+
+```
++00 061674b0  vtable（libObj 内）
++04 00000003
++08 0000644c
++0c 0000477f  thumb 低地址代码
++18 0001d6c8
++1c 0000027f  thumb 低地址代码   ← SetCallback 曾把第三个参数写到这里（+0x1c）
++20 00000000
++24 00024ea0
++28 0001d150
++2c 0002b4d8
++30 00000005
++34 00000005
+```
+
+`SetCallback` 反汇编：`str r6,[r0,#28]`(=+0x1c)、`str 0,[r0,#32]`(=+0x20)
+⇒ **+0x1c 极可能就是 App 注册的输入回调**。
+
+### 新增命令
+
+`#W` dump 对象、`#Q <addr> <hex>` 以 (inst, ev) 调用任意地址、`#C <id>` 调 RmCallback、
+`#I <idx> <hex>` 调扫描候选。下一轮用 `#Q 27f <hex>` 直接试注入并比对画面。
