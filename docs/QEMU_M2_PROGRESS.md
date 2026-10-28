@@ -3962,3 +3962,33 @@ input:key table read error / size check error / number error
 `input(kbd):` 是一条错误消息的前缀，而 init 正常输出用的是 `kbd:`。
 ⇒ **判"某模块没跑"之前，先确认 grep 的字符串确实是它正常路径会打的** ——
    最好直接从模块字符串表里取，而不是按命名习惯推测。**
+
+## 59. 2026-10-28 E10 reg 对照失败（双 preload 库导致早期 stall）；input.ko 无任何 kbd: 日志
+
+### ① input.ko 加载后连 `kbd: init` 都没有
+
+协作方给出 input.ko 的真实日志前缀是 `kbd:`（不是 `input(kbd):`），但重新 grep 结果：
+
+```
+grep -c 'kbd:' /tmp/m2p/m7.log  → 0
+```
+
+⇒ `MODULE_END status=0` 但 **init 里一行都没打** ⇒ 更像 **probe 根本没被调用**
+（没有匹配的设备/设备树节点），而不是 init 跑失败。
+
+### ② E10 reg 对照：双 preload 库导致早期 stall
+
+为做对照，把 v5 探针同时塞进 E10 的 `LD_PRELOAD`（`libuiobserve.so:libm2probe.so`）：
+
+```
+serial=16,741  menu=0  M2REG=0
+```
+
+⇒ 直接卡在早期，连菜单都没到。**这与之前"两个 preload 库同时上会 stall"的旧结论一致**
+（`/etc/ld.so.preload` 里放两个库也有同样风险）。
+
+**⇒ E10 reg 对照必须改成"单 preload"**，两种可行做法：
+1. 把探针编译进 libuiobserve（合并成一个库）；
+2. 或在 E10 上只 preload 探针（放弃 UI_OBSERVE 观测），先拿 reg 表。
+
+E10 基线已恢复原样（`init.bak` / `ui.cpio.bak` 还原，探针库删除）。
