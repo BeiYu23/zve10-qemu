@@ -4020,3 +4020,73 @@ M2  libObj.so 里 '/dev/input'、'input(kbd)'、'kbd_init' 相关字符串 = 0
    （E10 上实例在 `libObj+0x8c22a0` 的 GetInstance，M2 的偏移需重找：`0x208005`+1）；
 2. 直接调用 M2 的 `InfraInput::GetInstance()`，看返回是否非空（初始化是否完成）；
 3. 若实例为空/未初始化 ⇒ 断点在 `infra_input_init` 调用处（谁该调它）。
+
+---
+
+# ★★★★★ 2026-10-29 19:40 第五十四层：InfraInput 仍在用户态；**探针漏 hook sync 注册变体**
+
+## ❌ 假说撤回：新架构**没有**把输入搬到内核
+```
+InfraInput 在三代 libObj 里的存在性：
+  E10 老菜单:  字符串 278, 符号 31
+  ZV1F 新菜单: 字符串 245, 符号 16
+  M2   新菜单: 字符串 245, 符号 16   ← ★ M2 也有
+  具体: InfraInput / InfraInputBase / InfraInputKikilog
+        InfraInput::iLogLoad / iLogSave
+⇒ M2 新菜单的 InfraInput 依然在用户态 libObj 里，没搬到内核
+⇒ 第 52 层"新架构依赖内核 input.ko"的推论**撤回**
+```
+
+## ✅ `0x7a0020` 是**编译期常量**
+```
+M2   libObj.so  LE32(0x7a0020) 出现 14 次
+E10  libObj.so  出现 31 次
+M2   appFw.so   出现 1 次
+⇒ 不是运行时动态分配，是硬编码常量
+```
+
+## ★★★ 关键发现：v5 探针**漏了 sync 注册变体**
+```
+libObj.so 导入:  osal_reg_msg_queue_cb        ← v5 已 hook
+                osal_reg_sync_msg_queue_cb   ← ★ **v5 未 hook**
+appFw.so  导入:  osal_reg_msg_queue_cb
+                osal_reg_sync_msg_queue_cb   ← ★ 同样漏了
+
+libosal_uipc.so 导出两个：
+  osal_reg_msg_queue_cb
+  osal_reg_sync_msg_queue_cb    ← 未 hook
+（另有 u_ 前缀变体）
+```
+**⇒ **`0x7a0020` 很可能是通过 `osal_reg_sync_msg_queue_cb` 注册的，
+   所以那 40 条 reg 表里看不到它。**
+**⇒ 补上 sync 变体后预期：**
+```
+出现 0x7a0020 ⇒ InfraInput 确实初始化了 ⇒ 问题在注册之后
+仍无           ⇒ InfraInput 初始化没跑到注册 ⇒ 断点更早
+```
+
+## 这也修正了 E10 对照的意义
+**之前 E10 的 v5 对照（只 hook 普通变体）也**看不到** sync 注册的队列
+⇒ "E10 reg 表里有没有 0x7a0020"必须在**两个变体都 hook**之后做才有意义。
+⇒ 建议 E10 和 M2 都用完整版重跑再对比。**
+
+## ✅ input.ko "probe 未调用"的判断已被证实
+```
+input.ko 导入的内核 API：
+  udif_driver_register / udif_driver_unregister / udif_create_proc   ← Sony 私有 driver 框架（非 platform_driver）
+  gpio_get_data_bit                                                   ← Sony 私有 GPIO API
+  Backup_read / Backup_get_datasize / Backup_read_4Byte               ← 从 Backup 分区读按键表
+  add_timer / mod_timer / del_timer_sync                              ← 定时轮询
+⇒ udif_driver_register 只**注册**；真正 init 在 udif core 匹配设备后调用的 **probe** 里
+⇒ QEMU 无键盘设备节点 ⇒ probe 永不调用 ⇒ `kbd: init` 永不打印 ✅
+⇒ MODULE_END status=0 说明符号全部解析成功（内核**确实导出** udif_*/gpio_get_data_bit）
+```
+
+## 方法论（第 62 条）★
+**"探针没看到"有三种可能，必须逐一排除：**
+```
+① 目标确实没发生
+② 目标走了**另一条代码路径**（本例：sync 注册变体 vs 普通注册变体）
+③ 目标由**另一个执行域**创建（本例曾怀疑内核态，已排除）
+⇒ 在断言"没发生"之前，先从**导入符号表**确认"目标可能走的所有入口都被 hook 了"。
+```
