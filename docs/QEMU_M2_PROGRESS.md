@@ -4264,3 +4264,31 @@ M2REGSY = 82 条（此前 M2REG = 40），两变体合计 unique qid = 122
 - 也可能是修复（触发缺失的构造）
 - 还可能是**风险**（构造里无限等信号量 ⇒ 调用会挂死）
 **⇒ 在 guest 里调未知 API 前，必须静态确认：① 是否有副作用 ② 是否有阻塞点 ③ 放哪个线程/线程安全。**
+
+## 62. 2026-10-28 `#GI`（调 InfraInput::GetInstance）首次尝试：命令未被执行
+
+探针加了两件东西：
+* `reader2` 线程（**只在 im.elf** 里创建），读 `ttyAM1`，收到 `#GI` 就在单独线程里调
+  `libObj_base + 0x208005 | 1`（M2 的 `InfraInput::GetInstance`），并打印 `M2GI base=/ret=`；
+* 用完立刻再查注册表（看惰性构造是否顺带注册 `0x7a0020`）。
+
+实测（boot 150s 后发两次 `#GI`）：
+
+```
+M2INIT pid=120 cmd=/usr/bin/bootin.elf
+M2INIT pid=127 cmd=/usr/bin/im.elf        ← 构造函数都跑了
+uart1: ttyAM1 ...                          ← 控制串口存在
+regs_before = 122（两个变体合计，与上一轮一致）
+007a0020 计数 = 0
+没有任何 M2GI 输出                          ← ★ #GI 没被处理
+```
+
+**⇒ 命令没送到 reader2，或 reader2 线程没建起来。**
+
+### 可能原因与下一步
+
+1. `pthread_create(reader2)` 在 im.elf 的构造期失败（该进程可能内存/线程受限）；
+2. `ttyAM1` 的读竞争/缓冲问题（E10 上曾遇到"open/close 每次重开丢数据"，我们这次保持了 fd 常开，但 im.elf 是 fork+exec 出来的，设备状态可能不同）；
+3. 更稳的替代：**让 bootin 的 reader 也能处理 `#GI`**（bootin 的 ttyAM1 读取在 E10 上验证可用），
+   通过**跨进程**方式触发 im.elf 里的调用不可行，
+   ⇒ 改为把探针逻辑编进 **im.elf 自己启动的最早阶段**（构造期直接调一次 GetInstance，不用命令行触发）。
