@@ -9298,7 +9298,7 @@ App 能正常访问 UIPC、备份、显示三个关键设备。**
 
 ## 一百一十一、Round 83：开源文档补齐「16 类已排除假设」清单
 
-### 111.1 新增 `docs/EXCLUDED_HYPOTHESES.md`（开源仓库）
+### 111.1 新增 `../system/EXCLUDED_HYPOTHESES.md`（开源仓库）
 
 把定位堆损坏过程中做过的实验**全部记录**，避免后来者重复：
 
@@ -19944,7 +19944,7 @@ userpc: ('unk','0x4022f84',648), ('libObj.so','0x15b5f0',3), ('CautionConfig.so'
 
 ### 参考工程 a7c2-qemu（chocotan，MIT）
 - 架构：QEMU virt + 原始内核/用户态 + guest 侧 preload 伪造设备/服务 + 软件 GPE + ramfb/自定义输入设备；
-- 文档已整理要点：`docs/A7C2_QEMU_REFERENCE.md`；移植路线图：`docs/ZVE10_PORT_ROADMAP.md`。
+- 文档已整理要点：`A7C2_QEMU_REFERENCE.md`；移植路线图：`../deploy/ZVE10_PORT_ROADMAP.md`。
 
 ### M1 服务面（c190/c193）
 - 同步超时 qid 全集：**0x94016A、0x924127、0x1010227、0x13E8402**（+0x8F013A 已 FK8 fake）；
@@ -20138,7 +20138,7 @@ SeqController 构造签名: (uint, ObjActiveBaseAvbbc*, GlobalAccessor*)
    ⇒ CreateAndAddSequence 第一步就查 vtable+0x28 门控，无实例必失败/崩
 ```
 
-### 3. 下一阶段入口（详见 docs/ZVE10_NEXT_STEPS.md）
+### 3. 下一阶段入口（详见 ../deploy/ZVE10_NEXT_STEPS.md）
 1. 在 `libBizFw.so`（已抽取）里反汇编 `ObjActiveBaseAvbbc` 的创建路径，弄清它依赖的服务/配置；
 2. 建立最小 BBC/view 状态使其可构造，然后调用 `SeqController::CreateAndAddSequence`；
 3. App 一旦往 `0x080C4880` 落笔，现有 GPE 执行器自动合成上屏（**无需再改 QEMU**）；
@@ -20146,9 +20146,9 @@ SeqController 构造签名: (uint, ObjActiveBaseAvbbc*, GlobalAccessor*)
 
 ### 4. 资产索引
 ```
-docs/ZVE10_NEXT_STEPS.md        接手指南（含 libBizFw / ObjActiveBaseAvbbc 依赖）
-docs/ZVE10_QEMU_UI_HANDOFF.md   总交接（协议数值 / 工具 / 现状）
-docs/ZVE10_PORT_ROADMAP.md      逐轮记录 c190→c358
+../deploy/ZVE10_NEXT_STEPS.md        接手指南（含 libBizFw / ObjActiveBaseAvbbc 依赖）
+../deploy/ZVE10_QEMU_UI_HANDOFF.md   总交接（协议数值 / 工具 / 现状）
+../deploy/ZVE10_PORT_ROADMAP.md      逐轮记录 c190→c358
 artifacts/c321/gpe_fill_red.png 执行器填充实证
 artifacts/c345/gpe_copy.png     帧合成实证
 artifacts/libObj_rm_reg.dis     GPE 接口反汇编

@@ -6,7 +6,7 @@
 # 相机正常开机 + WiFi + agent 在跑
 python3 /root/fw/oss/tools/bindm2/deploy_bindm2.py --image /mnt/build/nflasha15_v9.ext2
 # 然后重启 → 应看到 M2 新菜单；不成功再重启即完全恢复
-# 细节见 docs/BIND_M2_NOFLASH_APPROACH.md
+# 细节见 ../analysis/deploy/BIND_M2_NOFLASH_APPROACH.md
 
 # 它做了三件事：
 #   ① 推 /log/libIMDB_m2.so（M2 的 libIMDB 原版，40,596 B）

@@ -156,7 +156,7 @@ GRM_*                  ── 图形驱动接口（Fill / Rectblit / BitmapWrite
 | 环境 | **`/log`(nflasha11) 分区补齐为合法 vfat** ⇒ guest 时间 52.5s → 70.6s |
 
 > 完整逐轮记录（含失败实验与排除假设）见
-> [`docs/QEMU_BOOT_PROGRESS.md`](docs/QEMU_BOOT_PROGRESS.md)（约 1.4 万行）。
+> [`docs/analysis/qemu/QEMU_BOOT_PROGRESS.md`](docs/analysis/qemu/QEMU_BOOT_PROGRESS.md)（约 1.4 万行）。
 
 ### C3. 显示链路：现状与路线
 

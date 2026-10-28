@@ -95,7 +95,7 @@ RTOS (BIONZ X / av-cam.bin) 解释描述符
 
 **★★★ 这为「整屏 0x5A5A」提供了另一种解释：**
 **可能不是 VDF 初始化填充，而是**模型把描述符字节当像素解码**的产物。**
-（见 `docs/FALSE_MILESTONE_5A_FILL.md`）
+（见 `../system/FALSE_MILESTONE_5A_FILL.md`）
 
 **建议：**
 1. **不要再用 0x20312000 判断"App 画了没有"**

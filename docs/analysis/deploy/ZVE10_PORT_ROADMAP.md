@@ -1133,7 +1133,7 @@ viewSettingMenu id=0xd7ec001e  open ret=1417624
 ```
 未完成的部分需要**补齐 App 内部的 Model/Widget/Scene 状态**（等价于重写 App 一部分业务逻辑），
 不是再找一个开关就能解决的。所有可复用资产、协议数值、工具命令都写在
-`docs/ZVE10_QEMU_UI_HANDOFF.md` 与本文档中。
+`ZVE10_QEMU_UI_HANDOFF.md` 与本文档中。
 
 ## ★ c332（2026-10-23 07:12）：发现 im.elf 的 **sync API 命令表**（未及验证）
 - im.elf 内 `imelf_sync_api_cb`（函数入口 **0x986C**，r0=请求结构指针）分发这些命令：
@@ -1319,7 +1319,7 @@ t=57s:  src 同上                                    dst 同上
 ```
 - 12 秒内两个缓冲**完全没有变化**（App 既不写源也不写目标）。
 - 结合 c345（我们的合成把 src 拷到 dst 后可显示）⇒ 链路没问题，App 侧确实静止。
-- 本会话可推进的部分到此为止；剩余工作已在 `docs/ZVE10_NEXT_STEPS.md` 中给出精确指引
+- 本会话可推进的部分到此为止；剩余工作已在 `ZVE10_NEXT_STEPS.md` 中给出精确指引
   （地址、协议、假设、复现命令、坑位）。
 
 ## c349（2026-10-23 08:18）：把 GPE 事件返回值改成全 1 饱和 —— 无变化
@@ -1328,7 +1328,7 @@ t=57s:  src 同上                                    dst 同上
 kicks=11（不变） gpew=28（不变） pVM=1,380,080  trap=0
 ```
 - ⇒ 事件位不是门控点；已把模块回滚为返回 1（与既有结论一致）。
-- 至此可在本会话内尝试的手段已全部用尽，最终状态见 `docs/ZVE10_NEXT_STEPS.md`。
+- 至此可在本会话内尝试的手段已全部用尽，最终状态见 `ZVE10_NEXT_STEPS.md`。
 
 ## c350（2026-10-23 08:25）：定位到目标文档提到的 `CreateAndAddSequence`
 - libObj 导出：`OBJAVBBCBASECLASS::SeqController::CreateAndAddSequence(unsigned, MWF::ObjMsg*)`
@@ -1424,7 +1424,7 @@ if (r0 != 0) { 记录日志（getPrintLevel()>0 时）… }
   3) 阻塞点在字段级定位：`libBizFw.so::SeqController(uint, ObjActiveBaseAvbbc*, GlobalAccessor*)`
      缺实例与上游 BBC/model 状态；
   4) 建立两项可复用能力：guest 任意文件抽取通道、GPE 执行器骨架（QEMU 内）。
-- 下一步入口：`docs/ZVE10_NEXT_STEPS.md`（第八/九节）。
+- 下一步入口：`ZVE10_NEXT_STEPS.md`（第八/九节）。
 
 ## ★★ c359–c362（2026-10-23 10:25，补 model 层第 1 步）：**应用阶段入口库是 stub**
 - c359（interpose 观察）：正常启动 120s 内
@@ -4699,7 +4699,7 @@ round=1..12（约 96 秒）每一轮都能看到： [MAPD] pid=121 comm=im.elf.r
   ❌ App 自身界面未显示：initializeConfig 仍不返回
      已排除：死锁 / 失败退出(exit) / libc dlopen/dlsym / 单个 sem 短缺
      收敛到：im.elf 自带 OnDemandLoader 内部加载卡住（唯一未验证层）
-产出：docs/HANDOFF_2026-10-25.md（交接说明）、ZVE10_QEMU_STATE.md（速查）、
+产出：../../handoff/HANDOFF_2026-10-25.md（交接说明）、ZVE10_QEMU_STATE.md（速查）、
      artifacts 截图、ab_v651(L1)/ab_v660(L2)/ab_v603(基线) 镜像
 下一步：interpose libOnDemandLoader 的 odl_* 导出定位加载卡点
 ```

@@ -67,7 +67,7 @@ DDR 描述符（0x10070C00）: {0x080C4880, 0x08AEC800, 0x01E00280(=640x480), 0x
 ## 6. 纪律
 - 单 QEMU 实例、跑完 `pkill -f qemu-system-arm`；
 - 所有缓存放 `/mnt/build/tmp`（不要 `/tmp`，tmpfs 会撑爆）；
-- 每轮结论写入 `docs/ZVE10_PORT_ROADMAP.md` / `docs/QEMU_BOOT_PROGRESS.md` 并 push。
+- 每轮结论写入 `ZVE10_PORT_ROADMAP.md` / `../qemu/QEMU_BOOT_PROGRESS.md` 并 push。
 
 ## 7. 2026-10-23 新增（GPE 协议 + 执行器）
 ### 7.1 GPE 提交协议（已实测）

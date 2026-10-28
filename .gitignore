@@ -31,3 +31,6 @@ out/
 .idea/
 *.swp
 __pycache__/
+
+# 采集日志
+fastboot/pico/logs/

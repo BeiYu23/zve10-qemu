@@ -2,7 +2,7 @@
 
 **结论：本目录的代码没有让菜单显示出来。** 它是本阶段所有实验的可复现载体，
 以及一份"已经做到哪一步、卡在哪"的现场。完整结论见
-[`docs/FINAL_HANDOFF_2026-10-27.md`](../../docs/FINAL_HANDOFF_2026-10-27.md)。
+[`../../docs/rounds/FINAL_HANDOFF_2026-10-27.md`](../../../docs/rounds/FINAL_HANDOFF_2026-10-27.md)。
 
 ## 这是什么
 

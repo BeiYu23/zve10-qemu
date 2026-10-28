@@ -67,7 +67,7 @@ updater_storage_backup.sh  updater_storage_mount.sh  updater_storage_restore.sh
 ```
 
 ⇒ 没有脚本原文可以给；但**那 35 条的顺序就是 `init` 里的实际顺序**
-（见 `docs/MODULE_BOOT_LIST.md`），直接照它写一个带日志的 wrapper 即可。
+（见 `../imdb/MODULE_BOOT_LIST.md`），直接照它写一个带日志的 wrapper 即可。
 
 `insmod.sh` 只存在于**updater 的 cramfs initrd**里，加载的是 updater 阶段的
 模块集，与零售启动链不同——**不要照抄它**。

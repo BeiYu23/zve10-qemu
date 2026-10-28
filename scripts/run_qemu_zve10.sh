@@ -9,7 +9,7 @@
 #   BACKUP   : 修正过的 BACKUP.BIN（见 docs/HANDOFF.md）
 #   CMDLINE  : 内核 cmdline（含真机内存图/保留区等参数）
 #
-# 详见 docs/QEMU_BOOT_PROGRESS.md（含执行摘要）与 docs/HANDOFF.md
+# 详见 ../docs/analysis/qemu/QEMU_BOOT_PROGRESS.md（含执行摘要）与 docs/HANDOFF.md
 set -e
 : "${QEMU:=/usr/local/bin/qemu-system-arm}"
 : "${ZIMAGE:=/path/to/zImage}"

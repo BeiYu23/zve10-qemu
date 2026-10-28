@@ -57,9 +57,9 @@ qemu.out :   ZZGPEREG w off=0x0C00…/0x1800…；ZZGPECMD（11 次）；ZZGPECO
 
 ## 七、产物索引
 ```
-docs/ZVE10_QEMU_UI_HANDOFF.md   总交接（协议数值/工具/现状）
-docs/ZVE10_PORT_ROADMAP.md      逐轮实验记录（含失败原因）
-docs/QEMU_BOOT_PROGRESS.md      阶段总结（Round 379-391）
+ZVE10_QEMU_UI_HANDOFF.md   总交接（协议数值/工具/现状）
+ZVE10_PORT_ROADMAP.md      逐轮实验记录（含失败原因）
+../qemu/QEMU_BOOT_PROGRESS.md      阶段总结（Round 379-391）
 artifacts/c321/gpe_fill_red.png 执行器填充实证
 artifacts/c345/gpe_copy.png     合成（src→dst）实证
 artifacts/libObj_rm_reg.dis     GPE 接口反汇编（12 处 ioctl 调用点）

@@ -108,7 +108,7 @@
 | `emulator/menu/make_image.py` | 生成实验镜像，替换文件逐一读回校验、`e2fsck -n` |
 | `emulator/menu/build.sh` / `run.sh` | 交叉编译（softfp、固件 libc）与固定时长运行 |
 | `/mnt/build/tb_*.sh`、`gdb_*.py` | GDB 取证脚本（写监视、断点、线程 PC 采样） |
-| `docs/REALCAM_GROUND_TRUTH_2026-10-27.md` | 逐轮证据（§1–§112） |
-| `docs/ZVE10_A7C2_STARTUP_AUDIT_2026-10-26.md` | 对 a7c2-re 的架构对照与早期结论审计 |
+| `REALCAM_GROUND_TRUTH_2026-10-27.md` | 逐轮证据（§1–§112） |
+| `../analysis/deploy/ZVE10_A7C2_STARTUP_AUDIT_2026-10-26.md` | 对 a7c2-re 的架构对照与早期结论审计 |
 
 实验镜像：`/mnt/build/menu-only-v*.img`（每版对应文档中的一节）。

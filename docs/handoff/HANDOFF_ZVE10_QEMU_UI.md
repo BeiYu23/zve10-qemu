@@ -210,7 +210,7 @@ dd if=slice.img of=IMG bs=1M seek=732 conv=notrunc status=none
 ---
 
 ## 9. 相关文档
-* `docs/ZVE10_PORT_ROADMAP.md` —— 逐轮详细日志（含每次实验的原始输出摘要）
-* `docs/ZVE10_QEMU_STATE.md` —— 速查
-* `docs/HANDOFF_2026-10-25.md` —— 更早一版交接（部分结论已被本文件修正）
+* `../analysis/deploy/ZVE10_PORT_ROADMAP.md` —— 逐轮详细日志（含每次实验的原始输出摘要）
+* `../analysis/deploy/ZVE10_QEMU_STATE.md` —— 速查
+* `HANDOFF_2026-10-25.md` —— 更早一版交接（部分结论已被本文件修正）
 * `docs/artifacts/` —— 截图等产物（注意：`2026-10-25_oldmenu_app_fullscreen_fill.png` 已被证伪，是 0x5A 填充）

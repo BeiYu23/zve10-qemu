@@ -4,8 +4,8 @@
 **目标**：让 ZV-E10 原厂 `/usr` 的 App 菜单在 QEMU 中**真正显示**（App 自己渲染，不是我们伪造画面）
 **当前状态**：**未达成**。显示链路、绘制 shim、服务应答、探针体系全部就绪；App 初始化链未走通。
 
-> 路线对照（与 a7c2-re 的方法差异、该改哪一层）：见 `docs/ROUTE_DIFF_VS_A7C2.md`。
-> 卡点调用链（GDB 实证 + 0x3E014D 服务应答）：见 `docs/TRACE_GRM_INIT_CHAIN.md`。
+> 路线对照（与 a7c2-re 的方法差异、该改哪一层）：见 `../analysis/system/ROUTE_DIFF_VS_A7C2.md`。
+> 卡点调用链（GDB 实证 + 0x3E014D 服务应答）：见 `../analysis/system/TRACE_GRM_INIT_CHAIN.md`。
 
 ---
 
@@ -78,7 +78,7 @@ libObj+0x7D7D30 请求等待 → q2 worker(0x7D7C10) → cb2(0x7D7870, P[0]=1)
 * ⚠️ 早期探针把 `osal_snd_sync_msg` 参数写成 `(msg, qid)`（顺序反了），
   所以历史上"应答过 0x3E014D 没变化"的结论**作废**。
 
-**完整证据、协议布局、复现脚本见 `docs/TRACE_GRM_INIT_CHAIN.md`。**
+**完整证据、协议布局、复现脚本见 `../analysis/system/TRACE_GRM_INIT_CHAIN.md`。**
 
 ### 2.1 静态结构（历史记录）
 
@@ -316,8 +316,8 @@ gdb             gdb-multiarch（libObj base = 0x05E82000）
 ```
 
 ## 11. 相关文档
-* `docs/ZVE10_PORT_ROADMAP.md` —— 逐轮详细日志（含每次实验原始输出摘要）
-* `docs/HANDOFF_ZVE10_QEMU_UI.md` —— 上一版交接（本文件是其超集）
-* `docs/FAST_ITERATION.md` —— 快速迭代细节
-* `docs/ZVE10_QEMU_STATE.md` —— 速查
+* `../analysis/deploy/ZVE10_PORT_ROADMAP.md` —— 逐轮详细日志（含每次实验原始输出摘要）
+* `HANDOFF_ZVE10_QEMU_UI.md` —— 上一版交接（本文件是其超集）
+* `../analysis/deploy/FAST_ITERATION.md` —— 快速迭代细节
+* `../analysis/deploy/ZVE10_QEMU_STATE.md` —— 速查
 * `docs/artifacts/` —— 截图（注意：`…oldmenu_app_fullscreen_fill.png` 已被证伪，是 0x5A 填充）

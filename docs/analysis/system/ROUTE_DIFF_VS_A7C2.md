@@ -144,7 +144,7 @@
   `runtime/analysis/menu-observe.c`（`osal_snd_sync_msg` 拦截 1938+、`software_fill_worker` 2962+、
   `software_gperm_initialize` 2956、`observe_lz_decode` 2786、函数指针表补丁 367/370）；
   上游 `docs/tech/{04,05}.md`。
-- 我们：`docs/HANDOFF_ZVE10_MASTER.md` §2（卡点）、§3（worker 接管）、§0（判据）；
-  `docs/FALSE_MILESTONE_5A_FILL.md`；`/mnt/build/tmp/grm2.c`（现行 shim）。
+- 我们：`../../handoff/HANDOFF_ZVE10_MASTER.md` §2（卡点）、§3（worker 接管）、§0（判据）；
+  `FALSE_MILESTONE_5A_FILL.md`；`/mnt/build/tmp/grm2.c`（现行 shim）。
 - 本地实测（本轮）：`readelf --dyn-syms libosal_uipc.so` = 129 项，含全部 `osal_*` 同名 API；
   `readelf -r libObj.so` 有 21 个 `osal_*` + `GRM_gpermFillrect/Rectblit` 的 `R_ARM_JUMP_SLOT`。
