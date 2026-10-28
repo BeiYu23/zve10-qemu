@@ -3337,3 +3337,61 @@ t=2 : 0x008f013a enter=22 ret=11 | 0x3e014d enter=8 ret=4 | rcv 0x0094020a n=1
 `im.elf`(pid=128) 的 `M2INIT` 打出来了（说明库已加载、构造函数已跑），
 但它的**定时 dump 没有出现** ⇒ 它的 **stdout 不是 /dev/kmsg**（被 bootin 重定向到别处），
 写入丢失。修法：探针直接 `open("/dev/kmsg")` 写，而不是写 fd 1。
+
+---
+
+# ★★★★ 2026-10-29 16:00 第四十八层：双采样确证"永久未返回"；sync 语义侧证
+
+## QEMU 线双采样结果（探针 v2）
+```
+M2INIT pid=120 cmd=/usr/bin/bootin.elf
+M2INIT pid=128 cmd=/usr/bin/im.elf          ← im.elf 覆盖到了
+
+t=0  : 0x008f013a enter=22 ret=11 | 0x3e014d enter=8 ret=4 | rcv 0x0094020a n=1
+t=30 : 0x008f013a enter=22 ret=11 | 0x3e014d enter=8 ret=4 | rcv 0x0094020a n=1
+t=60 : 0x008f013a enter=22 ret=11 | 0x3e014d enter=8 ret=4 | rcv 0x0094020a n=1
+```
+**⇒ 60 秒不变 ⇒ **永久未返回**，不是采样在途（第 55 条方法论提出的在途假说被排除）。**
+
+## ★ sync 语义的静态侧证
+**拆 `libosal_uipc.so` 的 sync 家族：**
+```
+osal_snd_sync_msg              size=16     ← 薄包装
+__osal_snd_sync_msg            size=278    ← 真正实现
+osal_snd_sync_direct           size=336    ← 另一变体
+osal_reg_sync_msg_queue_cb     size=116    ← 注册 sync 回调
+__osal_finish_sync_cb          size=108    ← ★ sync 完成回调
+```
+**⇒ 存在 `__osal_finish_sync_cb`（完成回调）+ `osal_reg_sync_msg_queue_cb`（注册入口）
+⇒ sync 发送**确实有"完成"状态**，不是 fire-and-forget。
+⇒ `enter-ret` 冻结 ⇒ 有操作永远没到完成态 ⇒ 判据在语义上站得住。**
+
+**⚠️ 未能从静态判断 `osal_snd_sync_msg` 是"阻塞等完成"还是"异步+回调"
+（反汇编时被 Thumb 符号 +1 偏移坑了，输出错位）。
+⇒ 两种情况下都指向"有人没回应"，但"谁应回应"不同 ⇒ **仍需 E10 对照**。**
+
+## 待做的关键对照
+**在 E10 基线上挂同一个 `libm2probe.so`，读出画时的 `0x8f013a` / `0x3e014d` enter/ret：**
+```
+E10: 0x8f013a enter=N ret=N       ⇒ M2 的 ret=11/enter=22 属异常 ⇒ 指向缺响应方
+E10: 0x8f013a enter=N ret<N       ⇒ 该判据无效，M2 问题在别处
+E10: 0x3e014d 完全不出现           ⇒ M2 的 backup 队列确实异常（更有价值）
+```
+
+## ⚠️ 基准一致性提醒（重要）
+**QEMU 里测的是 **v9**，真机要刷的是 **v9b**，两者只差 `/bin/bt_firm.hcd`：**
+```
+v9  : be8ac916 (E10 版, 61,787 B)
+v9b : 208b064a (M2 版, 60,143 B)
+```
+**⇒ QEMU 无蓝牙硬件，此差异大概率不影响；
+但若发现任何蓝牙/BLE 相关行为差异，必须归到"v9 vs v9b"这个变量上，不能当成 M2 树固有属性。
+⇒ 结论若要指导真机，最终**用 v9b 在 QEMU 复核一次**（成本极低）。**
+
+## 方法论（第 56 条）
+**"异常数值"要区分三种可能：采样在途 / 永久未完成 / 语义本就如此。
+判据：**
+- **单次快照 ⇒ 只能怀疑**
+- **多次采样差距不变 ⇒ 排除"在途"**
+- **跨环境（已知正常基线）对照 ⇒ 排除"语义本就如此"**
+**⇒ 三级递进，缺一步都可能误判。本轮已完成前两步，第三步（E10 对照）是收官。**
