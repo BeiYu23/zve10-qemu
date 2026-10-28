@@ -891,3 +891,68 @@ M2  cpio   251,847,680 B = 240.2 MB   → 间歇性内核 Oops（+12 MB）
 外观与死锁完全一样。**
 **⇒ 判据：serial 里搜 `Exception>` / `Oops` / `Internal error`。
 ⇒ 更可靠：gdbstub 读 bt，一次就能区分"等输入"和"真死锁"。**
+
+---
+
+## ★★★★ 2026-10-28 20:50 第十三层：panic 是 init 退出，且精确定位到 mknod 段
+
+### 决定性 backtrace
+```
+[<6038eea0>] (__bug+0x0/0x2c)          from [<60141510>] (__bug_noarg+0xc/0x10)
+[<6038fd6c>] (panic+0x0/0x94)          from [<601624cc>] (do_exit+0xa0/0x6f4)
+[<6016242c>] (do_exit+0x0/0x6f4)       from [<60162bc8>] (do_group_exit+0x6c/0xd0)
+[<60162b5c>] (do_group_exit+0x0/0xd0)  from [<60162c44>] (__wake_up_parent+0x0/0x28)
+[<60162c2c>] (sys_exit_group+0x0/0x18) from [<6013dd80>] (ret_fast_syscall+0x0/0x3c)
+```
+**⇒ 用户态 pid1（/init）调用 `exit_group` ⇒ 内核 `do_exit` ⇒ `panic`（Linux: init 退出即 panic）。**
+**⇒ **不是栈溢出、不是内存不足** —— 是**init 提前退出**。**
+
+### init 的死亡位置（非常精确）
+```
+UI_BOOT_V2        1   ✓ 打印
+MODULE_END       14   ✓ 14 个模块全部 status=0
+BOOTIN_PID        0   ✗ 从未打印
+UI_AFTER_SLEEP_3  0   ✗ 从未打印
+```
+**⇒ 死在【最后一个 MODULE_END(grm_gles)】与【echo "BOOTIN_PID=$!"】之间。**
+
+**该区间内的语句：**
+```sh
+# Device numbers decoded from devno.ko's UDIF_DEVNODE table.
+for spec in 'uipc 251 207' 'backup 251 208' 'dmpgles2 248 29' \
+            'stream 249 7' 'stream2 249 8' 'ldec 251 205'; do
+    set -- $spec
+    [ -e /dev/"$1" ] || mknod /dev/"$1" c "$2" "$3"
+done
+cat /proc/uptime
+( LD_PRELOAD=/usr/lib/argtrace.so /usr/bin/bootin.elf ...; echo "BOOTIN_EXIT=$?" ) &
+echo "BOOTIN_PID=$!"
+```
+
+### 已排除的两个修复方向（都试过，无效）
+| 尝试 | 结果 |
+|---|---|
+| `/init` 末尾加 `while true; sleep 3600` 保活 | ❌ 无效（死得更早，没跑到） |
+| 删掉 `/init` 里的两段 `/proc` 转储 | ❌ 无效（同样 11,712 B） |
+
+### 下一轮（一步到位）
+**在 `/init` 的每个语句间插 `echo MARK_N`，重编跑一次，
+看最后打印的是哪个 MARK。**
+```sh
+echo M1_before_mknod
+for spec in ...; do set -- $spec; echo "M2_spec_$1"; [ -e /dev/$1 ] || mknod /dev/$1 c $2 $3; echo "M3_after_$1"; done
+echo M4_after_mknod
+cat /proc/uptime
+echo M5_after_uptime
+( ... bootin ... ) &
+echo M6_after_launch
+```
+**⇒ 一次运行就能定位到具体是哪条语句让 pid1 退出。**
+
+**⚠️ 注意：E10 树用**同一个 /init** 却能正常启动 ⇒ 差异来自 M2 树的内容
+（最可能是 `/usr/kmod/` 里的某个模块在 insmod 后改变了 /dev 行为，
+或 `mknod` 因 M2 的 devno.ko 不同而失败）。**
+
+### 方法论（第 18 条）
+**"serial 停在某字节数"看似无用，但配合 init 里的阶段标记（UI_BOOT_V2 / MODULE_END / BOOTIN_PID）
+就能把死亡位置夹在两行之间。插 MARK 是下一步最便宜的定位手段。**
