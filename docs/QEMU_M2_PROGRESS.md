@@ -4674,3 +4674,84 @@ QEMU 无法复现"；如果真机也不起，则回到"InfraInput 构造"继续�
 `appFw.so` 有 3 处 `InfraInput::GetInstance` 外部引用（`AdjChkConfig.so`、
 `appFw.so`、`libUsbChargingApp.so` 各 1 处）——
 若全局指针为 0，说明 **appFw 里那次调用没执行到**，这是最直接的下一步线索。
+
+---
+
+# ★★★★★ 2026-10-29 23:50 第六十层：输入链假设排除；**算出 InfraInput 全局指针地址**
+
+## ① QEMU 线：输入链模块假设**已排除**
+```
+按真实 init 顺序补 5 个模块：
+  load /kmod/i2c.ko        status=0
+  load /kmod/indctr.ko     status=0
+  load /kmod/udate.ko      status=0
+  load /kmod/mcmn_drv.ko   status=0
+  load /kmod/input.ko key_tbl=0 Input_debug=1   status=0
+serial 27,178 → 31,296（模块确实跑起来了）
+grep 'kbd:'   = 0
+grep 007a0020 = 0
+⇒ **input.ko 的 probe 依赖 udif_driver 匹配的设备节点，QEMU 的 zve10 机型不提供**
+⇒ **0x7a0020 不可能由内核模块创建**
+```
+
+## 四条假设，已排除三条
+| 假设 | 状态 | 证据 |
+|---|---|---|
+| 缺内核模块（input.ko 等） | ❌ 排除 | 补 5 模块 + Input_debug=1，`kbd:` 仍 0 |
+| `0x7a0020` 由内核注册 | ❌ 排除 | 同上 |
+| QEMU 缺硬件 ⇒ 原理不可行 | ❌ 排除 | M2 libObj 保留 16 个 InfraInput、不引用 /dev/input |
+| **InfraInput 构造未完成** | ⭕ **唯一剩余** | im.elf 注册 122 条队列却无 0x7a0020 |
+
+## ★★ 关键纠正：QEMU 里"破坏性实验"不成立
+**QEMU 挂死的代价 = kill 掉进程重跑 ⇒ **无持久资产被破坏**，"准备回滚"不存在。
+⇒ 真正的代价只是"这一轮拿不到其它数据"，可通过**把调用放在所有诊断收集完之后**规避。
+⇒ 所以这是"最后一轮才能做的实验"，不是"破坏性实验"。**
+
+## ★★★ 不需要线程的方案：信号处理器
+**QEMU 线报"im.elf 内部无法启动新线程（三种触发方式全部无效）"。
+⇒ **信号处理器不需要线程**（我在 samp3.c 里验证过：`setitimer(ITIMER_PROF)` + `SIGPROF` handler）。**
+```c
+setitimer(ITIMER_PROF,&it,NULL);     /* 150ms */
+sigaction(SIGPROF,&sa,NULL);
+/* handler 里：第 N 次信号时调用 GetInstance */
+out("M2GI try\n");                   /* 调用前落盘 */
+void*r=((void*(*)())0x208005)();     /* 直接调 */
+out("M2GI ret=%p\n",r);              /* 能到这里=没挂死 */
+```
+**⇒ "try" 有、"ret" 无 ⇒ **确认挂在 GetInstance 里** ⇒ 这就是答案。**
+
+## ★★★★★ 更好：**读全局指针**（算出地址了，零风险）
+**从 `GetInstance` 反汇编解出（两处 `ldr`+`add` 解出**同一地址**，交叉印证）：**
+```
+libObj 内偏移 = **0x003d7214**
+运行时绝对地址 = libObj加载基址 + 0x3d7214
+所在段: .bss (vaddr 0x3c7828, size 0xfcc8)
+
+推导：
+  208008: ldr r1,[pc,#144] → 字面量@0x20809c = 0x001cf204
+  20800c: add r1, pc       → PC=0x208010
+  ⇒ 0x001cf204 + 0x00208010 = 0x003d7214
+  20803a: ldr r3,[pc,#108] → 字面量@0x2080a8 = 0x001cf1d4
+  20803c: add r3, pc       → PC=0x208040
+  ⇒ 0x001cf1d4 + 0x00208040 = 0x003d7214   ← 同一个
+```
+**判读：**
+```
+global == 0  ⇒ 单例**从未构造** ⇒ 断点在更上游（谁该调 InfraInput 初始化）
+global != 0  ⇒ 单例**已构造**但队列没注册 ⇒ 断点在"构造完成到注册之间"
+```
+
+**对比调 GetInstance：**
+| | 调 GetInstance | **读全局指针** |
+|---|---|---|
+| 需要线程 | 是（失败） | **不需要** |
+| 副作用 | 有（构造/注册） | **无** |
+| 会挂死 | 可能 | **不会** |
+| 成本 | 一轮 QEMU + 可能白跑 | **10 分钟** |
+
+## 方法论（第 68 条）★★
+**"调用函数来观测状态"之前，先问："这个状态是否已经存在于某个全局变量里？"
+本次 `GetInstance` 的返回值本质上就是读一个 .bss 全局指针 ——
+**直接读它，比调用函数更安全、更便宜、且能区分更多状态**（函数只会返回 NULL/非 NULL，
+而全局指针还能配合邻近字段看出"构造到哪一步"）。
+⇒ **观测优先选"读状态"，而不是"触发行为"。**
