@@ -147,3 +147,39 @@ KEYINJECT Lq head=00000000 inst=0001d4e8     ← 监听链表头为 0
 2. a7c2-re 作者对 ZV-E10 的对应值（他是同架构，很可能知道怎么算）；
 3. 在 guest 里 hook `osal_rcv_msg_tmo` **并正确链回原函数**（我们之前纯透传也把 App 弄挂，
    说明该符号的 ABI 可能不是 3 个参数，需要更仔细的 ABI 验证）。
+
+## 188. 2026-10-28 ★★ ABI 透明拦截成功：拿到两个队列 id
+
+用户批准了"带 ABI 验证的拦截"（方案 3）。关键改动：**不再声明 C 函数原型**，
+改用裸汇编桩，保存 `r0-r3,lr` → 调 C helper → 恢复 → 尾调用 native：
+
+```asm
+push {r0,r1,r2,r3,lr}
+mov  r0, sp
+bl   keyinject_on_rcv
+pop  {r0,r1,r2,r3,lr}
+ldr  ip, =g_native_rcv
+ldr  ip, [ip]
+cmp  ip, #0
+bxne ip
+mvn  r0, #0
+bx   lr
+```
+
+结果：**native 解析成功（`native rcv=0x417203c`），桩被调用 4,276,400 次**，
+App 没有崩（之前用 C 原型声明时是直接卡死/不调用）。
+
+首次观察到的 qid 分布：
+
+```
+42762 次  0x00bd017a   ← 高频轮询（tmo=-1）
+    8 次  0x008f0139   ← 极少调用，很可能是输入队列
+```
+
+缓冲参数：`buf=0x082e9d5c tmo=0xffffffff`。
+
+### 已知副作用
+
+打了这个桩之后，那两次运行的 `export_ready` 没出现（`menu=0`）——
+可能是日志刷太多拖慢了启动（每 200 次打一条）。已改为**每个 qid 只打一次**，
+并开始试 `#Kq 0x008f0139 3`（UP 键）与 `#Kq 0x00bd017a 3`，比对画面 SHA256。
