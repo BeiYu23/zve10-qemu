@@ -171,3 +171,72 @@ UDC: dwc3.0, state=configured        ← 已被 Sony gadget 占用
 | `read_file` 读系统已有文件 | `0x10000006` | 只认本会话创建的文件 |
 | `/dev/usb/adb` | — | 无 adbd |
 | preload 任意格式 | — | environ 里始终为空 |
+
+---
+
+## 9. ★★★ `/setting/env.txt` —— 真正的注入通道（2026-10-29 反汇编确认）
+
+### 9.1 证据链
+
+`/sbin/init`（initramfs，带调试符号）中：
+
+```
+字符串:  parse_and_set_env / set_oreore_env / /setting/env.txt
+导入:    putenv@GLIBC_2.4  unsetenv@GLIBC_2.4  __environ
+符号:    parse_and_set_env = FUNC @0x97cc (228 B)
+         set_oreore_env    = FUNC @0x98b1 (152 B)
+         is_oreore_env     = OBJECT(4B) @0x14868   ← 只是标志位，本函数不引用
+```
+
+`parse_and_set_env` 反汇编（关键 5 条）：
+
+```asm
+9850:  movs r1, #61        ; '='
+9854:  blx  memchr         ; 在行里找 '='
+9858:  cbnz r0, putenv     ; 找到 → putenv(整行)
+985a:  blx  unsetenv       ; 没找到 → unsetenv(整行)
+9862:  blx  putenv
+9882:  bl  profile_entry
+```
+
+### 9.2 格式（实测+反汇编）
+
+| 写法 | 行为 |
+|---|---|
+| `KEY=VALUE` | `putenv("KEY=VALUE")` |
+| `SOMEKEY`（不含 `=`） | `unsetenv("SOMEKEY")` ← 可用来取消变量 |
+| `# 注释` / 前导空白 | `skip_comment_and_space()` 跳过 |
+| 单行长度 | 上限 1024 字节（超出截断） |
+| 变量名过滤 | **无**（`is_oreore_env` 在本函数里未被引用） |
+
+**调用时机**：init 的 `main` 内、`execve(bootin)` **之前** ⇒ 设入的环境变量
+**会被 bootin 及其 fork 的所有子进程（含 im.elf）继承。**
+
+### 9.3 为什么这是最佳注入点
+
+| 对比项 | `/setting/mode/preload` | `/setting/env.txt` |
+|---|---|---|
+| 实测生效 | ❌ environ 里始终没有 LD_PRELOAD | ✅ 代码级确认 |
+| 格式约束 | 白名单 + `strncmp(entry, buf+11, …)` | 标准 KEY=VALUE，无过滤 |
+| 影响范围 | 仅 im.elf | 所有 exec 的进程 |
+| 失败恢复 | 改文件内容 | **删文件即可** |
+
+### 9.4 用法
+
+```bash
+# 写（注意：Jiritsu 会沙盒化路径，必须用 shell cp 到真实 /setting）
+# 沙盒: Jiritsu write "/env.txt"
+cat > /setting/env.txt <<'EOT'
+# 注入探针
+LD_PRELOAD=/log/probe.so
+EOT
+
+# 恢复：删掉即可
+rm -f /setting/env.txt
+```
+
+### 9.5 待验证
+
+- [ ] 原厂环境下写 `LD_PRELOAD=/log/probe.so` → 重启 → 查 `/proc/*/environ` 是否出现
+- [ ] 探针 .so 必须 **nostdlib 纯 syscall**（相机 glibc 2.11.2，2018 工具链编的动态库加载不了）
+- [ ] 确认探针在 im.elf 里能正常执行 constructor（不被 dlopen 缓存影响）
