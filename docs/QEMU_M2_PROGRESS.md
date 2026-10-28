@@ -1974,3 +1974,69 @@ appFw.so：把 drawFramebuffer/updateFrame 作为 **UND** 导入 ⇒ 应该由 a
 （libgpe、以及更早发现的 libInfraFtpClient/libInfraSSHManager 同类）。
 ⇒ 判断"缺文件是否是问题"时，必须先确认**原厂固件自己有没有这个文件**，
 不能只看"注册表提到它 + 加载失败"。**
+
+---
+
+# ★★★★★ 2026-10-29 01:45 第二十五层：帧函数**从未被调用** —— 问题定性为"帧泵未启动"
+
+## 测量（Image.m2fp，确切 PID，探针纯转发）
+**探针 `fprobe.so`（7,768 B）interpose 三个新引擎导出的帧函数，纯转发 + 只数次数：**
+```
+_ZN2ux6gfxeng14GraphicsEngine15drawFramebufferEv
+_ZN2ux6wgtsys12WidgetSystem11updateFrameEv
+_ZN2ux6wgtsys12WidgetSystem10notifyDrawEv
+```
+
+**结果：**
+```
+drawFramebuffer 调用次数: 0
+updateFrame 调用次数:     0
+notifyDraw 调用次数:      0
+```
+
+**同时确认探针本身无害（流程未被破坏）：**
+```
+Application_Start ENTER: 1
+DMP_2D_Initialize:       1
+serial = 13,989 B（与无探针时同量级）
+帧 SHA = 34c69899504b（仍全零）
+```
+
+## ★★ 这个结果的意义：问题彻底换了一个性质
+```
+之前怀疑：地址不对？像素格式不对？画到别处了？
+现在确定：**帧函数从未被调用 ⇒ 根本没画**，不是"画错位置"
+```
+**⇒ 因此"扫描全 RAM 找帧缓冲"这条路**不必再走**（不会有帧缓冲内容），
+⇒ 目标判据改为：**让 `drawFramebuffer` 被调用**。
+
+## 新的核心问题：谁应该调它？
+**已知：**
+- `appFw.so` 把这三个符号作为 **UND 导入** ⇒ appFw 内部**有**调用点
+- 但 `Application_Start`（72 B）只是 6 次调用后返回，**不含事件循环**
+- 所以调用点应该在 appFw 的**其它函数**里，由**某个事件/定时器**触发
+
+**候选驱动源（按可能性）：**
+1. **显示/帧请求**：新架构可能是"请求→绘制→完成"三段式（对 a7c2 记录：`notifyDraw → drawFramebuffer`）
+   ⇒ **谁发第一个帧请求？** 可能是 LIRO 显示任务或 `im.elf`
+2. **定时器/周期任务**：`utimer` 驱动的 UI tick
+3. **输入事件**：首帧可能等第一次按键/触摸
+4. **某个服务 init 后主动触发首帧**：我可能漏了某个服务
+
+## 下一步（明确的三条，按可执行性）
+**① 静态定位调用者**：在 `appFw.so` 里找 `bl` 到 `drawFramebuffer@plt` 的调用点，
+   反汇编其所在函数，看它由什么条件驱动。（纯静态，最便宜）
+**② 确认帧请求的发起者**：查 `libObj` 里是否有 "frame request"/"draw request" 之类的字符串或 API
+**③ 主动触发**：若找到入口（如某个 `xxx_request_frame()`），用探针在 bootin 启动后主动调一次
+
+**优先 ①。**
+
+### 方法论（第 34 条）
+**"没有画面"有三个完全不同的层级：**
+```
+(a) 没画（帧函数未被调用）
+(b) 画了但画在别处（地址/格式错）
+(c) 画了但没显示（显示桥错）
+```
+**⇒ 必须先确定在哪一层，否则会在错误层级上浪费大量时间。
+本次用 3 个 interpose 计数（纯转发、不改变行为）一次就确定了是 (a)。**
