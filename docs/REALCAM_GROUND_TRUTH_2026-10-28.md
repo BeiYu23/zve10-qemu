@@ -771,3 +771,34 @@ KEYINJECT U send tid=215 n=2 sig=29 ret=0
 * 更安全的顺序：等 `export_ready=1`（菜单已画好）之后**再**打补丁，
   这样即使补丁有问题，菜单也已经存在；
 * 或者放弃 hook，改走"等对方 hook 的 `try_original_menu` 时机"——但那需要改对方代码，不做。
+
+## 175. 2026-10-28 hook 失败原因确定：那个地址已被 libuiobserve 占用
+
+显式 `#H` 命令（菜单已画好后强制打补丁）返回：
+
+```
+KEYINJECT hk prologue mismatch
+```
+
+`libObj+0x6196b8` 处的前 8 字节已经不是原始序言（`b0 b5 04 46 82 b0 00 af`），
+而是 **libuiobserve 写入的 thumb 跳转**——对方先把 `drawFramebuffer` 占了。
+
+### 推论（重要）
+
+对方的 hook 表把 **UI 线程上所有常用的每帧入口都占了**：
+
+```
+0x6196b8 drawFramebuffer   0x775120 engine_wait   0x775260 rm_execute
+0x776ad0 rm_step           0x572008 text_draw     notifyDraw
+```
+
+⇒ 想"搭便车"在 UI 线程执行自己的代码，**必须换一个对方没占用的函数**，而且：
+* 该函数要在 UI 线程上被周期性调用；
+* 它的前 8 字节要能安全地搬到 trampoline（PC 相对寻址要处理）。
+
+### 下一步选项
+
+1. 在 **viewUnified2**（视图库，基址已知）里找一个每帧调用的函数做 hook —— 需要反汇编定位；
+2. 在 libObj 里找 `notifyDraw` 之外的、UI 线程 tick（如 `TimerEvent` 派发）做 hook；
+3. 放弃 hook，改 **GPIO 硬件模型**（在 QEMU 侧让 App 自己的 keyscan 读到按键）——
+   最贴近真机，但要逆向 `/dev/gpio` 的寄存器语义。
