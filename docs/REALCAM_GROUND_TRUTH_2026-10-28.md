@@ -82,3 +82,32 @@ KEYS = {MENU:0x1ab, ENTER:0x1ac, UP:0x3, DOWN:0x30, LEFT:0x15, RIGHT:0x1af, DELE
 同时确认：`#N` 现在会先轮询 `helper+0x20`（20 次、间隔 0.5s），
 再把 helper 对象 `+0x00..+0xff` 全量 dump（`KEYINJECT H+xx=...`），
 便于人工找出队列 id。
+
+## 185. 2026-10-28 ★ 最近几轮"实验失败"的真因：`consd.py` 丢了
+
+`/mnt/build/consd.py`（串口日志采集守护）在会话中途丢失，
+导致实验脚本永远检测不到 `export_ready=1`、日志目录里连 `z*.log` 都没有——
+**看起来像"启动 50% 失败"，实际是采集器没了**。
+
+已重建 `consd.py` 并纳入仓库 `tools/guest/consd.py`。重建后第一次运行**即成功**：
+
+```
+attempt 1 menu=1
+KEYINJECT helper=0002cb48
+KEYINJECT qpoll i=0  obj=0002b928 +20=0
+KEYINJECT qpoll i=10 obj=0002c238 +20=0
+KEYINJECT qpoll i=11 obj=0002c320 +20=0
+...
+```
+
+### 新发现
+
+`libObj+0x8c2690(instance)` 每次返回**不同地址**（0x2b928 → 0x2c238 → 0x2c320 …），
+说明它不是稳定 getter（可能是遍历/分配器），所以 `+0x20` 永远读到 0。**qid 不在那里。**
+
+### 下一轮
+
+1. `#D` dump **InfraInput 实例本身** `+0x00..+0x100`（之前只看了 0x40）；
+2. 之前抓到过注册节点（`inst+0x9c` 链表）里 `node+0x18 = 0x007ae01f`（队列 id 候选），
+   把整条链表 dump 出来，逐个作为 `#K` 的目标队列试；
+3. 仍不行就按 a7c2 的 queue 形态（`0x807a0020`）在 ZV-E10 libObj 的数据段里找相似常量。
