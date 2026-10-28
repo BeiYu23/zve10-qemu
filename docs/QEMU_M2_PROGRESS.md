@@ -1005,3 +1005,66 @@ Internal error / Oops 出现 2 次
 ### 方法论（第 19 条）
 **用 `sed` 给 shell 脚本插标记时，缩进/空格不匹配会静默失败（我这次 `M4` 就没插进去）。
 ⇒ 插完必须 `sed -n` 打印修改后的段落**确认**，不能只看 "patched" 字样。**
+
+---
+
+## ★★★★★★ 2026-10-28 21:25 第十五层：panic 已消除！bootin 跑起来，图形层初始化
+
+### 修复方法
+**重写 `/init` 为最小干净版（去掉所有调试语句）：**
+```sh
+mount proc/sysfs/devtmpfs
+echo INIT_V3_START
+load() 14 个 kmod
+echo INIT_V3_MODULES_DONE
+mknod 6 个设备节点
+echo INIT_V3_MKNOD_DONE
+( LD_PRELOAD=/usr/lib/argtrace.so /usr/bin/bootin.elf 'target=qemu ' dmode=3 amode=normal ) &
+echo INIT_V3_LAUNCHED
+while true; do sleep 3600 || true; done
+```
+
+### 结果（Image.m2v3）
+```
+INIT_V3_START
+INIT_V3_MODULES_DONE
+INIT_V3_MKNOD_DONE
+INIT_V3_LAUNCHED          ← ★ init 活到保活循环
+panic = 0                 ← ★★ 不再 panic！
+串口 9,095 B
+```
+
+**⇒ 之前所有 panic 的元凶是 `/init` 里的**调试语句之一**（最可能是 `cat /proc/uptime`，
+也可能是 `ps` / `cat /proc/interrupts`）。删掉后 init 不再退出，内核不再 panic。**
+
+### 但 bootin 随后停住
+```
+ARGTRACE dlopen /usr/lib/libObj.so -> 0x24068     ×5
+<4>liro: Unknown symbol dma330_mem_transfer_async (err 0)   ← 警告
+!!! GLES Vecgen disabled.
+===== DMP_2D_Initialize : 0
+（再无输出，串口停在 9,095 B）
+```
+
+**⇒ bootin 已启动、libObj 已加载、GLES/DMP_2D 图形层已初始化，
+但**卡在 `DMP_2D_Initialize : 0` 之后**，未到 appFwBoot / appFw。**
+
+**⇒ 当前阻塞点从"内核 panic"推进到"图形层初始化之后"，
+比之前（停在 init）前进了一大步。**
+
+### ⚠️ 可疑线索
+**`liro: Unknown symbol dma330_mem_transfer_async (err 0)`
+⇒ `liro.ko` 需要的符号未被 `dma330_stub.ko` 导出。
+⇒ 可能是 stub 模块不完整，导致 liro 后续路径阻塞。**
+
+### 下一轮（按优先级）
+1. **确认 `DMP_2D_Initialize` 之后 bootin 卡在哪**：挂 gdbstub 在卡住时读用户态 PC
+   （注意：这次 gdb 连不上，可能 -s 没加；下次加 `-s`）
+2. **处理 `dma330_mem_transfer_async` 缺失**：检查 `dma330_stub.ko` 导出的符号表，
+   对比 `liro.ko` 的需求，补一个导出（这是 harness 层，可控）
+3. **对比 E10 基线**：E10 同样加载这些模块，是否也报这条 warning？（若也报则可忽略）
+
+### 方法论（第 20 条）
+**"内核 panic" 和 "应用层卡住" 是两个完全不同层级的问题。
+之前 5 轮都在追内核 panic（init 退出），一旦修掉，阻塞点立刻前移到图形层。
+⇒ 先修当前这层，不要跨层猜测。**
