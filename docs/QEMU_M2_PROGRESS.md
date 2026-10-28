@@ -773,3 +773,43 @@ ARGTRACE >>> Application_Start ENTER        ← 进入了
 ### 方法论（第 14 条）
 **`blx` 目标是 ARM 态时，用 `-M force-thumb` 反汇编会得到乱码（我这次前两个就是）。
 看到 `stmia r0!,{...}` + `bx pc` 这类"像数据"的指令，先怀疑是 ARM/Thumb 模式错了。**
+
+---
+
+## ★ 2026-10-28 20:05 第十一层：0x54f664 内无等待原语；gdbstub 通路已打通
+
+### ① 0x54f664 的调用清单（不自然 thumb 模式反汇编）
+内部调用 23 个：0x52b0ca 0x52bf6c 0x547eb8 0x548146 0x54821c 0x54833c 0x548380 0x5483e4
+0x54d668 0x54dae4 0x54dbe0 0x54dcac 0x54e8f0 0x54eb30 0x54ed00 0x54ed98
+0x54ef74 0x54f004 0x54f548 0x60e210 0x60e2f4 0x710b14 0x712100
+PLT 调用仅：__aeabi_uldivmod、memcpy（无阻塞可能）
+
+⇒ **0x54f664 里没有直接的 osal_wai_sem / pthread_cond_wait / 阻塞型 PLT 调用。**
+⇒ 阻塞不在这一层，或在更深子调用里。
+
+### ② gdbstub 通路确认可用（下一轮直接用）
+```
+gdb-multiarch   /usr/bin/gdb-multiarch          ✅
+arm-linux-gdb   <toolchain>/bin/arm-linux-gdb   ✅
+QEMU 支持       -s (= -gdb tcp::1234)           ✅
+```
+
+### ③ 本轮未完成
+带 -s 的运行两次被外部信号中断（后台 job + 长 sleep 组合不稳），gdb 连接超时。无残留进程。
+
+### 下一轮（决定性一步）
+```
+1) 起 QEMU（带 -s）作为独立后台 job
+2) 多次短检查（每次 sleep <= 20s）确认 serial 已过 Application_Start
+3) gdb-multiarch -batch -ex "target remote :1234" -ex "info registers pc" -ex "bt 10"
+```
+PC 落在哪个库/偏移 ⇒ 直接得到阻塞点。
+要显示函数名需 add-symbol-file appFw.so 0x<加载基址>，否则先拿裸 PC 手工换算。
+
+### 方法论（第 15 条）
+长 sleep 放在单条命令里容易被外部清理；应拆成分步短检查。
+
+### 方法论（第 16 条）
+**`pkill -f '<模式>'` 会匹配到自己的命令行导致自杀。**
+本会话已两次因此丢掉输出（`pkill -f 'm2qemu/qemu-system-arm'` 和 `pkill -f 'timeout.*qemu-system-arm'`）。
+安全写法：用 `pgrep` 先列出 PID，确认不含 `$$` 后再按 PID kill。
