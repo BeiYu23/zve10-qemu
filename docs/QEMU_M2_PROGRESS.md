@@ -1,0 +1,134 @@
+# QEMU M2 移植实验 —— 进度台账（跨轮记忆锚点）
+
+> **每次实验后必须更新此文件**：镜像 md5、串口关键行、结论、下一步。
+> 目标：在 QEMU 里抓帧确认 **新菜单画面出现**。
+
+## 0. 环境（固定，勿改）
+
+```
+工作区: /mnt/build/m2qemu/
+QEMU  : /mnt/build/m2qemu/qemu-system-arm   md5 320155640ef7
+        (= /mnt/build/work-q/qemu-11.1.2/build-zve10/qemu-system-arm，同一二进制)
+启动  : ./start-m2.sh   （-M zve10 -cpu cortex-a9 -smp 4 -m 1024
+                        cfg.uart=3，双 serial → out/<名>/serial0.log
+                        无 -initrd，cpio 内嵌在 Image 里）
+工具链: /mnt/build/ref-chocotan-zve10/work/armv7-eabihf--glibc--stable-2020.08-1/bin/arm-linux-
+        ⚠️ 编译前必须 export LD_LIBRARY_PATH=<toolchain>/lib（否则 cc1 找不到 libmpfr.so.4）
+内核源: /mnt/build/ref-chocotan-zve10/work/linux-kernel   （只读引用）
+构建体: /mnt/build/m2qemu/work/kbuild-ui2/               （2.1 GB，可增量）
+结构化: CONFIG_INITRAMFS_SOURCE=<指向我的 ui.cpio>
+```
+
+**复现命令：**
+```bash
+cd /mnt/build/m2qemu
+IMAGE=work/Image.xxx SECONDS_MAX=300 SMP=4 OUT=out/xxx ./start-m2.sh
+# 一次只能一台 QEMU；跑前 pgrep -x qemu-system-arm 确认
+```
+
+## 1. ★ 硬规则（踩过的坑）
+
+| # | 规则 |
+|---|---|
+| 1 | **改 cpio 后必须 `rm -f kbuild-ui2/usr/initramfs_data.o` 再 make Image**，否则跑的是旧代码 |
+| 2 | 校验 `strings Image \| grep -c <标志>` 确认改动进了镜像 |
+| 3 | **cpio 打包必须排除备份目录**（`usr.e10bak` 曾被打进去，cpio 从 240 MB 涨到 478 MB） |
+| 4 | **一次只跑一台 QEMU**（双实例会抢 CPU，时序敏感的服务初始化会超时） |
+| 5 | 抓帧地址 = `guest_phys 0x22c48000`（640×480×2，RGBA4444）；宿主地址 = QEMU 进程里 **≥900 MB 的 rw-p 映射基址 + 0x22c48000** |
+| 6 | 判"有画面"用**采样非零字节数**：E10 基线 ≈ 3855，全黑 = 0 |
+| 7 | **`libkeyinject.so` 必须移除**（拦截 `osal_rcv_msg_tmo` 改变行为，导致到不了菜单） |
+
+## 2. 已构建的镜像
+
+| 镜像 | 大小 | md5(前12) | 内容 | 结果 |
+|---|---|---|---|---|
+| `work/Image.e10clean` | 242,898,308 | `8ce8992310a3` | E10 原始 usr + libuiobserve，无 keyinject | ✅ **61/61 init + 帧非零 3855（菜单出来了）** |
+| `work/Image.m2obs` | 255,473,028 | `aad0287313e2` | **M2 混合 usr** + libuiobserve | ⚠️ 59/59 init，`Application_System_Init` 返回 0，**帧全零** |
+| `work/Image.m2arg2` | 255,481,220 | — | M2 混合 usr + **我的 argtrace（dlopen 日志）** | ❌ 那次 QEMU 卡在内核初始化，未取得数据 |
+
+## 3. ★ 已确证的事实
+
+### 3.1 M2 栈比真机症状走的远得多
+```
+UI_INIT_ENTER=59  UI_INIT_RETURN=59              ← 59 个服务全部初始化成功
+UI_RESOLVE  Application_System_Init = 0x119a9271
+UI_INIT_ENTER Application_System_Init arg=0x4102601
+UI_INIT_RETURN Application_System_Init result=0  ← 成功返回
+```
+**⇒ 加载链通、绘制链断。**
+
+### 3.2 `arg` 实测值（argtrace 直接打印）
+```
+ARGTRACE enter arg=0x4005601 str="AppConfig.so"
+ARGTRACE return 0x0
+```
+
+### 3.3 libIMDB 注册表项（字节位置）
+```
+appFwBoot.so                    @0x55DC
+Application_System_Init         @0x55E9
+AppConfig.so                    @0x5601   ← 传给 init 的配置串
+/usr/local/lib/AdjChkConfig.so  @0x5673
+```
+
+### 3.4 ★ 更正：`arg` 不是分支判据
+**`appFwBoot.so` 的 `.rodata` 顺序：**
+```
+AppConfig.so → appFw.so → Application_Start → AdjChkConfig.so → app_adjchk_ui::main_loop → AppFw
+```
+**正确理解（待反汇编最终确认）：**
+```c
+if (arg == "AppConfig.so")   // 正常
+    dlopen("AppConfig.so") → dlopen("appFw.so") → dlsym("Application_Start")
+else                          // 调整模式
+    dlopen("/usr/local/lib/AdjChkConfig.so") → dlsym("app_adjchk_ui::main_loop")
+```
+**⇒ 昨天"传错参数导致加载错 UI"的假设【撤回】。`AppConfig.so` 是正常配置。**
+
+### 3.5 线程状态对比（判据）
+| | E10 基线 | M2 |
+|---|---|---|
+| `im.elf` | 有 8 秒 CPU 时间 | 停在 `osal_rcv_msg_tmo` |
+| 线程 wchan 分布 | **875 × `cond_wait`**（菜单空闲态） | 43 × `osal_rcv_msg_tmo` + 34 × `futex`，**零 `cond_wait`** |
+| 帧缓冲 | 非零 3855 | **0** |
+
+## 4. 当前断点范围
+
+`Application_System_Init` 返回 0 之后，线程执行 `Main()`：
+```
+uxengine_init2()                                   ← libObj 提供
+initializeArena()
+Kernel::sys_setCurrentDirectory("/usr/share/app/")
+AreaCheckExtensionManager::setCheckDataPath("/usr/share/app/area_check_data.dat")
+AreaCheckExtensionManager::setLogPath("/tmp/area_check_log.dat")
+GraphicsEngine::setOverflowResizeFontAttribute(28, 21)
+GraphicsEngine::setOverflowResizeLayoutAttribute(0x22)
+ResourceManager::setDatabase("global.xdb")
+ResourceManager::sys_setFontNameWithNamespace(0x33)
+entry()    ← appFw.so 的 Application_Start
+```
+
+**四种可能（未区分）：**
+```
+① appFw.so dlopen 失败
+② uxengine_init2() 内部失败（依赖 /dev/dmpgles2、dmm.ko）
+③ setDatabase("global.xdb") 失败（cwd 问题）
+④ Application_Start 内部早退
+```
+
+## 5. 下一步（一次运行即可区分 ①②）
+
+**跑 `Image.m2arg2`，看 `ARGTRACE dlopen` 行：**
+```
+出现 dlopen path=/usr/lib/appFw.so -> 0xNNNN   ⇒ ① 通过，断点在 Main() 后面
+出现 dlopen path=/usr/lib/appFw.so -> (nil)    ⇒ ① 失败，查 errno/符号
+完全没有 appFw.so 这行                          ⇒ 卡在 AppConfig.so 之前
+```
+
+**tracer 源码：`/mnt/build/m2qemu/src/argtrace.c`（导出 `dlopen`+`dlsym`，只记录 appFw/libObj/AdjChk/AppConfig 相关）**
+
+## 6. 其他资源
+
+- 混合 usr 树：`/mnt/build/fw/port_m2/out/usr`（238,652,994 B / 858 文件）
+- E10 原始 usr 备份：`/mnt/build/m2qemu/usr.e10bak`
+- 对方工作区（**只读，勿改**）：`/mnt/build/ref-chocotan-zve10/`
