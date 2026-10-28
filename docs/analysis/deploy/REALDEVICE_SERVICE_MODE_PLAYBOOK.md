@@ -301,3 +301,73 @@ constructor 写 `/log/BOOTPROBE.txt`（含 maps）。
 | M2 版 `libInfraMscServer.so` 导致 USB 消失 | 单变量换入原厂 `/usr`，重启 | **USB 完全正常** ⇒ 无关，已恢复原状 |
 | `/setting/mode/preload` 通道 | 两种格式（裸路径 / `LD_PRELOAD=` 前缀）+ 真实写入 `/setting` | environ 里始终无 `LD_PRELOAD` ⇒ 此固件 bootin 不传 |
 | FileControl `0xff01` | cmd 0/1/2/3 全试 | 一律 `128` ⇒ 未实现 |
+
+---
+
+## 12. LD_DEBUG 可行性（2026-10-29 从 initramfs 挖 loader 验证）
+
+### 12.1 loader 实测支持的 LD_* 变量（`/lib/ld-2.11.2.so`，101,736 B，glibc-ports-2.11）
+
+```
+LD_AUDIT          LD_DEBUG          LD_DEBUG_OUTPUT   LD_DYNAMIC_WEAK
+LD_LIBRARY_PATH   LD_ORIGIN_PATH    LD_PRELOAD        LD_PROFILE
+LD_SHOW_AUXV      LD_USE_LOAD_BIAS
+```
+
+**⚠️ 注意：`LD_BIND_NOW` 不在列表里 ⇒ 这个 loader 不支持，别用。**
+
+### 12.2 LD_DEBUG 可用选项
+
+```
+libs   reloc   files   symbols   bindings   versions   statistics   all
+```
+
+### 12.3 推荐用法（分两步，别一次开满）
+
+**第一步 —— 只看库加载（最关键，输出最小）**：
+
+```
+/setting/env.txt:
+LD_DEBUG=libs
+LD_DEBUG_OUTPUT=/setting/ldd
+```
+
+**⚠️ `LD_DEBUG_OUTPUT` 是**前缀**，实际生成 `前缀.<pid>`**
+⇒ 每个进程（bootin / im.elf / qsi 等）各生成一个文件
+⇒ 用 `ls /setting/ldd*` 查看，**正好能区分"哪个进程加载了什么"**
+
+**第二步 —— 确认有值得深挖的线索后，再开 `bindings`**：
+
+```
+LD_DEBUG=bindings
+```
+（输出量大，appFw 64 MB 的绑定事件可能几十万条，有拖慢/挂住启动的风险）
+
+### 12.4 前置检查
+
+- **`/setting` 可用空间**：`df /setting` 或 `ls -la`（LD_DEBUG 输出可能几 MB）
+- 输出前缀路径必须在**已挂载**的分区上（`/setting` ✓，`/log` ⚠️ 可能晚于 bootin）
+
+### 12.5 备用机制（本次不用，记着）
+
+| 变量 | 用途 | 为什么先不用 |
+|---|---|---|
+| `LD_AUDIT` | rtld-audit 接口，每次符号查找/绑定回调，**比 preload 更可靠** | 需实现 `la_version`/`la_symbind` 一组接口，复杂 |
+| `LD_PROFILE` | loader profiler 记录某库调用统计（输出到 `/var/profile`） | 要输出路径可写；先定位到"卡在哪"再说 |
+
+## 13. 明天（2026-10-29）执行序列（最终版）
+
+```
+① 相机 USB 模式改回「大容量存储」（当前掉到 054c:0994 充电模式）
+② 跳过 —— LD_DEBUG 支持性已确认
+③ 查 /setting/env.txt 现状（存不存在 / 内容 / 会不会被 init 重写）
+   ③a df /setting 看可用空间
+   ③b 记下 LD_DEBUG_OUTPUT 是前缀，输出是 <前缀>.<pid>
+④ 写 /setting/env.txt:
+     LD_DEBUG=libs
+     LD_DEBUG_OUTPUT=/setting/ldd
+⑤ 重启 → ls /setting/ldd.* → 读内容，看 appFw.so 有没有被 dlopen
+⑥ 视结果决定：加 bindings / 上探针 / 改 bootin
+```
+
+**失败成本**：只写了 `/setting` 的一个文件，删掉即恢复。**不碰 /usr，不刷任何分区。**
