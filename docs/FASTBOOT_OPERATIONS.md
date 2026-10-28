@@ -96,7 +96,36 @@ python3 host/bootstrap.py --read-lba 0x56006
 | `host/dump_and_scan.py` | ✅ | dump `/setting` 与 `/log` 并扫描启动失败证据 |
 | `host/read_setting_mode.py` | ✅ | 读 `/setting/mode/`（`dmode`、`preload`） |
 | `host/restore_rescue.py` | ⚠️ | 需要 `offline-verification.json` + `nflasha.read1.bin` 格式的备份，**我们没有**，别用 |
-| `host/fb_partition.py` | ❌ | 依赖 `stage2/build/stage2.bin`，**该目录不存在**，一跑就 `FileNotFoundError` |
+| `host/fb_partition.py` | ⚠️ | 依赖 `stage2/build/stage2.bin`；该文件已于 2026-10-28 从 toolkit 补齐，**现在可用了** |
+
+### 4.1 从 `dino2048/zv-e10-toolkit` 补进来的工具（MIT，见 `fastboot/LICENSE.toolkit-dino2048`）
+
+| 工具 | 用途 |
+|---|---|
+| `host/read_root_dir.py` | **通用**：解析 FAT12 BPB → 读整个根目录 → 解码 LFN 链，报出条目名/簇号/size 字段的绝对位置。只读 |
+| `host/read_preload.py` | 读 `ld.so.preload`(簇 393) 与 `.orig`(簇 367) 的实际内容 + FAT12 链 |
+| `host/disable_preload.py` | **救砖核心**：把 `ld.so.preload` 的 dirent size 改成 0（净改动 1 字节），带 A–F 六道硬门禁 |
+| `host/restore_preload.py` | 反向：从 ground truth 写回一个块恢复原状 |
+| `host/zve10_fb.py` | 单级 fastboot 客户端（`oem peek/poke/call/load`），调试寄存器用 |
+| `host/stage2_if.py` / `run_stage2.py` | 最小 stage2 的加载/调用接口 |
+| `host/n15_check.py` | `/usr`（nflasha15）健康检查 |
+| `host/stage2_selftest.py` / `emmc_write_test.py` / `idle_timeout_test.py` / `darwin_probe.py` / `wdt_evidence.py` | 写路径自检 / 会话时限 / 看门狗取证 |
+
+⚠️ `disable_preload.py` 的门禁是**为"size=20 的干净坏状态"写死的**（Gate B 要求目标块与
+`build/emmc-groundtruth/` 里的基准逐字节相同，Gate D 要求 `size==20`）。我们的相机现在
+`size` 可能是 `/etc/ldtest.so` 的长度，`ldtest.so` 也还在分区里 ⇒ **直接跑会 fail 在 Gate B/D**。
+正确做法是照它的原语自己写一个"接受任意当前 size"的版本（`read_root_dir.py` 的
+`Device` + 单块写回即够），或先把 GT 重新采集一遍。
+
+### 4.2 两套 stage2，别混用
+
+| 二进制 | 大小 | 谁用 | 提供什么 |
+|---|---|---|---|
+| `prebuilt/stage2-flash.bin` | 10,588 B | `bootstrap.py`、`flash_partition.py`、`verify_partition.py` | 完整 fastboot 命令：`flash:<part>`、`oem upload/read-block`、sparse |
+| `stage2/build/stage2.bin` | 1,860 B | `read_root_dir.py`、`read_preload.py`、`disable_preload.py`、`fb_partition.py` | 最小原语：poke 参数 → call → 读/写单块 |
+
+两者加载地址都是 `0xFE300000`。`stage2/build/stage2.bin` 原先在 oss 里缺失，2026-10-28
+从 toolkit 补入；源码在 `fastboot/stage2/`，可 `make -C fastboot/stage2 build-flash` 重编。
 
 ## 5. 地址换算（关键）
 
@@ -110,16 +139,24 @@ nflasha15  = 0x2D800000 → LBA 0x16C000  (/usr，300 MiB)
 nflasha11  = 0x0B800000 → LBA 0x170000  (/log，500 MiB)
 ```
 
-nflasha10 内部（FAT12，`rsvd=1, nfats=1, fatsz=4, rootent=512, spc=32`）：
+nflasha10 内部（FAT12，实测 BPB：`bps=512 spc=32 resv=1 nfats=1 spf=3 rootent=512`，
+总扇区 24576）：
 
 ```
-分区偏移 0x000   FAT 引导扇区        → LBA 0x56000
-分区偏移 0x400   FAT 表（4 扇区）     → LBA 0x56002
-分区偏移 0xA00   根目录区（16 KiB）   → LBA 0x56005
-分区偏移 0x4A00   数据区
+分区偏移 0x000   FAT 引导扇区          → LBA 0x56000
+分区偏移 0x200   FAT 表（3 扇区）       → LBA 0x56001
+分区偏移 0x800   根目录区（512 条目=16 KiB）→ LBA 0x56004
+分区偏移 0x4800   数据区（簇 2 起点）    → LBA 0x56024
 分区偏移 0x0C60   /etc/ld.so.preload 的目录条目 → LBA 0x56006，扇区内 0x60
                   其 size 字段在条目 +28 = 扇区内 0x7C
 ```
+
+簇 n 的绝对位置：`LBA = 0x56024 + (n - 2) × 32`
+（例：`ld.so.preload` 的簇 393 → LBA 0x59104；`.orig` 的簇 367 → LBA 0x58DC4）
+
+> 早期笔记里把 `spf` 记成 4（于是 root 起点 0xA00），**是错的**。上面这组数字来自
+> 手工解析原厂镜像，且与 `dino2048/zv-e10-toolkit` 里 `disable_preload.py` 的硬编码门禁
+> `(bps,spc,resv,nfats,spf,rootent)==(512,32,1,1,3,512)` 逐项一致。
 
 ## 6. 读回 / 校验（刷写前后都跑）
 
