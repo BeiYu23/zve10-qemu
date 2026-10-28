@@ -6567,3 +6567,42 @@ lr 奇偶： odd=124  even=0     ← 全为奇数（Thumb 位），字段取对�
 用**同一份修好的探针**跑 E10，得到 E10 的 `(库名, 数量)` 分布，
 与上面逐条对比 ⇒ 找出"M2 里**完全没有注册**的库"（那些库的 init 从未执行）。
 那份差集就是真正可执行的断点清单。
+
+## 79. 2026-10-29 ★★★ 跨代可比数据出炉：M2 有 10 个库的注册**完全没发生**
+
+同一份修复后探针（`lr=r[5]` + dladdr）分别跑 E10 与 M2，按库统计注册事件：
+
+```
+lib                                  E10   M2   判读
+/usr/lib/libMWF.so                   122   14
+/usr/lib/libObj.so                   111   53
+/usr/lib/libbackup.so                 44    0   ★ M2 完全没跑
+/usr/lib/libNetService.so              6    0   ★
+/usr/lib/libupdaterufp.so              6    0   ★
+/usr/lib/libmprctrl.so                 4    0   ★
+/usr/lib/libdig_level.so               3    0   ★
+/usr/lib/libInfraHttpClient.so         3    0   ★
+/usr/lib/libmpr.so                     3    0   ★
+/usr/lib/libgps_rsrc.so                2    0   ★
+/usr/lib/libInfraIPsec.so              1    0   ★
+/usr/lib/libInfraNetDeviceInfo.so      1    0   ★
+（其余两代都有：BluetoothCore 10/10、Ether 6/6、WlanResource 4/4、RsrcHotshoe 4/4 …）
+M2 独有：libUsbControl 4 / libsencore 2 / libInfraNetRfTest 2 / libBusPower 2 / libUsbBusPower 2
+```
+
+### 判读
+
+1. **`libbackup.so` 在 M2 里 0 次注册，而文件存在且大小与 E10 完全相同（9,384 B）**
+   ⇒ 不是缺文件，是**它的初始化从未被调用**；
+2. `backup.ko` 在两边都是 `status=0` ⇒ **不是内核模块问题**，是用户态 `libbackup.so` 的 init 没跑；
+3. `libMWF.so` 122 → 14、`libObj.so` 111 → 53 ⇒ M2 的初始化**远早于**这些库就停住了；
+4. 缺失的 10 个库都是"下游服务"（NetService / updaterufp / mpr* / dig_level /
+   HttpClient / gps_rsrc / IPsec / NetDeviceInfo）⇒ 与"卡在早期初始化"一致。
+
+### 下一轮（收敛到"最先没跑的那个"）
+
+要给注册事件**加时间戳**（同一进程内日志顺序≈时间顺序，但多线程会交错）：
+按时间取每条库的**首次注册**，排序后第一个"E10 有、M2 没有"的库
+⇒ 那就是 M2 停下的位置。
+
+⚠️ 不要再用偏移/地址排序（§77 方法论 ③）。
