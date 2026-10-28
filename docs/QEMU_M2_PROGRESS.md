@@ -132,3 +132,55 @@ entry()    ← appFw.so 的 Application_Start
 - 混合 usr 树：`/mnt/build/fw/port_m2/out/usr`（238,652,994 B / 858 文件）
 - E10 原始 usr 备份：`/mnt/build/m2qemu/usr.e10bak`
 - 对方工作区（**只读，勿改**）：`/mnt/build/ref-chocotan-zve10/`
+
+---
+
+## ★ 2026-10-28 17:20 重大进展：找到并修复 appFw.so 加载失败
+
+### 根因（链式）
+```
+appFw.so
+  └─ DT_NEEDED libNetCommon.so        ← 混合树保留了 E10 版 (md5 c3f505a0)
+       └─ DT_NEEDED libmprctrl.so     ← 只存在于 ZV-E10，ZV-1M2 根本没有
+            ⇒ 混合树没带 libmprctrl.so
+  ⇒ dlopen("appFw.so") 返回 NULL
+  ⇒ Application_System_Init 仍返回 0（不检查失败）→ 静默
+  ⇒ 真机现象：无 UI、无日志、无报错
+```
+
+### 修复
+```
+把 initramfs-ui/usr/lib/libNetCommon.so 换成 ZV-1M2 版 (md5 1444fb66348e)
+⇒ 其 DT_NEEDED 不含 libmprctrl，全部可解析
+```
+
+### 验证（itraces 实测）
+| 阶段 | 结果 |
+|---|---|
+| 修复前 | `ARGTRACE dlopen FAILED path=appFw.so err=libmprctrl.so: cannot open shared object file` |
+| **修复后** | **`ARGTRACE dlopen path=appFw.so flags=0x101 -> 0xa9c48` ✅ 加载成功** |
+
+### 当前状态
+```
+✓ 59/59 服务初始化
+✓ appFwBoot.so 加载、Application_System_Init 调用返回 0
+✓ appFw.so 加载成功（修复后）
+✗ 帧缓冲仍全零（采样非零=0）
+✗ 线程 cond_wait=0 / osal_rcv_msg_tmo=41（未进入菜单空闲态）
+⇒ 第二层问题：加载成功但未渲染
+```
+
+### 镜像
+| 镜像 | 说明 |
+|---|---|
+| `work/Image.m2fix2` | **当前最好版本**：M2 混合 usr + libNetCommon 修复 + argtrace |
+
+### 踩坑记录（新增规则 8）
+**`CONFIG_INITRAMFS_SOURCE` 必须指向当次打包的 cpio！**
+我曾打包了 `ui.cpio.fix` 但配置仍指向 `ui.cpio.arg`，导致镜像里是旧内容、白跑一轮。
+**⇒ 每次重编前先 `grep CONFIG_INITRAMFS_SOURCE kbuild-ui2/.config` 确认。**
+
+### 下一步
+1. 在 argtrace 中再 hook `Application_Start`，确认 appFw 的入口是否被调用
+2. 若调用：查 `uxengine_init2` / `setDatabase` / 渲染循环
+3. 若未调用：查 appFwBoot 建线程那一步
