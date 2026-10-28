@@ -512,3 +512,25 @@ menu 已绘制后，用 gdb 在 `osal_snd_sync_msg` 下断，90 秒内**一次�
 2. 若它被调用，就用 gdb **在返回后写入伪造的 `_InfraInputEvent`**（纯宿主侧、不改 guest 代码），
    验证"按键 → 菜单变化"整条路径是否成立；
 3. 路径验证通过后，再把伪造逻辑做成 guest 侧的输入服务（`osal_reg_sync_msg_queue_cb`）。
+
+## 162. 2026-10-28 直接调用 `GetEventStatus` 可以（但参数形式要改）
+
+从控制通道执行 `#G 0`：
+
+```
+KEYINJECT GetEventStatus id=0 ret=2147483646 (0x7FFFFFFE)
+KEYINJECT ev+00=00000000 ev+04=00000000 ev+08=7ffffffe ev+0c=00000000
+```
+
+`ret` 与写入 `ev+0x08` 的值都是 `0x7FFFFFFE`，明显是**错误码**（不是事件）。
+
+原因：函数签名是 `GetEventStatus(int, int, _InfraInputEvent*)`（mangled 名里只有 3 个参数，
+**没有 this**），而我按 `(inst, id, 0, ev)` 传了 4 个参数，把参数全错位了。
+
+### 下一轮
+
+1. 改成 `GetEventStatus(a, b, ev)` 三参数调用，遍历 a/b 的小整数组合，
+   看哪个返回 0 并且 `ev` 被填出合理内容（键码/状态）；
+2. 若返回 0 的调用存在，说明**我们能读事件**；然后尝试把"按下的键"写进 `ev` 再交给
+   内部派发（同样是只读+调用，不改代码）；
+3. 另可对照 `RmCallback(inst,id)`（#C）与 `SetEventKeyList` 等导出方法。
