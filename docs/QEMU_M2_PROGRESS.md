@@ -2598,3 +2598,57 @@ BLE assert 出现次数: 2         （仍存在）
 a7c2 的问题起点是"启动屏已建、只差切菜单"，
 我们的起点是"帧循环未启动、UI 线程无首帧"。
 **起点不同 ⇒ 同一个招法不可移植**，只能借思路。**
+
+---
+
+# ★★★★ 2026-10-29 08:00 第三十六层：emg_init 是 6 字节桩，不是阻塞点
+
+## 静态结论
+```
+libEMG.so 总大小 5,872 B
+emg_init        size = 6      ← 极小的桩函数，不可能阻塞
+emg_res         size = 6
+emg_sus         size = 6
+emg_notice_init size = 6
+emg_notice_thread size= 6
+emg_check_memory_shortage size = 332   ← 唯一有实质逻辑的
+```
+**⇒ 服务序列停在 `emg_init` **只是日志的最后一条**，它本身立刻返回。**
+
+## 因此重新定位阻塞
+**已确证：**
+1. **`Application_Start` 被进入但**从未返回**（argtrace 只打出 ENTER）**
+2. **帧循环（在 `Application_Start` 的 #4 `0x54f664` 内）从未执行**（7 个探针全 0）
+3. **CPU 空闲**（100 秒仅 10 个采样）⇒ **在等待，不是在忙**
+4. **服务序列 40 个后无输出**
+
+**⇒ 三点交叉推出：`Application_Start` **阻塞在它的 #1/#2/#3 之一里，且是"等待"性质**。**
+- #2（`0x54d154`）、#3（`0x54d2b0`）从反汇编看是 vtable/构造器，很快返回
+- **#1 是 veneer → `0x2c2ed85`（440 B 栈帧，继续调 `0x2ce819c`/`0x25c848a`/`0x2ce8754`…）**
+- **⇒ 等待最可能在 #1 的那条链里**
+
+## 下轮：取证"到底等什么"
+**方案：`/init` 里加**限量**的 wchan 监视**
+```sh
+( bootin ... ) &
+( for i in 1 2 3 4 5 6; do
+    sleep 15
+    for p in /proc/[0-9]*; do
+      c=$(cat $p/comm 2>/dev/null)
+      case "$c" in im.elf|bootin.elf)
+        echo "WCHAN $c $(cat $p/wchan 2>/dev/null) state=$(awk '{print $3}' $p/stat 2>/dev/null)"
+      ;; esac
+    done
+  done ) &
+```
+**6 轮 × 2 进程 = 12 行，不会写满 kmsg（吸取之前 /proc 全量 dump 的教训）。**
+
+**判据：**
+- **wchan 是 `osal_wai_sem` / `osal_rcv_msg_tmo` ⇒ 等 osal 队列/信号量**
+- **wchan 是 `futex` / `poll` ⇒ 等 pthread/设备**
+- **wchan 是 `msleep`/`schedule_timeout` ⇒ 定时等待（可能只是超时长）**
+
+### 方法论（第 45 条）
+**"日志最后一条" ≠ "阻塞点" —— 又一次上当：
+服务序列停在 `emg_init`，但它是个 6 字节桩。
+⇒ 判断阻塞点必须看**函数大小/是否含等待原语**，而不是"日志停在哪"。**
