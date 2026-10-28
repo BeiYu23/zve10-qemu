@@ -4320,3 +4320,85 @@ regs_before = 122（两个变体合计，与上一轮一致）
 4. `input.ko` 的 probe 在 QEMU 里不会被调用（`udif_driver` 无设备节点）⇒ 内核输入假设排除；
 5. `InfraInput::GetInstance`(0x208005) 是**惰性单例**，构造路径含 `movs r0,#122`(=0x7A)
    与"无限等信号量"，推论：**M2 可能卡在该构造路径内部**（尚未验证）。
+
+---
+
+# ★★★★★ 2026-10-29 22:00 第五十七层：真实 init 的**完整模块清单**（32 个）—— harness 缺 17 个
+
+## 来源：真实 `/sbin/init`（28,716 B，从 M2 nflasha3 的 initrd.img 提取，ext2 格式）
+
+## ★ init 加载的 32 个模块（从 init 字符串直读）
+```
+/usr/kmod/{accel, backup, codec_drv, compass, dma330, dmm, grm_gles, grm_ma,
+           i2c, indctr, input, iris_dial, kikilog, mag, mcmn_drv, mmc_drv,
+           ms_drv, msen_drv, nfc, osal_uipc, osal_ulogio, osal_utm,
+           sata_drv, sircs, stream2, stream, udate, upm, usb_extcmd,
+           usbg_sen, usb_portMonitor, utimer}.ko
+```
+
+## ★★ 我的 harness `/init` 只加载 15 个，**缺 17 个**
+```
+我的 15 个: devno dmac ldec osal_utm osal_uipc dma330_stub backup
+            utimer osal_ulogio kikilog stream stream2 dmm grm_ma grm_gles
+
+❌ 缺（★ = 输入链路关键）:
+   i2c.ko ★          indctr.ko ★       input.ko ★★
+   iris_dial.ko ★★   udate.ko ★        mcmn_drv.ko ★
+   sircs.ko nfc.ko msen_drv.ko sata_drv.ko mag.ko
+   codec_drv.ko compass.ko accel.ko upm.ko
+   usb_extcmd.ko usbg_sen.ko usb_portMonitor.ko
+```
+
+## ★★★ 推断：输入链路模块缺失可能是 `0x7a0020` 未注册的真因
+**QEMU 线单独加载 `input.ko` 时 `kbd: init` 没打印（判断 probe 未调用）。
+但真实 init **先加载 i2c/indctr/iris_dial/udate/mcmn_drv**，再加载 input.ko。
+⇒ `input.ko` 的 probe 很可能需要这些前置模块创建的设备/驱动。**
+
+**⚠️ 且 `udif_driver_register`（input.ko 依赖的框架）**不在任何 .ko 的导出表里**
+⇒ 要么在内核，要么由某个未加载模块提供（`mcmn_drv.ko` 是候选）。**
+
+## 建议实验（按真实顺序补输入链）
+```
+① 加 i2c.ko → indctr.ko → iris_dial.ko → udate.ko → mcmn_drv.ko
+② 再加 input.ko（key_tbl=0 Input_debug=1）
+③ 看 kbd: init (tbl:N)
+④ 看 reg 表是否出现 0x7a0020
+⚠️ 只加输入链 6 个，其他（sata/nfc/msen/usb_*）暂不动 —— 避免一次改太多变量
+```
+**⚠️ 路径：真实 init 用 `/usr/kmod/xxx.ko`（nflasha15 挂 /usr 后其根即 kmod/）。
+harness 按实际挂载结构选 `/usr/kmod/` 或 `/kmod/`。**
+
+## ★ 分区挂载的理解修正（QEMU 线/真机线的纠正）
+**nflasha15 挂到 `/usr` 后，**镜像根就是 `/usr`** ⇒
+镜像里的 `/kmod` = 运行时 `/usr/kmod`（103 个 .ko）。
+⇒ 我之前查"v9b 的 /usr/kmod = 0"是**搞错了**（镜像里没有 `usr/kmod` 子目录，因为根就是 /usr）。
+⇒ **真机线纠正正确：v9b 的 /kmod 是满的（103 个，与原厂一致）。**
+
+## ★ 真实 init 的挂载与 env 机制（真机线验证 + 我补充）
+```
+init 明确挂:  /usr（ext2→no-compress→cramfs→vfat 依次尝试）、/system、/setting
+/setting 出现 7 次    /usr 出现 46 次    /log 出现 **仅 1 次**
+⇒ **/log 可能未在 execve(bootin) 前挂载** ⇒ `LD_PRELOAD=/log/probe.so` 有静默失败风险
+⇒ **建议改用 `LD_PRELOAD=/setting/probe.so`**（/setting 明确在挂载列表，bootin 前必就绪）
+```
+**真机线反汇编确认 `parse_and_set_env`@0x97cc：**
+```
+含 '=' → putenv(整行)；不含 '=' → unsetenv(整行)；支持注释；单行上限 1024 字节
+无白名单过滤（is_oreore_env 只是个标志变量，该函数未引用）
+调用时机在 execve(bootin) 之前 ⇒ bootin 及其 fork 的子进程（含 im.elf）都继承
+```
+
+## ★ 零代码方案：`LD_DEBUG`（真机线可试）
+```
+LD_DEBUG=libs / files / bindings    →  glibc 打印库加载与符号绑定到 stderr
+LD_BIND_NOW=1                       →  立即绑定，缺失符号立刻暴露
+LD_DEBUG_OUTPUT=/setting/lddebug    →  输出到文件，避免刷屏
+⇒ 可能**不写任何探针**就看到 appFw.so 是否被 dlopen、卡在哪个符号
+```
+
+## 方法论（第 65 条）★★
+**"分区镜像里的路径" ≠ "运行时的路径"：
+nflasha15 挂载在 `/usr` ⇒ 镜像根 `/kmod` = 运行时 `/usr/kmod`。
+⇒ 检查镜像内文件时，必须先把**挂载点**考虑进去，否则会得出"文件不存在"的错误结论。
+本次我因此误判"v9b 没有 kmod"，被真机线纠正。
+⇒ **更可靠的做法：从 `init` 的字符串里直接读它引用的**运行时路径**，那才是权威。**
