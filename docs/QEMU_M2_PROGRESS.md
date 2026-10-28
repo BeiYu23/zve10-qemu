@@ -4402,3 +4402,73 @@ nflasha15 挂载在 `/usr` ⇒ 镜像根 `/kmod` = 运行时 `/usr/kmod`。
 ⇒ 检查镜像内文件时，必须先把**挂载点**考虑进去，否则会得出"文件不存在"的错误结论。
 本次我因此误判"v9b 没有 kmod"，被真机线纠正。
 ⇒ **更可靠的做法：从 `init` 的字符串里直接读它引用的**运行时路径**，那才是权威。**
+
+---
+
+# ★★★★★ 2026-10-29 22:40 第五十八层：相机 loader 的 `LD_DEBUG` 能力**实测确认**（省真机线一步）
+
+## 提取与分析
+```
+initramfs /lib/ld-2.11.2.so   101,736 B   （glibc-ports-2.11）
+initramfs /lib/libc-2.11.2.so 984,292 B
+initramfs /lib/ld-linux.so.3  → 软链（12 B）
+```
+
+## ★ 支持的 `LD_*` 变量（完整清单，从 loader 字符串读出）
+```
+LD_AUDIT
+LD_DEBUG            ★
+LD_DEBUG_OUTPUT     ★
+LD_DYNAMIC_WEAK
+LD_LIBRARY_PATH
+LD_ORIGIN_PATH
+LD_PRELOAD
+LD_PROFILE
+LD_SHOW_AUXV
+LD_USE_LOAD_BIAS
+```
+
+## ★ `LD_DEBUG` 的可用选项
+```
+libs   reloc   files   symbols   bindings   versions   statistics   all
++ "warning: debug option `%s' unknown; try LD_DEBUG=help"
+```
+
+## ❌ **`LD_BIND_NOW` 不在支持列表里**
+**⇒ glibc 2.11 的 loader 可能不支持（或被编译掉）⇒ 真机线的计划里那行应去掉。
+⚠️ 但不影响目标：`LD_DEBUG=bindings` 本身会记录绑定过程，缺失符号会以错误形式出现。**
+
+## ⭐ 意外发现：`LD_AUDIT` 也支持
+**rtld-audit 接口可在**每次符号查找/绑定**时回调，比 `LD_PRELOAD` 更可靠
+（不用替换符号）。⚠️ 但需实现 `la_version`/`la_symbind` 等，复杂度高于 preload。
+⇒ 建议先不用，`LD_DEBUG` 出结果后再说。**
+
+## ⭐ `LD_PROFILE` 也支持
+**`LD_PROFILE=libxxx.so` 记录该库调用统计（输出通常到 /var/profile）。
+⇒ 后续想知道"哪个函数被调得多"时可用。**
+
+## 使用要点（给真机线）
+```
+1) LD_DEBUG_OUTPUT 指定的是**前缀**，实际生成 `前缀.<pid>`
+   ⇒ 多进程（bootin/im.elf/fork 子进程）各生成一个 ⇒ 正好能区分"哪个进程加载了什么"
+2) 先只用 **LD_DEBUG=libs**（输出小，直接回答"appFw.so 有没有被 dlopen"）
+   拿到结果后再决定是否开 bindings（appFw 64MB，绑定事件可能几十万条，输出几 MB）
+3) ⚠️ 需先确认 /setting 剩余空间（大输出可能写满或阻塞启动）
+```
+
+## 明天的真机实验序列（已更新）
+```
+① 相机 USB 模式改回「大容量存储」
+② ~~strings ld-linux.so.3 确认 LD_DEBUG~~ ✅ 已完成，跳过
+③ 查 /setting/env.txt 现状（存在/内容/是否被 init 重写）
+③a 查 /setting 剩余空间
+④ 写 env.txt: LD_DEBUG=libs + LD_DEBUG_OUTPUT=/setting/ldd (+ LD_PRELOAD=/setting/probe.so)
+⑤ 重启 → ls /setting/ldd.* → 分析 appFw.so 是否加载
+```
+
+## 方法论（第 66 条）★
+**"某机制是否可用"这类前置验证，往往可以**离线**完成：
+不必等设备连上，直接从**同一固件镜像里提取对应的二进制**检查其字符串表即可。
+⇒ 本次 `LD_DEBUG` 支持性验证：设备在充电模式连不上，但从 initramfs 提取
+   `ld-2.11.2.so` 一查即知，省掉真机线明天的一个步骤。
+⇒ **凡"需要设备在手才能确认"的前提，先问一句"能不能从镜像静态确认"。**
