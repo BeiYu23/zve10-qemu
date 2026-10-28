@@ -830,3 +830,35 @@ GPIO2SDIO.elf   SDIO2GPIO.elf   SetPort.elf   ...
 1. **在 viewUnified2 里找每帧函数 hook**（该库完全没被对方占用，且它就在 UI 线程上绘制）；
 2. 透明拦截 `osal_rcv_msg_tmo`（PLT 层、非代码补丁），借 UI 线程的消息泵执行我们的请求；
 3. SDIO↔GPIO 桥的 QEMU 模型（最贴近真机，但工作量最大）。
+
+## 177. 2026-10-28 找到"未被占用"的每帧函数：libObj+0x7748e0
+
+用 BL 编码扫描（Python 按 Thumb-2 BL 解出目标）找到 `software_present`(0x774ef0) 的三个调用者：
+
+```
+0x775488 → 函数起点 0x7748e0
+0x7776f2 → 函数起点 0x776fd0 附近
+0x777930 → 同上
+```
+
+`0x7748e0` **不在 libuiobserve 的 hook 表里**（他们占了 12 个点，没有这个），
+且它在每帧路径上（调用 present）。
+
+序言：
+
+```
+7748e0: e92d 47f0   stmdb sp!, {r4,r5,r6,r7,r8,r9,sl,lr}
+7748e4: b082        sub sp, #8
+7748e6: 4c9a        ldr r4, [pc, #616]     ← PC 相对，必须重定位
+```
+
+⇒ 不能像之前那样简单复制 8 字节，要照对方 `install_rm_hook` 的做法：
+**复制 12 字节 + 把那条 `ldr rX,[pc,#imm]` 的字面量搬进 trampoline 并改基址**。
+
+### 下一轮（明确实现步骤）
+
+1. 把对方 `install_rm_hook` 的重定位逻辑移植进我们的库（12 字节 + 字面量池）；
+2. 目标 `g_base + 0x7748e0`，序言校验 `e9 2d 47 f0 b0 82 4c 9a`；
+3. hook 内：先调原函数，再检查 `g_pending`，有请求就在**本线程**（已确认是每帧的 UI 路径）
+   调 `views+0x590f35` / `views+0x47de27`；
+4. 然后 `#V n` 逐页请求 + 抓帧比对。
