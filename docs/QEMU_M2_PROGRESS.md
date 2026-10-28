@@ -6809,3 +6809,27 @@ snd    = 17    （与 §83 一致）
 1. 记录 `__builtin_return_address(1)`（注册调用的调用者），定位"最后几次注册"的上一层；
 2. 单变量试模块：先把 `dma330_stub.ko` 换回真实 `dma330.ko`，验事件数后再继续；
 3. 若仍卡：考虑 M2 的 `im.elf` 与 v9 树里 `im.elf` 版本是否匹配（E10 版 im.elf + M2 libs 的混搭风险）。
+
+## 86. 2026-10-29 "启动器版本混搭"假设排查：所有树里都是同一份 bootin/im.elf（无法验证 M2 变体）
+
+```
+v9 树 (zv_m2probe/root/bin)
+  bootin.elf md5 d8bfb4f7fc  15,336 B
+  im.elf     md5 f1c746e3f5  23,240 B
+
+全盘搜索同名的其它树：
+  /mnt/build/fw/emu/root/usr/bin/bootin.elf      d8bfb4f7fc  相同
+  /mnt/build/fw/port_m2/out/usr/bin/bootin.elf   d8bfb4f7fc  相同
+  /mnt/build/fw/port_m2/out/usr/bin/im.elf       f1c746e3f5  相同
+  /mnt/build/m2qemu/usr.m2_v2/bin/im.elf         f1c746e3f5  相同
+  /mnt/build/m2qemu/work/initramfs-ui/usr/bin/*  相同
+```
+
+**⇒ 所有可得树（含标称 M2 的 port_m2 / usr.m2_v2）用的都是同一份启动器**，
+与协作方曾提到的"M2 版 md5 3545261c / d2f47a82"对不上 —— 那份 M2 变体在本机**不存在**。
+
+### 结论
+
+* **无法做"换 M2 启动器"这个单变量实验**（没有材料）；
+* 但也说明：这些启动器很可能**跨机型通用**（bootin 只是按 IMDB 表加载 appFwBoot/appFw），
+  "混搭启动器"更可能不是元凶 —— 该假设**降级为低优先级**，不再投入。
