@@ -555,3 +555,52 @@ appFw.so 重定位类型：
 1. **跑前确保 `pgrep -x qemu-system-arm` 为空**，并检查宿主机负载（`uptime`）
 2. **改试 `-smp 1`**（单核，无 SMP 初始化 ⇒ 绕开这个崩溃点；代价是慢，但能先拿到功能层结果）
 3. 每次跑完都跑一次 **E10 基准** 校验环境仍健康（应 3879 帧）
+
+---
+
+## ★★ 2026-10-28 18:45 第六层：找到干扰源 + 崩溃精确到 build_sched_domains
+
+### ① 干扰源确认
+**跑之前/运行中，**对方的 QEMU 正在同时运行**：**
+```
+pid=1088043 [02:39 98.0% CPU] /mnt/build/work-q/qemu-11.1.2/build-zve10/qemu-system-arm -M zve10 -smp 4 ...
+  ⇒ 【对方的会话】，不是我自己的
+pid=1088060 [02:39 90.5% CPU] /mnt/build/m2qemu/qemu-system-arm -M zve10 -smp 1 ...
+  ⇒ 我的
+```
+**⇒ 两个 QEMU 各占满一核，宿主 4 核 ⇒ 严重争用。**
+
+### ② 崩溃精确位置（`-smp 1` 也会崩！）
+```
+[<6015a7a0>] (build_sched_domains+0x0/0x818) from [<60462310>] (sched_init_smp+0x68/0x110)
+[<604622a8>] (sched_init_smp+0x0/0x110)     from [<6045aa78>] (kernel_init+0xa8/0x1dc)
+```
+**⇒ 崩在 `build_sched_domains`（sched_init_smp 内部的分域构建）。**
+**⇒ **即使单核 `-smp 1` 也崩** ⇒ 与 CPU 数量无关，是内核初始化期的内存/资源分配失败。**
+
+### ★★★ 新假设（最有解释力）
+**initramfs 是**解压到 ramfs** 的，**占用真实 RAM**：**
+```
+E10 树: 226 MB usr + 其余 ≈ 228 MB cpio   → 正常启动，帧 3879
+M2  树: 238 MB usr + 其余 ≈ 240 MB cpio   → 崩在 build_sched_domains
+```
+**⇒ M2 的 initramfs 比 E10 大约 12 MB，可能把内核早期初始化（`build_sched_domains` 需要分配
+per-CPU 数据与调度域）的内存压到了阈值以下。**
+
+**⚠️ 另有旁证：对方也说 `-smp 2` 常卡、`-smp 4` 才快 —— 说明这套配置对内存/时序敏感。**
+
+### 下一轮起点（按优先级）
+1. **等对方 QEMU 停下再跑**（`pgrep` 确认只有我一台），先排除争用
+2. **缩减 M2 的 initramfs 体积**验证内存假设：
+   - 删掉混合树里 E10 专属的 4 个库（`libInfraCameraAllSetting/Profile`、`libInfraExtTransferApp`、`libclema`）
+   - 或删掉确认不用的 `share/` 大文件
+   - 目标：让 cpio ≤ E10 的 228 MB
+3. **若缩减后能稳定启动** ⇒ 内存假设成立，再逐步加回必需文件
+4. 备选：给 QEMU 加 `-m 2048`（若机型支持），直接排除内存不足
+
+### 镜像
+| 镜像 | 结果 |
+|---|---|
+| `Image.e10ctl` | 3879 帧 ✅（基准，228 MB cpio） |
+| `Image.m2s2` | Application_Start ENTER，帧 0（**曾成功启动过**） |
+| `Image.m2long` | build_sched_domains 崩溃（240 MB cpio） |
