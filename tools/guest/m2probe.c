@@ -6,10 +6,12 @@
 #include <dlfcn.h>
 #include <fcntl.h>
 #include <pthread.h>
+#include <pthread.h>
 #include <stdio.h>
 #include <string.h>
 #include <unistd.h>
 #include <link.h>
+#include <pthread.h>
 #include <pthread.h>
 
 static int g_kfd = -1;
