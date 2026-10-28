@@ -5102,3 +5102,64 @@ M2  全部移除，新增 SetKeyRepeat/SetKeyRepeatReset/SetEventKeyListAll/GetP
 
 **⇒ 待做：E10 上单 preload（只挂探针，不挂 libuiobserve）跑一次，拿 122 条级别的注册表。**
 （双 preload 会 stall，这条已踩过；单 preload 需要重编一次 E10 镜像。）
+
+---
+
+# ★★★★★ 2026-10-30 02:00 第六十四层：`0x7a0020` 是**输入汇聚点**（14 处常量反查到 8 个子系统）
+
+## 完整反查（每处常量 → LDR 指令 → 所在函数）
+```
+字面量       LDR 位置    所在函数
+0x1ec8fc   0x1ec8d0    EyeFiCard_Init
+0x1fa824   0x1fa71a    infra_hotshoe_init          （2 处）
+0x1faf94   0x1fae9c    infra_hotshoe_init
+0x1fc13c   0x1fc046    InfraDial::SetDialEventInterval_Individual
+0x1fe098   0x1fe042    infra_sircs_init
+0x1fe168   0x1fe152    infra_sircs_init
+0x2007a0   0x200764    InfraTp::SetTpConfig
+0x200e04   0x200d4a    InfraTp::SetTpEventSw
+0x202150   0x20201c    infra_tp_init               （2 处）
+0x20231c   0x2021da    infra_tp_init               （2 处）
+0x2079ec   0x207944    InfraInput::GetPhyKeyStatus
+0x20820c   —（无 LDR，可能 movw/movt 拼或函数边界偏差）
+0x20a844   0x20a5b2    InfraInput::SetEventKeyList （2 处）
+0x20d614   0x20d368    PhyKeyConfigFree
+```
+
+## ★★★ 关键定性
+**这 8 个函数全是**输入源**：**
+```
+hotshoe（热靴/闪光灯）   sircs（红外遥控）   InfraDial（拨盘）
+InfraTp（触摸面板）      EyeFiCard（WiFi 卡）
+InfraInput::GetPhyKeyStatus / SetEventKeyList（物理按键）
+PhyKeyConfigFree（按键配置）
+```
+**⇒ `0x7a0020` 不是 InfraInput 私有队列，而是**所有输入源共同投递的汇聚点（input sink）**。
+⇒ **"架构变了所以不需要"的猜测被推翻**（8 个子系统活跃引用，绝不可能是死代码）。
+⇒ **但"缺 0x7a0020 = bug"也不能确认 —— 因为这 14 处都是**发送方**，不是接收方。**（第 71 条方法论再次印证）
+
+## ★★★ 发送方 vs 接收方的关键区分
+```
+E10: bootin rcv 0x7a0020 n=6      ← **bootin 是接收方**（收到 6 条输入事件）
+M2 : bootin rcv 只有 0x94020a     ← bootin 不接收输入了
+M2 : im.elf rcv 40+ 条，无 0x7a0020
+⇒ **M2 里没有任何进程注册/接收 0x7a0020**
+⇒ 若 M2 输入仍走这条队列（8 个发送方都在），则**输入事件发出去没人收**
+```
+
+## 下一步：**E10 的 reg 表**升为最高优先级
+**QEMU 线原本计划做但被我劝退的"E10 完整 reg 对照"，现在变成最关键一步。**
+```
+E10 上 0x7a0020 确实有人接收（bootin n=6）⇒ 必然有人注册了它
+⇒ 看 E10 reg 表：哪个进程、lr 指向哪个函数注册的
+⇒ 那个函数 = M2 里缺失的接收方
+⇒ 对比：M2 的 libObj/appFw 里还有没有这个函数
+   - 函数在但没调用 ⇒ 断点在调用链
+   - 函数被移除   ⇒ 看 M2 用什么替代（可能即 0x7a0029）
+```
+
+## 方法论（第 72 条）★★
+**"常量被引用"只能证明代码存活，不能证明该路径被执行，更不能证明角色未变。
+`0x7a0020` 在 M2 被 8 个**输入源**引用（发送侧），而缺失的是**接收侧**——
+**同一个 id 的发送方与接收方是两件事，必须分开验证。**
+⇒ 分析队列/端点类问题时，先问"谁是发送方、谁是接收方"，再分别查各自是否就位。**
