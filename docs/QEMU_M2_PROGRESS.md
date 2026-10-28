@@ -1495,3 +1495,66 @@ multi   13,926 B  → 0（5 次采样）
 **"样本量 1 的成功"只能证明可行性（feasibility），不能证明正确性（correctness）。
 我在第 16 轮用 1 次成功下了"突破"结论，后续 5 次失败说明只能定性为**可行性已验证**，
 稳定性仍未解决。⇒ 结论措辞必须区分 feasibility 与 reliability。**
+
+---
+
+## ★★★★★ 2026-10-28 23:50 第二十二层：间歇性来自**第二个蓝牙 assert**
+
+### 新采样（3 次）
+```
+run1: serial=14,052  帧=0  grm_init=1 DMP=1
+run2: serial=13,545  帧=?  grm_init=1 DMP=1（QEMU 提前退出）
+run3: serial=13,926  帧=0  grm_init=1 DMP=1
+```
+**⇒ 三次 `grm_init`/`DMP_2D` 都成功，帧仍 0；**serial 长度差异大（13,545~14,052）**。**
+
+### ★ 关键：成功与失败**尾部完全相同**
+```
+（两者最后三行都是）
+!!! GPE HW: PSC dummywrite disabled.
+assert at infra_wrapper_bluetooth.cpp:1886
+function:void infra_wrapper_bluetooth::detail::load_im()
+```
+**⇒ 两次都走到**同一个蓝牙 assert**（`infra_wrapper_bluetooth::detail::load_im()`）。
+⇒ **成功那次 assert 之后继续执行了；失败那次停住。**
+
+**⇒ 这与第 17 层的 BLE 发现呼应：我只移除了 `libInfraBluetoothLowEnergy.so`，
+但 `infra_wrapper_bluetooth` 显然还在**别的蓝牙库里**运行。**
+
+### 下一轮（最快可能是这一步就能稳定）
+1. **定位 `infra_wrapper_bluetooth.cpp` 字符串在哪个库**（下面命令已跑）
+2. **评估移除该库的影响**（谁 DT_NEEDED 它）
+3. **若无人依赖 → 移除 → 跑 3 次看是否 3/3 成功**
+
+### 方法论（第 29 条）
+**"成功与失败日志尾部相同" 是极强信号：说明分叉发生在**更早**的地方，或者
+分叉不在代码路径上而在**时序/超时**（同一个 assert 有时致命中止、有时被容忍）。
+⇒ 遇到这种"尾部相同"的情况，应重点查**超时/重试/竞态**，而不是继续找代码差异。**
+
+### ★ 补充（22:50 追加）：assert 在 `appFw.so` 内部，无法移除
+```
+grep 'infra_wrapper_bluetooth.cpp' → 命中 appFw.so
+⇒ infra_wrapper_bluetooth::detail::load_im() 是 **appFw.so 自己的代码**
+⇒ 不能像 libInfraBluetoothLowEnergy.so 那样移除
+```
+**⇒ 该 assert 是 appFw 在 BLE 固件镜像加载失败（仿真环境无蓝牙硬件）时触发的自查。
+⇒ 成功那次 assert 后**继续**执行；失败那次**停住**。
+⇒ 剩余间歇性 = **appFw 在 assert 之后的行为是时序相关的**。**
+
+### 剩下的蓝牙库（都还在，但都不是 assert 的来源）
+```
+libInfraBluetooth.so           98,952 B
+libInfraBluetoothClassic.so   130,548 B
+libInfraBluetoothCore.so      217,400 B   ← 被上面两个 + libBTAdjust + WoLEBoot 依赖
+libInfraBluetoothWoLEBoot.so    7,904 B
+libResourceBluetooth.so         7,804 B
+```
+
+### 最后两轮方向
+1. **让 appFw 的 BLE 路径"快速失败"**：给 BLE 提供假的 IM 文件/设备节点，
+   让 `load_im()` 断言前就返回成功（或至少不阻塞）
+2. **或接受 1/6 成功率**：目标判据（抓帧确认画面）已达成，稳定性作为已知限制记录
+
+### 方法论（第 30 条）
+**当 assert 出现在**被测组件自己**的代码里（本例 appFw.so），
+"移除依赖"这条路就走到头了 —— 只能改被测组件的行为，或接受其不确定性。**
