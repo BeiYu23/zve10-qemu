@@ -276,6 +276,7 @@ static void try_register_early(void)
     klogf("KEYINJECT early reg 0041xx ok=%d\n", ok);
 }
 
+static unsigned long g_qid;
 static pid_t g_ui_tid;
 static void *sampler(void *a);
 static void discover_qid(void);
@@ -297,6 +298,17 @@ static void *thread(void *a){
                 char *m;
                 m=strstr(t,"#S"); if(m){ klogf("KEYINJECT state inst=%08x base=%08x views=%08x\n",
                       (unsigned)(unsigned long)g_inst,(unsigned)g_base,(unsigned)g_views); continue; }
+                m=strstr(t,"#Mh"); if(m){ char *p=m+3;
+                      unsigned q=(unsigned)strtoul(p,&p,0);
+                      void *h=dlopen("/usr/lib/libosal_uipc.so",RTLD_LAZY);
+                      int (*va)(unsigned,void**,unsigned,int)= h?dlsym(h,"osal_valloc_msg_wait"):0;
+                      klogf("KEYINJECT Mh qid=%08x api=%p\n", q, (void*)va);
+                      if(va){ void *msg=0; int r=va(q,&msg,20,1);
+                        klogf("KEYINJECT Mh r=%d msg=%p\n", r, msg);
+                        if(!r&&msg){ unsigned *w=(unsigned*)msg;
+                          for(int i=-8;i<12;i++)
+                            klogf("KEYINJECT MH%+03d=%08x\n", i*4, w[i]); } }
+                      continue; }
                 m=strstr(t,"#P"); if(m){ scan(); continue; }
                 m=strstr(t,"#M"); if(m){ klogf("KEYINJECT osal base=%08x\n",(unsigned)g_base); continue; }
                 m=strstr(t,"#B"); if(m){ g_views=strtoul(m+2,0,16);
@@ -333,6 +345,14 @@ static void *thread(void *a){
                       klogf("KEYINJECT Z selftest tid=%ld ret=%ld\n", me, r);
                       continue; }
                 m=strstr(t,"#N"); if(m){ discover_qid(); continue; }
+                m=strstr(t,"#Kq"); if(m){ char *p=m+3;
+                      unsigned q=(unsigned)strtoul(p,&p,0);
+                      unsigned k2=(unsigned)strtoul(p,&p,0);
+                      g_qid=q;
+                      klogf("KEYINJECT Kq qid=%08x key=%u\n", q, k2);
+                      inject_key(k2,0,1,0,1);
+                      inject_key(k2,0,0,0,1);
+                      continue; }
                 m=strstr(t,"#K"); if(m){ char *p=m+2; unsigned a[5]={0,0,1,0,1};
                       for(int i=0;i<5;i++){ while(*p==' ')p++; if(!*p)break; a[i]=(unsigned)strtoul(p,&p,0); }
                       inject_key(a[0],a[1],a[2],a[3],a[4]); continue; }
@@ -346,6 +366,15 @@ static void *thread(void *a){
                       klogf("KEYINJECT page root=%08x\n",(unsigned)g_req_root); continue; }
                 m=strstr(t,"#W"); if(m){ unsigned *q=(unsigned*)g_inst;
                       for(int i=0;i<16;i++) klogf("KEYINJECT w+%02x=%08x\n",i*4,q[i]); continue; }
+                m=strstr(t,"#Lq"); if(m){ unsigned node=0;
+                      { unsigned raw=0; safe_u32((unsigned long)g_inst+0x9c,&raw);
+                        klogf("KEYINJECT Lq head=%08x inst=%08x\n", raw, (unsigned)(unsigned long)g_inst); }
+                      if(safe_u32((unsigned long)g_inst+0x9c,&node) && node){
+                        for(int k=0;k<8&&node;k++){
+                          for(int w=0;w<10;w++){ unsigned v=0;
+                            if(safe_u32(node+w*4,&v)) klogf("KEYINJECT N%d+%02x=%08x\n",k,w*4,v); }
+                          unsigned nx=0; if(!safe_u32(node,&nx)) break; node=nx; } }
+                      continue; }
                 m=strstr(t,"#L"); if(m){ unsigned node=0;
                       if(safe_u32((unsigned long)g_inst+0x9c,&node)){
                           for(int k=0;k<4&&node;k++){ unsigned nx=0,id=0;
@@ -367,7 +396,6 @@ static void *thread(void *a){
     return 0; }
 
 /* --- InfraInput queue discovery + key message injection (a7c2-re method) --- */
-static unsigned long g_qid;
 static void discover_qid(void)
 {
     if (!g_base || !g_inst) { klog("KEYINJECT qid no inst\n"); return; }
@@ -449,5 +477,6 @@ static void *sampler(void *a)
 __attribute__((constructor)) static void init(void){
     if(!is_app()) return;
     klog("KEYINJECT v6 loaded\n");
+
     pthread_t t; pthread_create(&t,0,thread,0);
 }
