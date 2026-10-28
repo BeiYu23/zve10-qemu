@@ -725,3 +725,26 @@ KEYINJECT U send tid=215 n=1 ret=-1     ← 后续都失败
 3. 若仍不行，改用"**在对方 hook 的 drawFramebuffer 时机执行请求队列**"——
    但这需要 hook（代码补丁）；折中方案：把请求写进一个 App 会读的地方（如 view 的输入队列），
    让 UI 线程自然消费。
+
+## 172. 2026-10-28 信号自检通过，但 UI 线程屏蔽/覆盖了所有常用信号
+
+```
+KEYINJECT Z selftest tid=118 ret=0
+KEYINJECT SIG 10 hit tid=118        ← 我们自己的线程能进 handler（通路没问题）
+KEYINJECT U send tid=215 n=1 sig=23 ret=0   ← 发给 UI 线程：投递成功
+KEYINJECT U send tid=215 n=2 sig=29 ret=0
+（但没有任何 "SIG 23 hit" / "SIG 29 hit"）
+```
+
+⇒ 信号**投递成功但 UI 线程没有执行 handler**：该线程把 SIGUSR1/SIGURG/SIGIO 都屏蔽了
+（Sony UI 线程常见做法），信号跳到别的线程或被丢弃。
+
+### 下一步（换思路）
+
+既然"从外部驱动 UI 线程"和"拦截 osal 同步消息"都不行，就回到**服务端**路线，
+但要把注册时机提前：
+
+* 我们的库是 preload，**构造函数在 App 任何线程启动之前**运行；
+* 在构造函数里就调用 `osal_reg_sync_msg_queue_cb(qid, cb)`（而不是等命令），
+  对 `0x3e0100..0x3e01ff` 与 `0x00410000..0x004100ff` 两段都试，
+  把返回值打日志 —— 也许只有在"uipc 尚未被 App 独占"时才能注册成功。
