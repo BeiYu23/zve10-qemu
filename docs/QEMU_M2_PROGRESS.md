@@ -956,3 +956,52 @@ echo M6_after_launch
 ### 方法论（第 18 条）
 **"serial 停在某字节数"看似无用，但配合 init 里的阶段标记（UI_BOOT_V2 / MODULE_END / BOOTIN_PID）
 就能把死亡位置夹在两行之间。插 MARK 是下一步最便宜的定位手段。**
+
+---
+
+## ★★★★★ 2026-10-28 21:10 第十四层：init 死在 `cat /proc/uptime`（mknod 全部成功）
+
+### 标记法结果（Image.m2mk）
+```
+M1_before_mknod              ← 出现
+M2_spec_uipc ... M3_mknod_uipc_done
+M2_spec_backup ... M3_mknod_backup_done
+M2_spec_dmpgles2 ... M3_mknod_dmpgles2_done
+M2_spec_stream ... M3_mknod_stream_done
+M2_spec_stream2 ... M3_mknod_stream2_done
+M2_spec_ldec   ... M3_mknod_ldec_done     ← 最后一条
+（M4_after_mknod 未出现 —— 我的 sed 没插进去，见下）
+```
+**⇒ **6 个 `mknod` 全部成功完成。**
+⇒ 之后紧接着的语句是 `cat /proc/uptime`，日志里 `uptime` 提及次数 = **0**
+⇒ **init 死在 `cat /proc/uptime`（或那一行附近）。**
+
+**⚠️ 我插入的 `echo M4_after_mknod` 没生效**（sed 匹配的是 `  cat /proc/uptime` 带两空格缩进，
+实际文件可能是不同缩进）—— 下一轮用更宽松的匹配或直接手改。
+
+### panic 仍然存在
+```
+Internal error / Oops 出现 2 次
+尾部仍是 sys_exit_group → do_group_exit → do_exit → panic
+```
+
+### 已知排除
+| 尝试 | 结果 |
+|---|---|
+| 末尾加保活循环 | ❌ 没跑到 |
+| 删 /proc 转储 | ❌ 无效 |
+| mknod 循环 | ✅ 6 个全成功，不是它 |
+
+### 下一轮（非常简单，一步到位）
+**把 `/init` 里 `cat /proc/uptime` 这两处**直接删掉**（或改成 `echo uptime_skipped`），
+重编跑。**
+- **若 init 继续往下走** ⇒ 就是 `cat /proc/uptime` 触发的
+- **若仍在同处死** ⇒ 是那行之前的 shell 状态问题（例如 `done` 后 sh 内部出错）
+
+**顺便：把 `cat /proc/uptime` / `ps` / `cat /proc/interrupts` 这些纯调试语句全部删掉，
+让 /init 只剩「挂载 → 加载模块 → mknod → 启动 bootin → 保活」，
+减少变量。**
+
+### 方法论（第 19 条）
+**用 `sed` 给 shell 脚本插标记时，缩进/空格不匹配会静默失败（我这次 `M4` 就没插进去）。
+⇒ 插完必须 `sed -n` 打印修改后的段落**确认**，不能只看 "patched" 字样。**
