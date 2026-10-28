@@ -3786,3 +3786,86 @@ M2REG pid=125 qid=012002da / 007d0035 ...
 * E10 也没注册 ⇒ 说明 `0x7a0020` 由别处（内核模块/别的进程）创建，需查注册方
 
 完整 M2 注册表：`docs/m2-registered-qids.txt`（40 条）。
+
+---
+
+# ★★★★★ 2026-10-29 18:30 第五十二层：**`input.ko` 未被加载** —— 可能是输入队列缺失的根因
+
+## QEMU 线 v5 战果（拦 `osal_reg_msg_queue_cb`，惰性 dlsym + 良性兜底）
+```
+boot 正常（serial 23,669 B vs v4 的 20,400 B）
+捕获 40 条注册事件（pid=125 im.elf）
+  M2REG qid=007a0029 lr=000312d0   ← 输入族，但是 0x29 不是 0x20
+  M2REG qid=00916084 / 00916085 ... / 012002da / 007d0035 ...
+
+★ 该注册的没注册：
+  0x7a0020  (InfraInput 输入队列)  ❌ 从未注册
+  0x7a804c / 0x7ae01f              ❌ 未注册
+  0x94020a                          ❌ 未注册
+```
+
+## ★★★ 我的发现：`input.ko` 内核模块**确实注册队列**
+```
+osal_ulogio.ko: UND osal_reg_sync_msg_queue_cb
+backup.ko:      UND osal_reg_msg_queue_cb + osal_reg_sync_msg_queue_cb
+input.ko:       "input(kbd):osal_reg_msg_queue_cb err:%d"   ← ★ 键盘驱动注册队列
+                "input(kbd):osal_alloc_msg err:%d"
+                "input(kbd):osal_snd_msg err:%d"
+indctr.ko / udate.ko / osal_uipc.ko 同样注册
+```
+**⇒ **内核模块走内核态 osal（`osal_uipc.ko`），用户态 preload 看不见它们注册的队列。**
+⇒ 完美解释为什么 M2 的 40 条里没有 `0x94020a`/`0x8f013a`/`0x3e014d`：**
+```
+0x3e014d backup      ← backup.ko 注册
+0x8f013a/0x8f0139    ← osal_ulogio.ko 注册
+0x94020a             ← 某个内核模块（indctr/udate/input?）
+0x7a0020 输入队列    ← 很可能是 input.ko 注册
+```
+
+## ★★★★ 我的 `/init` 加载清单里**没有 input.ko**
+```
+我的 /init 15 个模块：
+  devno dmac ldec osal_utm osal_uipc dma330_stub backup
+  utimer osal_ulogio kikilog stream stream2 dmm grm_ma grm_gles
+⇒ 没有 input.ko
+
+v9 的 /kmod/ 有 ~100 个模块（含 input.ko）
+我的 initramfs /kmod/ 只有 6 个（devno dmac emmc ldec lld nand）
+```
+
+## ★★★★★ 推演（与所有观测自洽）
+```
+M2 新菜单依赖 input.ko 提供输入队列
+  → 但 input.ko 未加载
+  → 0x7a0020 从未创建
+  → InfraInput 拿不到输入通路
+  → UI 主循环不启动
+  → 帧循环 7 入口全 0、帧全黑
+```
+**⚠️ 反证/差异：E10 老菜单在 QEMU 里能出画，且 bootin 在等 `0x7a0020`
+⇒ E10 的输入队列是**用户态自建**的（老架构 libObj 内 InfraInput 自己注册），不依赖 input.ko。
+⇒ **这正解释了新旧架构的差异：老菜单自建输入队列，新菜单依赖内核输入驱动。**
+
+## 下一步（QEMU 线执行）
+1. 从 v9 取 `/kmod/input.ko` → 放进 initramfs `/kmod/` → `/init` 加 `load /kmod/input.ko`
+2. 判据：
+   - serial 出现 `input(kbd):osal_reg_msg_queue_cb err:...`（err≠0 = 注册失败）
+   - **M2REG 出现 `0x7a0020` ⇒ 根因确认**
+   - 帧循环入口从 0 变非 0 / 帧非零
+3. ⚠️ input.ko 可能依赖 GPIO/i2c，QEMU 里可能加载失败 —— 失败也是有用结论
+
+## `lr` 反查的正确做法（回答 QEMU 线的问题）
+**Thumb BL/BLX 把 LR 置为 `返回地址 | 1` ⇒ 反查前必须 `lr & ~1`：**
+```c
+Dl_info di; unsigned long lr = (unsigned long)__builtin_return_address(0);
+if (dladdr((void*)(lr & ~1UL), &di) && di.dli_fname)
+    out("M2REG qid=%08x lib=%s off=0x%lx\n", qid, di.dli_fname,
+        (lr & ~1UL) - (unsigned long)di.dli_fbase);
+```
+**`off` = 库内偏移 ⇒ 可 objdump 定位到具体函数。`dladdr` 在已有 fname 时安全，可在桩内调用。**
+
+## 方法论（第 60 条）★
+**"用户态探针看不到"不等于"没有发生"：
+内核模块通过内核态 osal 注册的队列，用户态 preload 完全不可见。
+⇒ **当一个"应该存在"的对象在任何用户态探针里都找不到时，
+   要先问"它是否由内核态创建"**，而不是断言"它不存在"。**
