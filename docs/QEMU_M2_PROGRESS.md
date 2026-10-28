@@ -3992,3 +3992,31 @@ serial=16,741  menu=0  M2REG=0
 2. 或在 E10 上只 preload 探针（放弃 UI_OBSERVE 观测），先拿 reg 表。
 
 E10 基线已恢复原样（`init.bak` / `ui.cpio.bak` 还原，探针库删除）。
+
+## 60. 2026-10-28 ★ 零成本判据定方向：M2 的 libObj 里仍保留用户态 InfraInput
+
+协作方建议先查 `libObj.so` 里有没有 `InfraInput`（决定"内核 input.ko 提供输入"假设是否成立）：
+
+```
+M2  libObj.so: InfraInput 导出 16 个
+  InfraInput::GetInstance / SetOsalId / RmCallback / SetKeyRepeat / GetKeyInh /
+  SendEventInitData / ...（与 E10 同名同族）
+E10 libObj.so: InfraInput 导出 31 个
+M2  libObj.so 里 '/dev/input'、'input(kbd)'、'kbd_init' 相关字符串 = 0
+```
+
+### 判读：新架构**没有**把输入搬到内核，仍是用户态 InfraInput
+
+1. M2 保留完整 InfraInput 导出（含 `SetOsalId`）⇒ 输入队列仍由**用户态**建立；
+2. M2 的 libObj **完全不引用** `input.ko` 的日志前缀/设备节点 ⇒ 输入不是从内核 kbd 驱动来的；
+3. ⇒ 协作方"QEMU 缺键盘硬件 ⇒ M2 永远不出菜单"的推论**不成立**，
+   QEMU 路线**没有原理性障碍**；
+4. ⇒ 方向 2 成立：**M2 的 InfraInput 初始化没有跑到注册队列那一步**，
+   而 E10 跑到了（rcv 表里 `0x7a0020 n=6` 就是它的队列）。
+
+### 下一步（收紧到 InfraInput 初始化）
+
+1. 在 M2 上用 `#Lq` 类似手段 dump `InfraInput::GetInstance()` 的实例
+   （E10 上实例在 `libObj+0x8c22a0` 的 GetInstance，M2 的偏移需重找：`0x208005`+1）；
+2. 直接调用 M2 的 `InfraInput::GetInstance()`，看返回是否非空（初始化是否完成）；
+3. 若实例为空/未初始化 ⇒ 断点在 `infra_input_init` 调用处（谁该调它）。
