@@ -3072,3 +3072,56 @@ v9b: 空闲 10,225 块 = 9.98 MB（以后补小文件不用重建几何）
 本案例中 `/setting` 的两个文件由**内核模块和早期初始化**写入，
 比"应用层日志"更早、且不依赖相机可用 ⇒ 是理想的失败取证点。
 ⇒ **设计实验时应同时规划"成功路径观测"与"失败路径观测"。**
+
+---
+
+# ★★★ 2026-10-29 14:20 第四十五层：`ulogio.bin` 是**配置模板**（我的信标推断被证伪）
+
+## 真机线的证伪实验（正确做法）
+**他们用两份相隔两天的 `/setting` 采集做差分：**
+```
+文件            10-25        10-27 current   变化
+ULOGIO.BIN     5394f68f      5394f68f        完全没变  ❌ 不是活日志
+KEMCO.TXT      d47baed6      d47baed6        完全没变  ❌
+.hasp          82752fc4      53eda240        变了      ✅ 活跃
+BACKUP.BIN     06ec67c8      66f065e5        变了      ✅ 活跃
+BACKUP.BAK     6682ddc4      1ea320fc        变了      ✅ 活跃
+```
+**⇒ 我的推断「两者都没变 ⇒ 启动没到 ULOGIO 阶段」**过强**，撤回。**
+
+## 机制解释（我补的）
+**拆 `ulogio.bin` 内容：**
+```
+头部:   LGNM 191H_Dslr_Astra-Diadem
+        RECO / LOGB / PRNT / CHAN
+订阅列表: ISYS / DBGL / DBCL / FLTA / TERM / SUBS ...
+尾部:   ...SUBS(0xbc)... SUBS(0xa9)...
+```
+**⇒ 这些是 **ULOGIO 子系统/通道标识符**（ISYS=系统, DBGL=debug log, DBCL=debug console,
+FLTA=fault, TERM, SUBS=subscribe）。**
+
+**⇒ `osal_ulogio.ko ulogio_initfile=/setting/ulogio.bin` 的语义是
+「初始化时**读入**这个配置文件，决定记哪些通道」**
+**⇒ 它是**输入配置**，不是写入目标 ⇒ 不随启动变化，与实测一致。**
+
+## 另一处更正：我给的"原厂基线"是旧状态
+```
+                     delivery dump   current 10-27
+ULOGIO.BIN           a401b16a        5394f68f
+BACKUP.BIN           20b79fce        66f065e5
+.hasp                afc1e4fe        53eda240
+```
+**⇒ 我引用的 `a401b16a` 来自更早的 `zve10_delivery/nflasha2.img`。
+⇒ **基线必须用刷前现读值**，不能用历史 dump 的数字。**
+
+## 增强建议：BACKUP.BIN 做**内容 diff** 而非只看"变没变"
+**`BACKUP.BIN` = 1,235,836 B，由 `libbackup.so` + `backup.ko` 管理（nflasha4 "MPR Flash Backup"）。**
+**⇒ 若刷后相机部分启动并写了它，把新旧两份拉回做**字节级 diff**：
+   diff 的**偏移位置**能定位"哪个服务的哪块设置被写了"（通常按 key/value 或槽位存）。
+⇒ 信息量远大于二值判据，成本只多 1.2 MB。**
+
+## 方法论（第 53 条）★ 自我批评
+**我提出用 `ULOGIO.BIN`/`KEMCO.TXT` 当信标时，**没有先验证它们是否真的会变** ——
+这正是我自己反复强调的"阳性对照"（第 1 条）。
+**⇒ 提议一个信标之前，应先用现有历史采集做「它到底会不会变」的差分检验。
+⇒ 有历史采集就是天然的正对照材料，不用额外实验。**
