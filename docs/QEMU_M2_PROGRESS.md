@@ -2217,3 +2217,64 @@ _ZN2ux6gfxeng14GraphicsEngine15drawFramebufferEv     → 0
 - 单点为 0 可能是"该符号没被解析到我的实现"
 - **7 个点全为 0，且流程仍能走到 Application_Start ⇒ 探针机制确实生效，结论可信**
 **⇒ 做否定性判断时，要尽量用多个互相独立的观测点同时证伪。**
+
+---
+
+# ★★★★★ 2026-10-29 03:35 第二十九层：guest 内采样 profiler 成功 —— appFw 在**忙**，且以 BLE assert 收尾
+
+## 工具（`samp.so`，7,488 B）
+**`ITIMER_PROF` 150ms + `SIGPROF` handler 记录 `ucontext->uc_mcontext.arm_pc`，直接写串口。
+完全在 guest 内 ⇒ 不扰动 QEMU 时序（规避了 `-s` 诱发 panic 的问题，见第 36 条）。**
+
+## 数据（Image.m2samp，MYPID=1203824）
+```
+采样总数 84
+PC 高位分布: 0x2e=15  0x2f=32  0x30=15  0x04=14  其它=8
+样本高度分散（每个 PC 只出现 1~2 次）
+```
+**⇒ **PC 分散而不是集中在同一处 ⇒ 该进程在**活跃执行**，不是阻塞等待。**
+
+## ★ 样本落在哪个模块
+**appFw.so 的 `.text` 是 vaddr `0x52ab00`、大小 `0x27bdfc8`（约 41.8 MB）。**
+**若 dlopen 基址在 `0x29000000`–`0x2b000000` 一带，则其代码段覆盖 `+0x52ab00`..`+0x7A8AAC8`：
+```
+base=0x29000000 ⇒ 代码段 0x2952ab00-0x30a8aac8   命中 62/84
+base=0x2a000000 ⇒ 代码段 0x2a52ab00-0x31a8aac8   命中 62/84
+base=0x2b000000 ⇒ 代码段 0x2b52ab00-0x32a8aac8   命中 62/84
+```
+**⇒ **74%（62/84）的 CPU 时间花在 **appFw 的代码里**。**
+
+## ★★ 与日志尾部结合
+```
+!!! GPE HW: PSC dummywrite disabled.
+assert at infra_wrapper_bluetooth.cpp:1886
+function:void infra_wrapper_bluetooth::detail::load_im()
+```
+**⇒ 运行以 **BLE 固件镜像加载 assert** 收尾。**
+
+## ★★★ 新假设（解释力最强）
+**appFw 卡在 **BLE 固件加载的重试/等待循环** 里：
+反复尝试 `load_im()` → 失败 → assert → 重试，占用 CPU（所以样本分散），
+**永远走不到后面的帧循环**（所以 7 个帧循环入口全为 0）。**
+
+**这与"移除 `libInfraBluetoothLowEnergy.so` 后能往下走一点"一致：
+少了一条 BT 路径，但 appFw 内部还有别的 BT 路径（`infra_wrapper_bluetooth` 在 appFw 自身）。**
+
+## ⚠️ 本轮探针的缺陷（下轮修）
+**没打印 PID ⇒ 84 个样本混了 `/init` shell、insmod、bootin、im.elf 等多个进程。
+虽然 74% 落在 appFw 区间已足够强，但下轮应加 `getpid()` 以便按进程分离。**
+
+## 下一步（两条，按可执行性）
+**① 给 BLE 提供可用的固件镜像/设备节点**，让 `load_im()` 不再失败重试
+   - 查 `load_im()` 读哪个路径/设备（反汇编 `infra_wrapper_bluetooth::detail::load_im`）
+   - 或伪造该文件使加载"成功"
+**② 修采样器加 PID**，确认卡住时到底哪个进程、PC 是否真的在 BLE 相关偏移
+
+**优先 ①（直接解阻塞）。**
+
+### 方法论（第 38 条）
+**"样本分散" vs "样本集中" 是区分"忙"与"等"的关键判据：
+- 分散 ⇒ 在跑（可能陷入重试/轮询循环）
+- 集中在 1~2 个 PC ⇒ 卡在自旋或断点
+**⇒ 采样 profiler 比"探针计数为 0"更进一步：后者只说"没到那里"，
+前者能说"时间花在哪"。**
