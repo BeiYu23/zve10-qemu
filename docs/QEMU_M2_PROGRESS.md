@@ -3125,3 +3125,72 @@ BACKUP.BIN           20b79fce        66f065e5
 这正是我自己反复强调的"阳性对照"（第 1 条）。
 **⇒ 提议一个信标之前，应先用现有历史采集做「它到底会不会变」的差分检验。
 ⇒ 有历史采集就是天然的正对照材料，不用额外实验。**
+
+---
+
+# ⚠️ 2026-10-29 14:50 第四十六层：恢复 nflasha2 把 **agent preload 通道清掉了**
+
+## 问题
+**恢复 `nflasha2`（修 dmode）时，`/setting/mode/` 目录被清空 ⇒ agent 自动加载没了。**
+
+```
+                         preload   dmode   zve10_net
+nflasha2_current.img     不存在    不存在   不存在   ← 刚刷的
+zve10_delivery/nflasha2  不存在    不存在   不存在
+```
+
+**而 agent 注入后、恢复前的实测状态是：**
+```
+/setting/mode/preload = /usr/tool/libefence.so:/log/agent_v14.so
+/setting/mode/dmode   = 3e
+/setting/mode/zve10_net = off
+```
+
+**⇒ 现在刷 v9b，如果菜单起不来 ⇒ **没有 agent 就没有 shell**，只能靠 fastboot 读 /setting 信标。**
+
+## ★ 好消息：v9b 条件具备，可以恢复 preload
+**v9b 的 `/usr/tool/` 有：**
+```
+LeakTracer.so / libjemalloc_tsh.so / libjemalloc_tsh.so.1
+libjemalloc.so / uiprobe.so / LeakCheck
+```
+**`bootin.elf` 的 preload 白名单（早前反汇编）：**
+```
+/setting/mode/preload
+/usr/tool/LeakTracer
+/usr/tool/libefence      ← v9b 里没有这个文件！
+/usr/tool/libjemalloc_tsh
+/usr/tool/libmcheckb
+匹配方式: strncmp(whitelist_entry, buf+11, strlen(entry)) —— **前缀匹配**
+⇒ `a.so:b.so` 形式只要第一段命中白名单，第二段也会加载
+```
+**⇒ 可写：`/setting/mode/preload = /usr/tool/LeakTracer.so:/log/agent_v14.so`**
+**（用确实存在的 LeakTracer.so 当第一段；libefence 在 v9b 里不存在，
+ld.so 会警告 "cannot be preloaded: ignored" 但**非致命**，不过没必要引入噪声）**
+
+## ★★ 为什么 agent 在新菜单上也能用
+```
+v9b 启动链（已核实）：
+  /bin/bootin.elf  = E10 版 (d8bfb4f7)
+  /bin/im.elf      = E10 版 (f1c746e3)
+  /lib/libIMDB.so  = M2 版
+  /lib/appFwBoot.so= M2 版
+⇒ 用的仍是 E10 的 bootin/im.elf ⇒ preload 注入位置与原来完全一致 ⇒ agent 应能起来
+```
+
+## 两种方案权衡（建议 A）
+| 方案 | 优点 | 缺点 |
+|---|---|---|
+| **A. 先写 preload 再刷** | 刷完有 shell 可查 `/proc/maps`（appFw 是否加载 = 唯一硬判据） | 多加载一个 .so，轻微影响 |
+| B. 不写 preload 直接刷 | 最纯净，最接近 M2 原厂行为 | 没 UI 就没 shell，只能靠 fastboot 信标 |
+
+**建议 A：已有两次"完全无 UI 且无 shell"的经历，有 shell 能第一时间拿到硬判据。**
+
+## 关于 dmode
+**恢复后也是空的。原厂 dump 里 `mode/` 本来就是空的 ⇒ bootin 用默认值。
+⇒ 保守做法：**不写 dmode**，少一个变量（`3e` 可能是当初注入时留下的，必要性未验证）。**
+
+## 方法论（第 54 条）
+**"恢复某个分区"会**同时清除**上面所有后续注入的东西。**
+本案例：恢复 nflasha2 修 dmode，顺带清掉了 agent 的 preload ⇒ 断了自己的调试通道。
+**⇒ 恢复分区前，先列出该分区上"非原厂添加的内容"，确认哪些是可弃的、哪些是调试命脉。**
