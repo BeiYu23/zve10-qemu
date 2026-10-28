@@ -4905,3 +4905,76 @@ M2SINGLE base=0b1e0000 addr=0b5b7214 val=00031420
    即可确认"实例已构造"。
 
 这一步零风险（只读 + maps 检查，不解引用未映射地址）。
+
+---
+
+# ★★★★★ 2026-10-30 01:00 第六十二层：**M2 输入架构变更** —— "0x7a0020 缺失"可能根本不是 bug
+
+## ① 实测：InfraInput 单例**已构造**（QEMU 线）
+```
+M2SINGLE base=0b1e0000 addr=0b5b7214 val=00031420
+⇒ val = 0x31420 非零（典型低地址应用堆指针，E10 上实例在 0x1d4a0，同量级）
+⇒ `cbnz r1` 走"真"分支 ⇒ **单例已存在**
+```
+**⇒ 断点从"构造前"推到"构造之后"。**
+
+## ② `SetOsalId` **不在任何数据段被引用**（两代都是）
+```
+M2 : SetOsalId @0x208549 → rodata/data.rel.ro/data/got/got.plt/init_array 引用 **0 次**
+E10: SetOsalId @0x8c27b9 → 同上 **0 次**
+⇒ **不在虚表里**，也没有外部库 UND 引用
+⇒ "dump 虚表找槽位"这条路走不通
+⇒ 它可能是**死 API**（为外部组件预留但本机型不调）
+```
+
+## ③ ★★★ M2 的输入架构**变了**（导出符号对比：E10 26 个 / M2 16 个）
+
+**M2 新增：**
+```
+SetKeyRepeat(Eibii) / SetKeyRepeatReset(Ei)
+SetEventKeyListAll(Ei) / GetPhyKeyStatusCache(EiP...)
+```
+
+**M2 移除（14 个）：**
+```
+snd_InfraInputEvent_to_InputServant          ← ★★★ 关键
+InputService::callback_tp / panel / direct / tp_raw / convert / um_zoom
+InputService::callback_mode_dial / convert_cap / convert_focus_mag
+InputService::callback_dial_signed_speed / lens_dial_signed_speed
+InputService::callback_lens_dial_signed_speed_individual
+InputService::callback_direct_not_user_operation_and_not_reload_mss
+```
+
+## ④ ★★★ 推论："0x7a0020 没注册"**可能不是 bug**
+```
+E10: InfraInput → (0x7a0020) → snd_InfraInputEvent_to_InputServant → InputServant(0x14a0429)
+M2 : 整个 InputService 回调族被移除 + snd_*to_InputServant 也没了
+   ⇒ **M2 的输入架构是另一套，不走老队列链路**
+
+而 QEMU 线的 reg 表：
+  0x7a0020  ❌ 未注册
+  **0x7a0029  ✅ 已注册**（同样是 0x7a 族！）
+⇒ **0x7a0029 很可能就是 M2 自己的输入队列**
+```
+
+**⚠️ 如果成立 ⇒ 我们一直在追的"缺 0x7a0020"就是**在追一个不存在的 bug**。**
+
+## ⑤ 与真机现象的一致性
+**真机 v9b：DMP 之后断在 appFw（UI 没画出来，但 im.elf 起来了）。
+⇒ 如果问题真是"输入队列缺失"，appFw 至少会跑起来等输入；
+   而现象是 **appFw 自身没跑起来** ⇒ 支持"问题在 appFw 应用层"而非 InfraInput。**
+
+## 下一步（优先级调整）
+```
+1) 先确认 0x7a0029 是不是 M2 的新输入队列（静态搜常量 0x7a0029 的引用位置）
+2) 若确认 ⇒ **放弃"0x7a0020 缺失"这条线**，回到"appFw 应用层为什么没跑起来"
+3) 若 0x7a0029 与输入无关 ⇒ 再接回 GetInstance 之后的路径
+```
+
+## 方法论（第 70 条）★★★
+**"某组件在新版本里没做旧版本做的事" ≠ "新版本有 bug"：
+新架构可能**根本不需要**那个动作。
+⇒ 判定"缺失=缺陷"之前，必须先证明**旧版本的那个动作在新架构里仍然必要**。
+本次差点追了一整晚"缺 0x7a0020"，而它可能只是**架构演进后不再使用的旧队列**。
+⇒ **反证方向：找出新架构里"承担同样职责的替代物"（本例：0x7a0029），
+   如果存在且正常，那"缺失"就不是问题。**
