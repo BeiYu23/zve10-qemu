@@ -518,3 +518,30 @@ KEYINJECT Lg after=-1
 
 **下一轮**：在库的构造函数里（UI 初始化之前）调 SetMode，或在 `/setting` 里预置语言项，
 让菜单从第一帧就是中文。
+
+## 200. 2026-10-28 探针无害性验证（回应协作方的警告）
+
+协作方警告：他们用 `probe.so` 同时 interpose 了 `drawFramebuffer` / `updateFrame` /
+`osal_wai_sem_tmo`，结果 E10 基线渲染消失（帧非零采样 3879 → 0，串口 865KB → 11.6KB）。
+
+按他们要求的判据在 E10 上验证**我们的裸汇编桩**（只拦 `osal_rcv_msg_tmo`，ABI 透明）：
+
+```
+attempt 1 menu=1 pid=1356696
+with1 768e398ed7a77ad2 distinct=225 hl_row=126 hl_cnt=303
+with2 768e398ed7a77ad2 distinct=225 hl_row=126 hl_cnt=303
+with3 768e398ed7a77ad2 distinct=225 hl_row=126 hl_cnt=303
+-- 桩计数正常 --
+Rq count=4
+RQ qid=007a0020 n=6 / 007a804c n=6 / 007ae01f n=1 / 0094020a n=1
+alive=yes
+```
+
+**结论**：
+1. 帧哈希 `768e398e…`、distinct=225、hl_row=126 与**无桩基线完全一致** ⇒ 桩对 E10 渲染**无害**；
+2. 他们那次渲染消失，最可能的原因是**interpose 了渲染函数本身**
+   （`drawFramebuffer`/`updateFrame`），而不是 `osal_wai_sem_tmo` ——
+   渲染路径被替换，等于把绘制链截断；
+3. 桩里**不刷串口**（只写内存计数）也是它能透明的原因之一。
+
+⇒ 该桩可以安全用于 M2 的 IPC 等待定位。
