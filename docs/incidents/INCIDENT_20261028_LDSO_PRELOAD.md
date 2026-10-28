@@ -1,10 +1,49 @@
-# 事故：ld.so.preload 变砖（2026-10-28）
+# 事故：3 秒重启循环（2026-10-28）—— 真凶是 dmode 少换行
 
 > **症状**：相机开机 **3 秒重启循环**，无 UI、无 USB、无网络。
 > **与 2026-10-27 的砖症状完全相同**，但根因不同。
-> 状态：**未修复**。本文给出可现场执行的验证与恢复步骤。
+> 状态：**已修复（2026-10-28 晚）** —— 真因见下面第 0 节：不是 preload，是 `dmode` 少了一个换行符。
 
 ---
+
+## 0. 最终结论（2026-10-28 晚，相机已修复）
+
+> ⚠️ **本文档后面的 1–8 节都是当时的推理过程，结论已被推翻。先看这一节。**
+
+**直接原因不是 preload，是 `/setting/mode/dmode` 少了换行符。**
+
+| 检查项 | 相机实测值 | 应该是什么 |
+|---|---|---|
+| `/etc/ld.so.preload` | `FileSize = 0`（空） | 空 ✓ |
+| `/setting/mode/preload` | `size = 0`（空） | 空 ✓ |
+| `/setting/mode/dmode` | **`b'3'`（size=1）** | **`b'3\n'`（size=2）** |
+
+`dmode` 是 bootin 读的启动模式。少一个换行 ⇒ bootin 解析出的模式不是 3 ⇒ appFw 只起来一部分
+（所以**UI 能画出画面**）⇒ 关键服务缺失 ⇒ 看门狗 ~3 秒复位。
+
+### 修复动作（两步，各做了全量逐字节校验）
+
+| 步骤 | 动作 | 全量校验 |
+|---|---|---|
+| 1 | `nflasha10 ← zve10_delivery/nflasha10.img`（真原厂） | **0 处不符** |
+| 2 | `nflasha2 ← zve10_backup/nflasha2_current.img`（`dmode="3\n"`） | 采样通过 → **相机恢复** |
+
+两个变量同时变了，但因果很清楚：**第 1 步之后相机没好转，第 2 步之后才好** ⇒ `dmode` 是决定性因素。
+
+### `dmode` 为什么会被写坏
+
+`/mnt/build/nflasha2_factory.img` 这份所谓"出厂镜像"的 `dmode` 本身就是 `b'3'`（size=1）。
+它是 10-27 由 `nflasha2_current.img` 手工改出来的，那一次把换行丢了。
+**任何一次用它恢复 `/setting`，相机都会进入「UI 出来但仍 3 秒重启」**。
+
+该文件已于 2026-10-28 删除（md5 `eece37c3f898ffc1b91f134effb7fb1b`）；
+需要复现可从 `nflasha2_current.img` 把 `dmode` 截成 1 字节得到。
+
+### 为什么会一路排查到 preload 上
+
+因为「3 秒重启」这个症状**同时符合** preload 致命失败和 dmode 错误两种原因，而且我都犯过：
+早先确实写过坏 preload（那次是 3 秒重启的真凶），于是这次先入为主地往同一个方向查。
+**真正的教训是：`dmode` 这种"一个字节的配置"必须最先检查，它的失败模式与 preload 完全一样。**
 
 ## 1. 我做了什么
 
@@ -178,6 +217,6 @@ python3 host/verify_partition.py \
 | `zve10_backup/nflasha10_current.img`（10-27 13:35） | ❌ **废镜像**：前 1 MiB 是测速图案 `bytes((i*13)&0xFF)`，后 11 MiB 全 0 —— 那是 10-27 测速事故现场，**不要当"当前状态"或"参考"用** |
 | `zve10_backup/nflasha2.img` | ⚠️ 非出厂（缺 `mode/dmode`、`mode/preload`），**不能直接刷回** |
 | `zve10_backup/nflasha2_current.img` | ✅ 含 `dmode="3"`、`preload=空`、`zve10_net="off"`，恢复用这个 |
-| `/mnt/build/nflasha2_factory.img` | ✅ 出厂 /setting，同样满足 dmode/preload 条件 |
+| `/root/fw/zve10_backup/nflasha2_current.img` | ✅ 出厂 /setting，同样满足 dmode/preload 条件 |
 
 > 教训：**备份文件 ≠ 出厂镜像**。动手前先看里面有没有我们自己造的东西。

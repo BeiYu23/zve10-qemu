@@ -216,6 +216,8 @@ python3 host/flash_partition.py \
 | `part-count: 0` | 这次 `emmc-init` 没读到分区表；重开会话 |
 | `readback mismatch at 0x0` | **几乎总是** `--part-start` 没给（host 在读绝对 LBA 0），不是写坏了 |
 | `0.0 MiB written` | `--reference` 与 `--image` 内容相同（常常是同一个文件），什么都没写 |
+| **UI 能画出来，仍 3 秒重启** | ★ 先查 `/setting/mode/dmode`：必须是 **`"3\n"`（2 字节）**。少了换行符就是这个症状（2026-10-28 实战教训） |
+| **3 秒重启且 UI 都不出** | 查 `/etc/ld.so.preload` 与 `/setting/mode/preload` 是否为空；再查 `/usr` 超级块（magic/CLEAN/inode_size=128） |
 
 ## 10. 一句话纪律
 

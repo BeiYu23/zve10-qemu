@@ -164,7 +164,7 @@ dmesg | busybox grep -iE "oom|undefined symbol|EXT2|VFS|segfault"
 /mnt/build/nflasha15_v8.ext2        （v9 的前一版，差 13 个库）
 /mnt/build/nflasha15_v7.ext2        （再前一版）
 /root/fw/zve10_backup/nflasha15.img 原厂镜像（回滚用）
-/mnt/build/nflasha2_factory.img     原厂 /setting（回滚用）
+/root/fw/zve10_backup/nflasha2_current.img     原厂 /setting（回滚用）
 ```
 
 ### 工具

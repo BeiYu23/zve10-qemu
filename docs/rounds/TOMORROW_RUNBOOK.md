@@ -102,7 +102,7 @@ bind 构造函数在 `im.elf` 装载时执行，早于 `libIMDB`/`appFw` 的 dlo
 
 ⑤ 恢复（无论成功失败）
      /usr  → /root/fw/zve10_backup/nflasha15.img
-     /setting → /mnt/build/nflasha2_factory.img
+     /setting → /root/fw/zve10_backup/nflasha2_current.img
      然后 beaconctl.sh stock
 ```
 
