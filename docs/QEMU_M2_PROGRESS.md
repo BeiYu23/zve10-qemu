@@ -1718,3 +1718,67 @@ SHA256 = 34c69899504b...        ← 与我早先标为"失败"的完全一致
 **`pgrep | head -1` 在多实例环境下等于"随机选一个"，而我把它当成了"我自己的"。
 ⇒ 任何读取 `/proc/PID/...` 的探针，都必须用自己启动时拿到的确切 PID，
 并在读取时断言该 PID 的 cmdline/工作目录确实是自己的。**
+
+---
+
+# ★★★★ 2026-10-29 00:20 关键参考：a7c2-re（A7C II，同代新菜单）已在新菜单 QEMU 上跑通
+
+## 来源（只读参考）
+```
+/root/fw/a7c2re/report/2026-10-17-qemu-native-camera/
+  STATUS.md                —— 验收表（菜单能操作、输入通过、ramfb 显示一致）
+  BOOT-TROUBLESHOOTING.md  —— 黑屏分类 + 八步解决路径（本次最有价值）
+/root/fw/port_a7c2/PORTING.md —— 把它们移植到 ZV-E10(ARMv7) 的报告
+```
+**⚠️ 注意：A7C II 是 **aarch64 + glibc 2.25**，ZV-E10/ZV-1M2 是 **ARMv7 + glibc 2.11.2** ——
+二进制不可直接复用，但**方法与协议可复用**（PORTING.md 已逐组件判定）。**
+
+## ★ 他们的八步（BOOT-TROUBLESHOOTING §2）
+```
+1. 让原内核可靠启动（固定 Image/DTB 装载；改 DTB 的 /chosen/bootargs，
+   保留内存预留；补 GIC/定时器适配）
+2. 让原应用进入可观测状态（按原依赖初始化 IPC/Backup/DMM；
+   缺失的 CAPID/SA/HDMI 用限定服务替代；修正加载顺序）
+3. ★ 用原框架建立菜单，而不是手工画 —— 调用原九参数入口 0x1e78870，
+   把 308 启动屏切为 346 菜单 controller，保留原析构/构造/init/消息泵
+4. ★ 真正执行菜单像素操作 —— 实现 Fill/精确 Copy，再显式启用
+   Sprite / A8 字体 / 混合 / tile / 伸缩
+5. ★ 把原资源解成可画图片 —— 发现 31 次原 LZ77 调用因缺 /dev/ldec 全部失败；
+   改用 CPU LZ77 解码读取原 UXC
+6. ★ 恢复帧消费与完成 —— 为缺席的 LIRO 接收任务提供 AP-only headless 端；
+   按 1002→1003/1005 配对；提交 HOSDAP02 后通知完成
+7. ★ 把已提交像素交给 QEMU —— 构建 GTK/SDL，ramfb-viewer 转 XRGB8888，
+   通过 fw_cfg DMA / etc/ramfb 配置独立 scanout
+8. 验收交互（原生按钮经私有通道进原输入队列）
+```
+
+## ★★★ 与我的做法**关键差异**（必须核对）
+| 项 | a7c2-re 的做法 | 我的做法 | 风险 |
+|---|---|---|---|
+| **显示设备** | **`ramfb`（fw_cfg DMA / etc.ramfb）** | **`bionz-streamfb`（0x22c48000）** | **可能根本不是我该读的地方** |
+| 资源解码 | 发现缺 `/dev/ldec` ⇒ 用 CPU LZ77 解码 | **未检查 `/dev/ldec`** | 图片解不出来 ⇒ 黑屏/无图 |
+| 菜单入口 | 用原九参数入口 `0x1e78870` 切 controller | 只到 `Application_Start` | 可能只是"进了入口但没进菜单态" |
+| 帧完成协议 | HOSDAP02 提交 + 1002→1003/1005 配对 | 完全未实现 | 第二帧可能永远不返回 |
+| 像素格式 | **RAMFB 输出 XRGB8888** | 我猜 RGBA4444/RGB565 都错 | 颜色判断全错的原因之一 |
+
+## §7.1 的硬信息（BitBlit）
+```
+完整帧顺序：notifyDraw → drawFramebuffer
+BitBlit 参数 144 B，真实生产者 = libObj grm::CmdRectDraw::stage1
+callback 偏移 +0x80（Fill 是 +0x28 —— 不同！）
+源图/临时图实际在 0x410...（旧地址白名单过窄）
+必须实现：几何/stride/范围/重叠检查的同格式复制
+然后显式启用 RGBA4444 / A8 字体着色 / source-over / tile / nearest
+⚠️ 实际写入后才按原格式完成 —— 不能"无条件完成"解锁流水线
+```
+
+## 我现在的判断（优先级重排）
+1. **先查 `/dev/ldec`**（资源解码）—— 若缺失，图片根本解不出来，其余都白搭
+2. **确认显示路径**：我用 `bionz-streamfb` 抓帧是否根本读错了地方？
+   a7c2-re 用 `ramfb`，说明这条路更成熟
+3. **重新审视"帧全零"**：可能是（a）没有 LZ77 解码（b）没有帧完成协议（c）地址不对
+   —— 三者我一个都还没排除
+
+## 下一步
+**先不做实验，先读 BOOT-TROUBLESHOOTING 的 §3/§4/§8/§9 全文**，
+把"黑屏的三种证据层"和"ramfb 接入方式"看清楚，再决定改哪里。
