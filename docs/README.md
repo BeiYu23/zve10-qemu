@@ -8,6 +8,7 @@
 | 文件 | 作用 |
 |---|---|
 | `STATUS_20261023.md` | 收工存档 + 开工操作单 |
+| `FASTBOOT_OPERATIONS.md` | ★ **Pico 注入 / 换线 / stage2 / 读校验刷写的完整操作手册**（已对源码核对，含工具可用性表） |
 | `SAFETY_RULES.md` | **规矩 0**：不得覆盖/写入新 `.so`，除非明确同意 |
 | `ANTIBRICK_SYSTEM.md` / `BRICKPROOF_DESIGN.md` | 防变砖设计 |
 | `MASTER_HANDOVER_NEWMENU.md` | ★ 移植 M2 新菜单的总交接 |

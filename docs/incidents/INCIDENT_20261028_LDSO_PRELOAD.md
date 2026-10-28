@@ -65,8 +65,10 @@ back = fetch_in_part(d, part_start_lba, off, len(data))
 
 ## 4. 现场验证（只读，先做这个）
 
-> 前置：Pico 插 `/dev/ttyACM0`，注入 `stage1.bin`，相机出 `18d1:4ee0`，
-> `host/bootstrap.py` 接力 stage2。**每次会话 < 3 分钟**（keepalive 是累计计时）。
+> 完整的注入/换线/stage2/工具清单见 [`../FASTBOOT_OPERATIONS.md`](../FASTBOOT_OPERATIONS.md)。
+> 前置：Pico 插 `/dev/ttyACM0`，`pico/inject_payload.py --file prebuilt/stage1.bin --duration 600`，
+> 看到相机长闪后把相机 USB 换接电脑（**Pico 会掉线，正常**），相机出 `18d1:4ee0`。
+> **每次会话 < 3 分钟**（keepalive 是累计计时）。
 
 ```bash
 cd /root/fw/oss/fastboot
@@ -81,8 +83,8 @@ python3 host/verify_partition.py \
     --part-start 0x00800000 \
     --image /root/fw/zve10_backup/nflasha2_current.img
 
-# ③ 确认 eMMC 分区表完好（物理 LBA 0 首 4 字节 = "EXBL"，用户区偏移 0 = "82461.00"）
-python3 host/fb_partition.py read --lba 0 --blocks 1 --out /tmp/lba0.bin
+# ③ 确认 eMMC 分区表完好（用户区偏移 0 首字节应是 ASCII "8246"）
+python3 host/read_updater_log.py --lba 0 --sectors 1 --out /tmp/lba0.bin
 xxd -l 16 /tmp/lba0.bin
 ```
 
