@@ -6649,3 +6649,42 @@ hook `pthread_cond_wait` / `pthread_mutex_lock`（PLT 可拦），只在 im.elf 
 记录"哪个线程等哪个 cond 地址、多少线程等同一个地址"
 ⇒ 多个线程等同一对象 = 死锁形态；单线程等 = 等一个不会来的 signal。
 （先在 E10 验证加了拦截仍能出画，再上 M2。）
+
+## 81. 2026-10-29 ★★★ 冻结位置精确到函数：`MWF::EventWrapper::RegisterCallBack`
+
+### 对齐结果（同一个坐标系：事件序号）
+
+```
+M2 最后一条： REGSY qid=0097e00c lib=libMWF.so off=0x1f200
+E10 #134 条： REGSY qid=0097e000 lib=libMWF.so off=0x1f200   ← 同一条（同 lib、同 off、同 qid 族）
+```
+⇒ **M2 与 E10 执行到同一个调用点后，M2 就停住了。**
+
+### 该 off 对应的函数（反汇编 libMWF.so）
+
+```
+0001f1d8  <MWF::EventWrapper::RegisterCallBack(unsigned,
+                                                 void(*)(void*,int,void*,unsigned), void*)>
+  1f1fc: blx  osal_reg_sync_msg_queue_cb@plt    ← 注册 sync 队列
+  1f200: mov  r1, r0                            ← ★ 我们的 lr=0x1f200 就是这条
+  1f202: mov  r0, r4
+  1f204: blx  ...ERR_CNV(OSAL_ERR)              ← 把返回值转成错误码
+```
+
+⇒ **M2 的"最后一条事件"= `RegisterCallBack` 里注册调用返回后的那一条指令。**
+
+### ⇒ 卡点在"RegisterCallBack 返回之后"
+
+E10 在 #134 之后继续（#135~ 都是 libObj 的注册），说明**该函数在 E10 正常返回、调用者继续**；
+而 M2 在它返回后**不再有任何注册事件** ⇒ 阻塞发生在**调用者紧接着的下一步**。
+
+`libMWF.so` 两代几乎同源（247,864 B vs 247,776 B，md5 不同但 .text 起点相同 0x1e1a4）
+⇒ 不是库版本差异导致。
+
+### 下一轮（两种最省的做法）
+
+1. **在该函数返回处（0x1f200）之外，再记录"调用者"**：
+   探针改为记录 `__builtin_return_address(1)`（即 RegisterCallBack 的调用者），
+   就能知道"返回后回到谁" ⇒ 下一个该查的函数；
+2. **直接看 M2 的 snd_sync 计数**：如果某条 qid 的 sync 发送一直不返回，
+   就是"等一个不会来的应答"（probe 已有 `osal_snd_sync_msg` 计数，只需补 enter/ret 时间戳对比）。
