@@ -3898,3 +3898,67 @@ unique qids = 40（与未加载前相同）
    看是否出现 `input(kbd):` 日志；
 2. 若 probe 因缺硬件失败 ⇒ 这条假设可以排除，回到"用户态 im.elf 没注册 0x7a0020"的方向
    （E10 对照仍是关键判据）。
+
+---
+
+# ★★★★ 2026-10-29 19:00 第五十三层：input.ko 加载成功但队列未创建；日志前缀真相
+
+## QEMU 线实验结果
+```
+MODULE_BEGIN /kmod/input.ko
+MODULE_END /kmod/input.ko status=0        ← 加载成功
+（没有 "input(kbd):" 日志出现）
+unique qids = 40（与未加载时相同）
+0x7a0020 仍然未注册
+新增 qid: 0x91608b / 0x91608c / 0x91608d / 0x91608e
+```
+**⇒ 加载 input.ko **不足以**创建 0x7a0020。**
+
+## ★ 我挖到的 input.ko 关键信息
+
+### ① 日志前缀真相：`input(kbd):` 只用于一条错误消息
+```
+kbd: init (tbl:%d)                    ← ★ init 正常路径打这条，前缀是 `kbd:`
+kbd: front uipc error %d / front return error / vgrip uipc error
+kbd: malloc %s buf size:%u / kzalloc() error / %s buf size:0
+input(kbd):osal_reg_msg_queue_cb err:%d   ← 只有这些带 input(kbd):
+input(kbd):osal_alloc_msg err:%d
+input(kbd):osal_snd_msg err:%d
+input:key table size check error %d / malloc error / read error / number error
+input:error:%s tables: cur=%p, adc=%p, gpio=%p, front=%p, vgrip=%p
+key:%4lx-
+table:%d count:%d set:%d stat:%x value:%d opt:%x
+```
+**⇒ QEMU 线之前 grep `input(kbd):` 所以看不到 init —— 应 grep `kbd:`。**
+
+### ② 三个模块参数
+```
+parmtype=key_tbl:uint              ← 按键表索引
+parmtype=Input_debug:uint          ← ★ 调试开关，置 1 打开详细输出
+parmtype=multi_selector_soft:int
+depends=                           ← ★ **无模块依赖**
+vermagic=3.0.27_nl-rt106+ SMP preempt mod_unload ARMv7
+```
+**⇒ 应带参数加载：`load /kmod/input.ko key_tbl=0 Input_debug=1`**
+
+### ③ `depends=` 为空 ⇒ "补依赖链（i2c→indctr→udate→input）"不必要
+**⚠️ 但 input.ko 仍可能依赖**硬件资源**（GPIO/ADC/设备树），QEMU 里没有 ——
+那不是模块依赖问题。**
+
+### ④ 它要读"按键表"
+```
+input:key table read error / size check error / number error
+⇒ key_tbl 参数指定用第几张表；表本身可能编译进模块或经 /proc/设备树提供
+⇒ 若 kbd: init 后立刻 key table read error ⇒ 试 key_tbl=1/2
+```
+
+## E10 对照的正确设计（我提醒的）
+**⚠️ QEMU 线之前测 E10 用的是 **rcv 探针**（看到 0x7a0020 n=6 是"等待"）。
+⇒ **必须用 v5 的 **reg 探针**在 E10 上跑一次，看它是否**注册**了 0x7a0020** —— 这才是有效对照。**
+**⚠️ 且 E10 那次同样**不加载 input.ko**（保持变量一致）。**
+
+## 方法论（第 61 条）★
+**"grep 关键词错了"比"没有日志"更常见：
+`input(kbd):` 是一条错误消息的前缀，而 init 正常输出用的是 `kbd:`。
+⇒ **判"某模块没跑"之前，先确认 grep 的字符串确实是它正常路径会打的** ——
+   最好直接从模块字符串表里取，而不是按命名习惯推测。**
