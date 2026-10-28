@@ -1108,3 +1108,58 @@ serial = 11,535 B（比上次 9,095 B 更大）
 ### 方法论（第 21 条）
 **"修好了" 必须用**多次重复**证明，不能凭一次成功下结论。
 我把一次成功当成"消除"，但第二次就复现了 —— 这与"同镜像结果不一致"是同一个教训。**
+
+---
+
+## ★★★★★ 2026-10-28 22:00 第十六层：**稳定可复现测试床达成**
+
+### 关键结果：同一镜像连跑 3 次全部一致
+| 运行 | serial | panic | 到达 |
+|---|---|---|---|
+| run1 | 11,662 B | **0** | **Application_Start ENTER** |
+| run2 | 11,535 B | **0** | **Application_Start ENTER** |
+| run3（抓帧） | 11,536 B | **0** | **Application_Start ENTER**，帧采样非零 = **0** |
+
+**⇒ `Image.m2v3` **稳定**：3/3 无 panic、3/3 到 `Application_Start`。**
+**⇒ 上一轮"间歇性 panic"的判断**作废** —— 那次 panic 很可能是 `-s` gdbstub 拖慢导致的副作用，
+不是镜像本身的问题。**
+
+### ★ 当前完整链路（稳定）
+```
+INIT_V3_START
+INIT_V3_MODULES_DONE        14 个 kmod 全部 status=0
+INIT_V3_MKNOD_DONE          6 个设备节点创建成功
+INIT_V3_LAUNCHED            bootin.elf 启动
+  → libObj.so dlopen ×5 成功
+  → !!! GLES Vecgen disabled.
+  → ===== DMP_2D_Initialize : 0    图形层初始化成功
+  → appFwBoot.so dlopen 成功
+  → Application_System_Init 返回 0
+  → appFw.so dlopen 成功（libNetCommon 修复后）
+  → Application_Start ENTER
+（之后静默，帧全零）
+```
+
+**⇒ 问题已经收窄到唯一一点：`Application_Start` 里那 6 个调用之一阻塞。**
+
+### 已知的 6 个调用点（72 字节函数）
+```
+54d590: blx 0x92559c     (ARM 态)
+54d59a: bl  0x54d154     (vtable 构造)
+54d5a6: bl  0x54d2b0     (初始化序列)
+54d5ac: bl  0x54f664     (2 KB 栈帧，大函数)
+54d5b0: blx 0x923c84     (ARM 态)
+54d5b6: bl  0x54d538     (vtable 构造)
+54d5c0: pop {r7,pc}      ← 应当返回
+```
+
+### 下一轮（稳定测试床已具备，可放心做侵入式观测）
+1. **加 `-s` 但只用于"卡住后单次采样"**（避免长时间挂着 gdbstub 影响时序）
+2. **采样用户态 PC**：多次采样，筛出落在 appFw 地址范围（0x54d000~0x54f700）的样本
+3. **或：在 argtrace 里 hook `write`/`sleep`/`malloc` 等底层函数打印返回地址**，
+   最后一个打印的返回地址就是阻塞点（这次 argtrace 已验证不破坏行为）
+
+### 方法论（第 22 条）
+**gdbstub（`-s`）本身会改变时序，可能诱发原本不出现的问题。**
+**⇒ 用 `-s` 得到的失败必须与不带 `-s` 的结果交叉验证，
+不能把 gdbstub 引起的问题当成镜像的问题。**
