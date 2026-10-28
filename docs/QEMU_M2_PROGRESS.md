@@ -6704,3 +6704,40 @@ E10 在 #134 之后继续（#135~ 都是 libObj 的注册），说明**该函数
 
 **教训（与 §77 一致）**：每次只改一个变量，且改完必须先看"事件数是否仍在 124 左右"，
 再谈新数据 —— 本次直接看新输出，浪费了一轮。
+
+## 83. 2026-10-29 冻结前最后一次动作（按日志行序）与 17 条 sync 目标队列
+
+探针新增：`osal_snd_sync_msg` 首次遇到每个 qid 时打印一行 `M2SND qid=.. lib=.. off=..`。
+
+本次运行（events=115，snd=17）：
+
+```
+M2SND qid=012182ed libBusPower         off 0x5504
+M2SND qid=00c881bb libUsbControl       off 0xa9e0
+M2SND qid=012282f6 libUsbControl       off 0xa9e0
+M2SND qid=00cf016d libMWF              off 0x1f0a8
+M2SND qid=011502f7 libInfraNetRfTest   off 0x1202
+M2SND qid=01010227 / 016c8477 / 007d0149  libObj  off 0x20d11c
+```
+
+**日志行序比较（行序 ≈ 单流时间序）：**
+```
+最后一条 M2SND：行 481  (qid=007d0149, libObj off 0x20d11c)
+最后一条 M2LIB：行 547  (REG qid=011b02aa, libObj off 0x1fcea6)
+⇒ 冻结前**最后动作是一次注册**（libObj off 0x1fcea6），不是 snd_sync
+```
+
+### 观察
+
+* 冻结前的最后调用点在不同 run 间略有变化
+  （上次是 `libMWF 0x1f200` = MWF::EventWrapper::RegisterCallBack，
+   本次是 `libObj 0x1fcea6` 的一次 REG）⇒ **说明冻结不是"某个固定函数卡住"，
+  更像"某个共享同步点/单例在多个线程上先后撞上"**；
+* 但两者都发生在 **早期初始化（MWF/Obj 的 EventWrapper 注册链）** 内，与 §80 的
+  "134 条事件后冻结"一致。
+
+### 下一轮
+
+用 `__builtin_return_address(1)`（或 `lr` 的 caller）记录"注册调用的调用者"，
+把最后几次注册的**上一层调用栈**打出来 ⇒ 就能知道是谁在调用这些注册、
+以及它返回后应该继续做什么（从而定位"应该发生而没发生"的下一步）。
