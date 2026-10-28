@@ -1332,3 +1332,56 @@ Image.m2noble：
 **serial 字节数几乎相同（差 1 字节）是极强的信号：
 说明两次执行的**代码路径几乎逐字节一致**，差异只可能在最后的时序/竞态。
 ⇒ 此时应做 `diff`，而不是继续扩大观测范围。**
+
+---
+
+## ★★★★★ 2026-10-28 23:05 第十九层：**diff 定位到 `grm_init` 解析失败（竞态）**
+
+### diff 结果（成功 out/noble vs 失败 out/noble2，各 323 行）
+**失败那次**缺少**这几行：**
+```
+INITSEQ resolve grm_init
+!!! GLES Vecgen disabled.
+===== DMP_2D_Initialize : 0
+```
+**⇒ 失败的运行里 `grm_init` **从未被成功解析**，图形子系统根本没初始化 ⇒ 当然不渲染。**
+**（我的 argtrace 只在 `dlsym` 返回非空时才打印，所以"没打印"= "返回 NULL"）**
+
+### `grm_init` 的来源
+```
+grm_init  ←  由 libObj.so 导出（不是 libgrm.so！）
+libgrm.so 在 E10 树、M2 原版树、混合树里**都不存在**（三个都没有）
+```
+**⇒ 既然 libObj.so 存在且导出 grm_init，那失败原因是**解析时机**而非库缺失。**
+
+### ★ 机制推断（竞态）
+**IMDB 的服务解析循环按顺序 `dlsym` 各服务的 init 符号。
+`grm_init` 在 `libObj.so` 里 —— 若请求它时 `libObj` **尚未被 dlopen**，
+`dlsym` 返回 NULL ⇒ 图形初始化被静默跳过 ⇒ 帧全零。**
+
+**⇒ 这与"libObj.so dlopen ×5"在日志里出现的位置有关：
+成功那次 `grm_init` 解析发生在 libObj 已加载之后；失败那次的时序相反。**
+
+### 下一轮（两个方向）
+**① 最直接：让 libObj 提前加载**
+   - `/init` 里在启动 bootin.elf **之前**先 dlopen 一次 libObj.so（用一个小 preload 库在构造函数里做）
+   - 或在 argtrace 里，检测到 `dlsym("grm_init")` 返回 NULL 时，先 `dlopen("/usr/lib/libObj.so", RTLD_GLOBAL)` 再重试
+   - **后者最小侵入且立即生效**
+
+**② 验证假设：统计成功/失败各 3 次的时序**
+   - 看成功那次 `grm_init` 解析前是否已有 libObj dlopen
+   - 看失败那次是否出现在 libObj dlopen 之前
+
+### 为什么这解释了一切
+```
+✓ 为什么同阶段却时成时不成  —— 竞态
+✓ 为什么之前测"内存/栈/panic"都不对  —— 那些是早期问题，已修（/init 最小化）
+✓ 为什么 BLE 是"绕过"  —— 移除 BLE 改变了时序，降低了竞态概率
+✓ 为什么 220 种唯一像素 —— 成功那次图形栈真的初始化了
+```
+
+### 方法论（第 26 条）
+**两次运行 serial 只差 1 字节时，`diff` 是最高信息密度的工具。
+我前几轮一直在扩大观测（扫内存、加探针、挂 gdb），
+而 `diff` 用一条命令就指出了缺失的三行。**
+**⇒ 先做最便宜的信息比较，再考虑昂贵的手段。**
