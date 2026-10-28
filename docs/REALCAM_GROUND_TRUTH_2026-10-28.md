@@ -679,3 +679,27 @@ KEYINJECT V views=30a98000 root=00000000 n=0..2
    只有落在某个 `rw/r-` 区间内才解引用；
 2. scan_manager 全部改用 safe_u32（窗口扫描 + slots 遍历）；
 3. 再跑 `#V 0..3`，用画面 SHA256 判断是否切页。
+
+## 170. 2026-10-28 直接调视图函数：能调，但**在错误线程里阻塞**
+
+用日志里的 `native.menu.views.base` / `native.menu.root` 直接调用：
+
+```
+menu=1 views=0x30bed000 root=0x1b5240
+KEYINJECT E call fn=3117df35 a1=00000001 a2=00000000    ← views+0x590f35(1) 进入菜单模式
+（随后 futex_wait_queue_me —— 卡住）
+```
+
+⇒ 视图层函数**必须在 UI 线程**里调用；从我们的线程调会等待某个被 UI 线程持有的锁/信号量
+（对方的 `try_original_menu()` 之所以能成功，是因为它从 `drawFramebuffer` 的 hook 里调用，
+天然在 UI 线程上下文）。
+
+这也解释了之前所有"调用后线程挂死"的现象。
+
+### 下一轮（可行方案）
+
+1. 用**信号**把执行挪到 UI 线程：我们的库 `sigaction(SIGUSR1)` 装一个 handler，
+   用 `tgkill(pid, ui_tid, SIGUSR1)` 让 handler 在 UI 线程里运行，在 handler 内调用视图函数；
+   `ui_tid` 从 libuiobserve 日志取（如 tid=214），通过新命令 `#T <tid>` 传入；
+2. 或者更干净：等对方 hook 的下一次 `drawFramebuffer`（UI 线程）里执行我们的请求队列
+   —— 需要 hook，暂不走。
