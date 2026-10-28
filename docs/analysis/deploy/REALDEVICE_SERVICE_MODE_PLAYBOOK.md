@@ -240,3 +240,64 @@ rm -f /setting/env.txt
 - [ ] 原厂环境下写 `LD_PRELOAD=/log/probe.so` → 重启 → 查 `/proc/*/environ` 是否出现
 - [ ] 探针 .so 必须 **nostdlib 纯 syscall**（相机 glibc 2.11.2，2018 工具链编的动态库加载不了）
 - [ ] 确认探针在 im.elf 里能正常执行 constructor（不被 dlopen 缓存影响）
+
+---
+
+## 10. env.txt 实验的三个注意点（2026-10-29 另一对话补充）
+
+### 10.1 ⚠️ 探针路径别放 `/log`
+
+init 字符串出现次数：`/usr` 46 次、`/setting` 7 次、**`/log` 只有 1 次**。
+
+| 挂载点 | 是否在 init 早期挂载 |
+|---|---|
+| `/usr` | ✅ 必然（bootin 就在 /usr/bin） |
+| `/setting` | ✅ 明确在挂载列表里 |
+| `/log` | ⚠️ **可能晚于 bootin 启动** |
+
+**若 `/log` 尚未挂载，`LD_PRELOAD=/log/probe.so` 会静默失败**（ld.so 只告警后继续），
+很容易误判为"env.txt 不生效"。
+
+**⇒ 探针路径优先级：`/setting/probe.so` > `/usr/lib/probe.so` > `/log/probe.so`**
+
+### 10.2 ⭐⭐ `LD_DEBUG`：零代码实验，可能不需要写探针
+
+env.txt 能设任意环境变量 ⇒ 可直接让 glibc 自己汇报加载过程：
+
+```
+LD_DEBUG=libs                    # 所有库加载
+LD_DEBUG=files                   # 文件查找过程
+LD_DEBUG=bindings                # ★ 符号绑定（能看出哪个符号解析失败）
+LD_BIND_NOW=1                    # 立即绑定全部符号（缺失即暴露）
+LD_DEBUG_OUTPUT=/setting/lddebug # 输出到文件，避免刷屏
+```
+
+**输出走 stderr**；配 `LD_DEBUG_OUTPUT` 会写成 `/setting/lddebug.<pid>`。
+
+**⇒ 一次启动就能看到 appFw.so 有没有被 dlopen、卡在哪个符号 —— 不用写任何探针。**
+
+⚠️ 前提：glibc 2.11.2 是否支持这些变量需实测（`strings /lib/ld-linux.so.3 | grep LD_DEBUG`）。
+
+### 10.3 ⚠️ 先确认 env.txt 不会被 init 重写
+
+init **读** `/setting/env.txt`（parse_and_set_env），但需确认它**不写**。
+验证方法：写一个标记 → 重启 → 检查内容是否还在。若被覆盖则该机制不可用。
+
+### 10.4 nostdlib 探针的能力边界
+
+纯 syscall 探针**不能 `dlsym`/`dlopen`**（那些在 libc/libdl 里）。
+但做以下事情完全够用：
+- 读 `/proc/self/maps` → 写 `/setting/` 或 `/log/`
+- 读 `/proc/self/environ`、`/proc/self/cmdline`
+- `mount()` / `insmod`（init_module）等 syscall
+
+已有可用探针：`/tmp/probe/probe.so` 5,508 B，无 NEEDED、无未定义符号，
+constructor 写 `/log/BOOTPROBE.txt`（含 maps）。
+
+## 11. 已排除的候选（省得重做）
+
+| 候选 | 实验 | 结论 |
+|---|---|---|
+| M2 版 `libInfraMscServer.so` 导致 USB 消失 | 单变量换入原厂 `/usr`，重启 | **USB 完全正常** ⇒ 无关，已恢复原状 |
+| `/setting/mode/preload` 通道 | 两种格式（裸路径 / `LD_PRELOAD=` 前缀）+ 真实写入 `/setting` | environ 里始终无 `LD_PRELOAD` ⇒ 此固件 bootin 不传 |
+| FileControl `0xff01` | cmd 0/1/2/3 全试 | 一律 `128` ⇒ 未实现 |
