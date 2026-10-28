@@ -3869,3 +3869,32 @@ if (dladdr((void*)(lr & ~1UL), &di) && di.dli_fname)
 内核模块通过内核态 osal 注册的队列，用户态 preload 完全不可见。
 ⇒ **当一个"应该存在"的对象在任何用户态探针里都找不到时，
    要先问"它是否由内核态创建"**，而不是断言"它不存在"。**
+
+## 58. 2026-10-28 加载 `input.ko`：模块装上了，但输入队列仍未被创建
+
+按协作方线索（`input.ko` 里有 `"input(kbd):osal_reg_msg_queue_cb err:%d"`），
+从 v9 rootfs 取 `kmod/input.ko` 放进 initramfs，`/init` 增加一行 `load /kmod/input.ko`，重编运行：
+
+```
+MODULE_BEGIN /kmod/input.ko
+MODULE_END /kmod/input.ko status=0        ← 模块加载成功
+（没有任何 "input(kbd):" 内核日志）
+unique qids = 40（与未加载前相同）
+0x7a0020 仍 ❌ 未注册
+新增 qid：0x91608b/8c/8d/8e（0x9160 族，与输入队列无关）
+```
+
+### 判读
+
+1. `input.ko` 能加载（status=0），但**没有走到注册输入队列那段代码**
+   （否则至少会打印 `"input(kbd):osal_reg_msg_queue_cb err:%d"`）；
+2. `0x7a0020` 依然不存在 ⇒ **input.ko 不是（单独）缺的那一环**；
+3. 更可能：`input.ko` 的 probe 需要 QEMU 里不存在的硬件（GPIO/按键矩阵/AD 通道），
+   probe 失败后直接跳过注册；或它依赖别的模块先加载（`i2c.ko`/`indctr.ko`/`udate.ko` 都在 v9 kmod 里但未加载）。
+
+### 下一步
+
+1. 加载完整的依赖链：`i2c.ko` → `indctr.ko` → `input.ko`（按 v9 `/kmod` 顺序），
+   看是否出现 `input(kbd):` 日志；
+2. 若 probe 因缺硬件失败 ⇒ 这条假设可以排除，回到"用户态 im.elf 没注册 0x7a0020"的方向
+   （E10 对照仍是关键判据）。
