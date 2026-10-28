@@ -4472,3 +4472,64 @@ libs   reloc   files   symbols   bindings   versions   statistics   all
 ⇒ 本次 `LD_DEBUG` 支持性验证：设备在充电模式连不上，但从 initramfs 提取
    `ld-2.11.2.so` 一查即知，省掉真机线明天的一个步骤。
 ⇒ **凡"需要设备在手才能确认"的前提，先问一句"能不能从镜像静态确认"。**
+
+---
+
+# 🌙 2026-10-29 23:10 第五十九层：今晚收尾 —— 明日开工清单（两条线）
+
+## 真机线（`qemu辅助` / session-6d5bc1eb）明日序列
+```
+① 相机 USB 模式改回「大容量存储」（当前掉在 054c:0994 充电模式）
+② ~~strings ld-linux.so.3 确认 LD_DEBUG~~  ✅ 已离线完成（见第 58 层）
+③ 查 /setting 现状：
+   - /setting/env.txt 是否存在、内容、会不会被 init 重写
+   - **试写验证**：`echo test > /setting/_wtest && cat && rm`  ← 比 df 更能确认"可写+路径对+rw挂载"
+③a 确认 /setting 剩余空间（当前约 12.7 MB / 20 MB）
+④ 写 /setting/env.txt：
+     LD_DEBUG=libs
+     LD_DEBUG_OUTPUT=/setting/ldd
+   （**不加 LD_BIND_NOW**（loader 不支持）、**先不开 bindings**（输出量大））
+⑤ 重启 → `ls /setting/ldd.*` → 分析 appFw.so 是否被加载
+```
+
+## ⚠️ 今晚补的两个风险点（真机线明日必看）
+**① `LD_DEBUG_OUTPUT` 打不开时，glibc **退回写 stderr** ⇒ 灌爆串口 + 拖慢启动 + 可能触发看门狗
+⇒ **必须先试写验证 /setting 可写且 rw。****
+
+**② `/setting` 优于 `/tmp` 的额外理由：`/setting` 是持久分区，重启后仍可读；
+`/tmp` 若是 tmpfs 重启即失 ⇒ 必须在同一次开机内读完，容错窗口小。**
+
+## 输出量估算（不必担心空间）
+```
+LD_DEBUG=libs 每库 5~10 行；im.elf ~100 库 + bootin ~20 库 + 子进程
+⇒ 合计约几百 KB ~ 1 MB，12.7 MB 够用，无需改 /tmp
+```
+
+## QEMU 线（`QEMU` / session-41b33827）明日方向
+```
+① 按**真实 init 顺序**补输入链模块（第 57 层）：
+   i2c.ko → indctr.ko → iris_dial.ko → udate.ko → mcmn_drv.ko → input.ko(key_tbl=0 Input_debug=1)
+   判据：出现 `kbd: init (tbl:N)` / reg 表出现 0x7a0020
+② 若补模块无效 → 调 InfraInput::GetInstance（惰性单例，构造即注册，但构造路径含无限等信号量，
+   必须放**独立线程 + 超时**，挂住本身就是"死锁位置"的答案）
+风险：一次只改一个变量（v4 一次加 6 个的教训）
+```
+
+## 今晚净收益（从"无从下手"到"一个文件 + 重启"）
+```
+起点：相机连不上，只有崩溃现象（DMP 之后断在 appFw）
+  ↓ 反汇编 /sbin/init
+中间：找到代码级确认的注入点（/setting/env.txt + putenv，无白名单，execve 前生效）
+  ↓ 提取 initramfs 的 ld-2.11.2.so 查字符串表
+终点：LD_DEBUG 可用性已离线证实；发现 LD_BIND_NOW 不支持（避免一次误导性启动）
+⇒ 明日实验成本压到：**写一个文件 + 重启 + 看结果**
+```
+
+## 方法论（第 67 条）★
+**把"需要设备在手"的实验，尽量前置成"只需镜像在手"的分析：
+今晚两件事——
+① `env.txt` 机制：从 `/sbin/init` 的 `putenv` + `/setting/env.txt` 字符串推出，
+   再由真机线反汇编 `parse_and_set_env` 完全确认；
+② `LD_DEBUG` 支持性：从 initramfs 提取 loader 查字符串表，当场确认。
+⇒ **每轮结束前问一句："还有哪个'必须开机才能验'的前提，其实现在就能静态确认？"**
+   —— 这能把真机实验次数压到最少（每次刷写/重启都有风险与成本）。**
