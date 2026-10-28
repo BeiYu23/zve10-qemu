@@ -88,8 +88,8 @@ def start_qemu():
             "-serial", f"unix:{CONS},server=on,wait=off",
             "-serial", f"unix:{KBD},server=on,wait=off",
             "-monitor", "none", "-no-reboot"]
-    subprocess.Popen(args, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                     start_new_session=True)
+    errf = open("/mnt/build/tmp/webui/qemu.err", "wb")
+    subprocess.Popen(args, stdout=errf, stderr=errf, start_new_session=True)
     time.sleep(2)
     subprocess.Popen(["python3", "/mnt/build/consd.py", LOG], start_new_session=True,
                      stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
