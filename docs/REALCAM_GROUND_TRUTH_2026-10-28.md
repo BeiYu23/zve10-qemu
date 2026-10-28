@@ -703,3 +703,25 @@ KEYINJECT E call fn=3117df35 a1=00000001 a2=00000000    ← views+0x590f35(1) �
    `ui_tid` 从 libuiobserve 日志取（如 tid=214），通过新命令 `#T <tid>` 传入；
 2. 或者更干净：等对方 hook 的下一次 `drawFramebuffer`（UI 线程）里执行我们的请求队列
    —— 需要 hook，暂不走。
+
+## 171. 2026-10-28 信号跳板：tgkill 成功但 handler 没跑
+
+```
+KEYINJECT U send tid=215 n=0 ret=0      ← tgkill(268,...) 成功
+KEYINJECT U send tid=215 n=1 ret=-1     ← 后续都失败
+（日志里没有任何 "U exec" / "U done"）
+```
+
+* 第一次投递成功（ret=0），但**handler 没执行**（无 `U exec` 日志）；
+* 之后的投递返回 -1（很可能第一发之后该线程状态变化/信号被屏蔽）。
+
+⇒ 该进程/线程很可能**屏蔽或改写了 SIGUSR1**（Sony 的 UI 线程常见做法），
+或者我们的 `sigaction` 被之后 App 自己的 `sigaction(SIGUSR1,...)` 覆盖。
+
+### 下一轮
+
+1. 先做 self-test：给自己的某个线程发同一个信号，确认 handler 通路本身没问题；
+2. 换更"冷门"的信号（`SIGURG`=23 / `SIGIO`=29），并在 `#U` 里允许指定信号号；
+3. 若仍不行，改用"**在对方 hook 的 drawFramebuffer 时机执行请求队列**"——
+   但这需要 hook（代码补丁）；折中方案：把请求写进一个 App 会读的地方（如 view 的输入队列），
+   让 UI 线程自然消费。
