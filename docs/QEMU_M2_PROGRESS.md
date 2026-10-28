@@ -6874,3 +6874,21 @@ initramfs  : /mnt/build/zv_m2probe/initramfs-ui （init 已含探针 preload + 5
 2. 单变量模块实验：`dma330_stub.ko` → `dma330.ko`（每次验事件数）；
 3. 若仍无进展：把 `im.elf` 的 4 个线程逐个用探针标注状态（等锁/等 cond/等 osal），
    区分"死锁"与"等一个不会来的 signal"。
+
+## 88. 2026-10-29 单变量模块实验：真实 `dma330.ko` 加载失败，保留 `dma330_stub.ko`
+
+按 §87 计划做第一个单变量实验（只换这一个模块）：
+
+```
+load /usr/kmod/dma330.ko          （替代 dma330_stub.ko）
+→ MODULE_END /usr/kmod/dma330.ko status=14     ← 加载失败
+→ events=117（基线 122，属正常波动）
+→ 帧 distinct=1（仍全黑）
+```
+
+**⇒ QEMU 里真实 `dma330.ko` 加载失败（status=14），
+之前用 `dma330_stub.ko` 是正确的取舍，不是遗漏。**
+
+已把 init 回滚为 `dma330_stub.ko` 并重编镜像恢复基线。
+
+**这条假设（"缺真实 DMA330 模块导致初始化卡住"）排除。**
