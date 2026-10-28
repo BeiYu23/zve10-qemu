@@ -35,3 +35,24 @@ KEYS = {MENU:0x1ab, ENTER:0x1ac, UP:0x3, DOWN:0x30, LEFT:0x15, RIGHT:0x1af, DELE
    从它的代码里直接读出队列 id 常量；
 2. 拿到 qid 后用 `#K` 发 UP/ENTER（a7c2 键码先试），看画面 SHA256 是否变化；
 3. 若键码表不同，再从 `CmnViewExpMode::mapKeyCode` 反推 ZV-E10 的键码。
+
+## 182. 2026-10-28 找 ZV-E10 的 InfraInput 队列 id（进行中）
+
+`osal_rcv_msg_tmo` 在 libObj 里只有 3 个调用点（0x113d86 / 0x195364 / 0x19545e）。
+最像"输入接收线程"的是 0x113d7c 附近：
+
+```
+113d7c: ldr r0,[pc,#292]   ; 字面量 @0x113ea4 = 0x0083014b
+113d7e: add.w r1,r7,#116   ; 接收缓冲（r7+0x74）
+113d82: mov.w r2,#0xffffffff
+113d86: blx osal_rcv_msg_tmo
+```
+
+但 0x83014b 是**奇数**（thumb 特征），更像函数指针而不是 qid ⇒ 该处可能还要
+`add r0,pc`，或这不是输入线程。
+
+### 备用方案（下一轮）
+
+1. 反汇编 0x113d00..0x113e00 找出真正的 qid 传参路径；
+2. 或在运行时用 `#N` 在**输入线程启动后**再 dump helper 对象（当前 +0x20 读到 0）；
+3. 若仍拿不到，就枚举少量候选 qid 发消息、以画面 SHA256 变化为准（有风险需逐个试）。
