@@ -597,3 +597,19 @@ root  = 扫描 manager(+0x149221c) 的槽位找 id==0xa3 的对象
 1. 在我们的库里复刻 `root` 的发现逻辑（纯内存读），把 `root`、`views_base` 打日志确认；
 2. 用 `#Q` 调 `views+0x47de27(root+0x154, N)`，N 取 0..8，逐次抓帧比对 SHA256；
 3. 若画面随 N 变化 ⇒ 多页面切换打通（再考虑把它映射成"按键"语义）。
+
+## 166. 2026-10-28 视图库定位：dlopen 失败、maps 里也没有名字
+
+* `dlopen("/usr/lib/viewUnified2.so")` 失败：
+  `/usr/lib/CautionConfig.so: undefined symbol: _ZN2ux4core2ID4ZEROE`
+  —— 因为 libObj 是 `RTLD_LOCAL` 加载的，依赖它的符号对 CautionConfig 不可见；
+* 改用 `/proc/self/maps` 找 `viewUnified2` 的 r-xp 段：**在 App 进程里根本没找到这个名字**。
+
+⇒ 说明视图库要么以别的名字映射、要么是匿名映射（dlopen 后 unlink/替换过），
+需要先把 App 进程的真实映射表打出来看。
+
+### 下一轮
+
+1. 在 `#V` 失败分支里 dump 所有含 `.so` 的 map 行（前 30 条），确认视图库的真实文件名/基址；
+2. 拿到基址后用 `g_views+0x590f35 / +0x47de27` 驱动视图（这两个偏移来自对方的 hook，
+   同版本 2.03 应当一致；届时先用 `native.menu.views.base` 与我们的计算值交叉验证）。
