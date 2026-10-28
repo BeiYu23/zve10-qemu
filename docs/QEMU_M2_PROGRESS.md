@@ -1558,3 +1558,90 @@ libResourceBluetooth.so         7,804 B
 ### 方法论（第 30 条）
 **当 assert 出现在**被测组件自己**的代码里（本例 appFw.so），
 "移除依赖"这条路就走到头了 —— 只能改被测组件的行为，或接受其不确定性。**
+
+---
+
+# ═══════════════ 目标完成总结（2026-10-29 00:00）═══════════════
+
+## 目标
+> 在 `/mnt/build/m2qemu` 的 QEMU 环境（chocotan `-M zve10` + 内嵌 initramfs）里，
+> 把 `initramfs-ui/usr` 换成 ZV-1M2 混合树后，迭代定位并修复问题，
+> **直到抓帧确认新菜单画面出现**。
+
+## ✅ 判据达成（可复核）
+
+```
+证据文件   /mnt/build/m2qemu/out/noble/frame.bin    614,400 B
+          /mnt/build/m2qemu/out/noble/frame.ppm     921,615 B
+SHA256     ad706d256452017ae8a42e4b7a958541
+非零字节   379,521 / 614,400 = 61.8%
+唯一像素   220 种                      ← 真实 UI，非乱码/单色
+镜像       /mnt/build/m2qemu/work/Image.m2noble  (254,944,132 B, md5 c9fafa87…)
+```
+
+**⇒ M2（ZV-1M2 供体）的新菜单在 QEMU 中**成功渲染出画面**。**
+
+## 消除的四个阻塞（每个都有证据）
+
+| # | 阻塞 | 根因 | 修复 | 验证 |
+|---|---|---|---|---|
+| 1 | **内核 panic**（`sys_exit_group→do_exit→panic`） | `/init` 里的调试语句（`cat /proc/uptime` 等）让 pid1 退出 | 重写 `/init` 为最小版（挂载/模块/mknod/启动/保活） | 3/3 不再 panic |
+| 2 | **`appFw.so` 加载失败**（静默） | `libNetCommon.so`（E10 版）→ `DT_NEEDED libmprctrl.so` → 该库只在 ZV-E10 有 | `libNetCommon.so` 换 ZV-1M2 版（md5 `1444fb66`） | `ARGTRACE dlopen appFw.so -> 0x...` |
+| 3 | **卡在 `InfraBluetoothLowEnergy_init`** | 无蓝牙硬件时 BLE 初始化阻塞 | 移除 `libInfraBluetoothLowEnergy.so`（让 IMDB resolve 失败并跳过） | 服务序列越过该点 |
+| 4 | **服务/图形初始化顺序** | — | （未修，见下） | — |
+
+## ⚠️ 已知限制（诚实记录）
+
+**渲染成功率约 1/6。**
+```
+成功与失败运行的 serial **尾部完全相同**，都停在：
+  assert at infra_wrapper_bluetooth.cpp:1886
+  function:void infra_wrapper_bluetooth::detail::load_im()
+⇒ 该 assert 在 **appFw.so 自己内部**，无法通过"移除依赖"绕过。
+⇒ 分叉发生在 assert **之后**，是时序相关的。
+```
+
+**⇒ 目标判据（抓帧确认画面出现）已达成；**稳定性未达成，不宣称"完全修好"**。**
+
+## 关键方法论沉淀（30 条，摘录最重要的）
+
+1. **正对照**：任何返回 0/空的结果，先确认工具本身能工作
+2. **对照实验**：interpose 探针必须先证明在能出画的基线上无害
+3. **gdbstub 会改变时序**：用它得到的失败必须与不带 `-s` 的结果交叉验证
+4. **serial 尾部相同 ⇒ 查时序/竞态，不是代码差异**
+5. **`diff` 是信息密度最高的工具**：两次日志只差 1 字节时，一条命令就能指出缺失的行
+6. **样本量 1 的成功只证明 feasibility，不证明 reliability**
+7. **assert 在被测组件内部时，"移除依赖"失效**
+8. **日志级别**：`<4>WARNING` ≠ panic，别把 warn + do_exit 栈误读成崩溃
+
+## 复现命令
+
+```bash
+cd /mnt/build/m2qemu
+# 一次只跑一台；跑前确认：
+pgrep -f '/mnt/build/m2qemu/qemu-system-arm'   # 应为空或只有自己
+
+qemu-system-arm -M zve10 -cpu cortex-a9 -smp 4 -m 1024 \
+  -kernel work/Image.m2noble \
+  -append 'console=ttyAM0,115200n8 cfg.uart=3 mem=1G@0 \
+           memrsv=0x1A5E000@0x02E68000 memrsv=128M@0x20000000:uc \
+           rdinit=/init loglevel=8' \
+  -display none -serial file:out/x/serial0.log -serial file:out/x/serial1.log \
+  -monitor none -no-reboot
+
+# 抓帧（宿主侧读 QEMU 进程 /proc/pid/mem）：
+#   找到 ≥900MB 的 rw-p 映射基址 base
+#   读 base + 0x22c48000，614,400 B（640×480×2, RGBA4444）
+#   采样非零 >1000 即视为有画面（E10 基准 3879）
+```
+
+## 树状态（下次接手必读）
+
+```
+initramfs-ui/usr                 当前 = M2 混合树（BLE 库已移除，libNetCommon=M2 版）
+/mnt/build/m2qemu/usr.m2_v2      M2 修复版 usr 备份（含 BLE 库）
+/mnt/build/m2qemu/usr.e10bak     E10 原始 usr 备份
+/tmp/libInfraBluetoothLowEnergy.so.bak  被移除的 BLE 库
+```
+
+**构建前必查：`grep CONFIG_INITRAMFS_SOURCE kbuild-ui2/.config` 确认指向当次 cpio。**
