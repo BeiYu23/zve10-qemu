@@ -813,3 +813,81 @@ PC 落在哪个库/偏移 ⇒ 直接得到阻塞点。
 **`pkill -f '<模式>'` 会匹配到自己的命令行导致自杀。**
 本会话已两次因此丢掉输出（`pkill -f 'm2qemu/qemu-system-arm'` 和 `pkill -f 'timeout.*qemu-system-arm'`）。
 安全写法：用 `pgrep` 先列出 PID，确认不含 `$$` 后再按 PID kill。
+
+---
+
+## ★★★★★ 2026-10-28 20:30 第十二层：gdbstub 定位到内核 Oops（init 进程 BUG，栈近满）
+
+### 方法（终于走通）
+```
+1) qemu-system-arm ... -kernel work/Image.m2long -s   （-s = gdbstub tcp::1234）
+2) 等 100 秒
+3) gdb-multiarch -batch -ex "file work/kbuild-ui2/vmlinux" -ex "target remote :1234" \
+                 -ex "info registers pc" -ex "info symbol \$pc" -ex "bt 10"
+```
+**⇒ 内核符号可直接从 `kbuild-ui2/vmlinux` 加载（与镜像同源），无需手工换算。**
+
+### 附加时看到的栈
+```
+#0 ambauart_console_read          ← 等串口输入（永远等不到）
+#1 console_getc
+#2 console_read
+#3 em_exception_monitor (exception.c:1036)
+#4 em_show
+#5 __die (str="Oops")
+#7 __do_kernel_fault (addr=...)
+#9 do_page_fault
+```
+**⇒ 内核 Oops 后进入**交互式异常监控器**（`Exception>` 提示符），卡在读 UART。
+⇒ **这才是所有"启动停滞 / serial 不动"的真相 —— 不是死锁，是在等键盘输入。**
+
+### 串口里的 Oops 正文
+```
+<1>Unable to handle kernel NULL pointer dereference at virtual address 00000000
+<1>pgd = 60134000
+<1>[00000000] *pgd=00000000
+<0>Internal error: Oops: 817 [#1] PREEMPT SMP
+Modules linked in: devno dmac osal_utm osal_uipc backup utimer osal_ulogio kikilog
+                   stream stream2 dmm grm_ma grm_gles
+PC is at __bug+0x20/0x2c
+Process init (pid: 1, stack limit = 0x9d80e1a8)
+sp : 9d80fef8
+```
+**⇒ 进程 `init`（pid 1）里触发 `BUG()`，NULL 解引用，`__bug` 被调用。**
+
+### ★ 栈用量计算
+```
+栈顶(sp)   0x9d80fef8
+栈限       0x9d80e1a8
+已用       0x1D50 = 7,504 字节 / 8,192 = 91.6%  ← 接近溢出
+```
+**⇒ 内核栈几乎用满，`BUG()` 很可能由栈溢出或相关检查触发。**
+
+### 两棵树的大小
+```
+E10 cpio   239,260,160 B = 228.2 MB   → 正常出画（3879 帧）
+M2  cpio   251,847,680 B = 240.2 MB   → 间歇性内核 Oops（+12 MB）
+```
+
+### ⚠️ 但注意：同样的 M2 镜像**有时**能跑到 Application_Start
+**⇒ 说明这是**时序/栈边际**问题，不是确定性失败。**
+**⇒ 更可能：内核栈在 initramfs 解包/初始化路径上接近上限，某些时序下越界。**
+
+### 下一轮（两个方向，都便宜）
+**方向 A：缩小 initramfs（验证栈/内存假设）**
+- 删掉 E10 专属 4 库、无用 share 大文件，让 cpio ≤ 228 MB
+- 若恢复稳定 ⇒ 假说成立
+
+**方向 B：加大内核栈（更直接）**
+- `kbuild-ui2/.config` 里 `CONFIG_...`？ARM 内核栈固定 8 KB（THREAD_SIZE），
+  改 `-fno-...` 或改 `thread_info` 布局不现实
+- 但可以**减少 initramfs 解包的栈深度**：检查 `do_basic_setup` → `init_irq` → ... 
+  的 BUG 点（`__bug` 的调用者）
+
+**优先 A（不改内核，只改内容）。**
+
+### 方法论（第 17 条）
+**"串口不动 = 死锁"是错的。内核 Oops 后会进交互式 exception monitor 等串口输入，
+外观与死锁完全一样。**
+**⇒ 判据：serial 里搜 `Exception>` / `Oops` / `Internal error`。
+⇒ 更可靠：gdbstub 读 bt，一次就能区分"等输入"和"真死锁"。**
