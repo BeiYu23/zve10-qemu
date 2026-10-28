@@ -6833,3 +6833,44 @@ v9 树 (zv_m2probe/root/bin)
 * **无法做"换 M2 启动器"这个单变量实验**（没有材料）；
 * 但也说明：这些启动器很可能**跨机型通用**（bootin 只是按 IMDB 表加载 appFwBoot/appFw），
   "混搭启动器"更可能不是元凶 —— 该假设**降级为低优先级**，不再投入。
+
+## 87. 2026-10-29 接力指南（下次从这里继续，不必重读全部历史）
+
+### 环境（已就绪，无需重建）
+
+```
+基准树     : /mnt/build/zv_m2probe/root        （v9 nflasha15_v9.ext2 解包，858 文件 / 230MB）
+initramfs  : /mnt/build/zv_m2probe/initramfs-ui （init 已含探针 preload + 5 个输入模块）
+已知可用init: tools/guest/m2-init-known-good.sh （事件数 122 的版本）
+探针源码   : tools/guest/m2probe.c             （lr=r[5] + dladdr + M2LIB/M2SND；已编译验证）
+镜像       : /mnt/build/zv_m2probe/kbuild/arch/arm/boot/Image
+构建命令   : make -C /mnt/build/ref-chocotan-zve10/work/linux-kernel \
+               O=/mnt/build/zv_m2probe/kbuild ARCH=arm \
+               CROSS_COMPILE=/mnt/build/ref-chocotan-zve10/work/armv7-eabihf--glibc--stable-2020.08-1/bin/arm-linux- Image
+跑一次     : qemu-system-arm -M zve10 -cpu cortex-a9 -smp 4 -m 1024 -kernel <Image> \
+               -append 'console=ttyAM0,115200n8 cfg.uart=3 mem=1G@0 memrsv=0x1A5E000@0x02E68000 memrsv=0x8000000@0x20000000:uc rdinit=/init loglevel=8' \
+               -display none -serial file:/tmp/m2p/x.log -serial unix:/tmp/m2p/x.sock,server=on,wait=off -monitor none -no-reboot
+抓帧       : python3 /mnt/build/cap.py <tag>   （distinct>3 才算画出来）
+```
+
+### 三条硬规则（违反过的代价都记在 §82/§84）
+
+1. **改 init/模块/探针后，必须先跑一次并断言"注册事件 ≥ 120"**，否则立刻回滚；
+2. 一次只改一个变量；
+3. 跨版本比较前先确认坐标系（VA vs 偏移、动态 id vs 固定、事件 vs 对象）。
+
+### 已知结论（可直接引用，无需复验）
+
+* M2 **卡死**（非慢）：注册数冻结 ~122-134，帧 `distinct=1` 恒定（§80）；
+* 冻结位置在**早期初始化**（MWF/Obj 的 EventWrapper 注册链），且随 run 微变 ⇒ 像共享同步点（§81/§83）；
+* `0x7a0020` 缺失是**伪 bug**（reg 表只是回调注册清单；两代都不注册它）（§74）；
+* 缺内核模块**不是**原因（全量加载反而更差）（§84）；
+* 启动器混搭**无法验证且低优先级**（所有树同一份 bootin/im.elf）（§86）。
+
+### 下一步（按顺序）
+
+1. 探针加 `__builtin_return_address(1)`，打印"注册调用的调用者"（库+偏移），
+   确认最后几次注册的上一层调用链 → 指认"返回后本应继续的下一步"；
+2. 单变量模块实验：`dma330_stub.ko` → `dma330.ko`（每次验事件数）；
+3. 若仍无进展：把 `im.elf` 的 4 个线程逐个用探针标注状态（等锁/等 cond/等 osal），
+   区分"死锁"与"等一个不会来的 signal"。
