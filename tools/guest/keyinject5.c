@@ -389,10 +389,12 @@ static void *thread(void *a){
                 m=strstr(t,"#Kq"); if(m){ char *p=m+3;
                       unsigned q=(unsigned)strtoul(p,&p,0);
                       unsigned k2=(unsigned)strtoul(p,&p,0);
+                      int st = 2;
+                      if (*p) st = (int)strtol(p,&p,0);
                       g_qid=q;
-                      klogf("KEYINJECT Kq qid=%08x key=%u\n", q, k2);
-                      inject_key(k2,0,1,0,1);
-                      inject_key(k2,0,0,0,1);
+                      klogf("KEYINJECT Kq qid=%08x key=%u st=%d\n", q, k2, st);
+                      if (st == 2) { inject_key(k2,0,1,0,1); inject_key(k2,0,0,0,1); }
+                      else inject_key(k2,0,(unsigned)st,0,1);
                       continue; }
                 m=strstr(t,"#K"); if(m){ char *p=m+2; unsigned a[5]={0,0,1,0,1};
                       for(int i=0;i<5;i++){ while(*p==' ')p++; if(!*p)break; a[i]=(unsigned)strtoul(p,&p,0); }
