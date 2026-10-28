@@ -613,3 +613,27 @@ root  = 扫描 manager(+0x149221c) 的槽位找 id==0xa3 的对象
 1. 在 `#V` 失败分支里 dump 所有含 `.so` 的 map 行（前 30 条），确认视图库的真实文件名/基址；
 2. 拿到基址后用 `g_views+0x590f35 / +0x47de27` 驱动视图（这两个偏移来自对方的 hook，
    同版本 2.03 应当一致；届时先用 `native.menu.views.base` 与我们的计算值交叉验证）。
+
+## 167. 2026-10-28 视图基址已可注入；root 发现读到 0
+
+链路终于打通到"能调用视图层函数"：
+
+```
+menu=1
+views=0x30d38000              ← 从 libuiobserve 日志取的 native.menu.views.base
+KEYINJECT set views=30d38000  ← #B 命令生效
+KEYINJECT V views=30d38000 root=00000000 n=2
+KEYINJECT no manager          ← *(libObj+0x149221c) == 0
+```
+
+* 之前几次失败的真因：**跑的内核镜像比库旧**（Image 10:35 / lib 10:40），`#B` 压根没编进镜像；
+  重新生成 `initramfs_data.o` + relink 后 `#B` 立即可用（已加"改库必须重编镜像并 strings 校验"的检查习惯）；
+* `manager = *(libObj_base + 0x149221c)` 读出 0，而对方的 `try_original_menu()` 在**同一个环境**
+  里能算出 `native.menu.root=0x2258a8` —— 说明**读取时机**或**偏移**还有差异。
+
+### 下一轮
+
+1. 把 `manager` 原始值、`g_base` 一起打日志，并在菜单绘制后**多次重试**（间隔 1 秒 ×10），
+   判断是不是"某一瞬间才存在"；
+2. 若始终为 0，则对照对方源码里的确切偏移（0x149221c）与我们的 libObj 版本是否一致
+   （用 `nm`/`readelf` 交叉验证该地址附近的符号）。
