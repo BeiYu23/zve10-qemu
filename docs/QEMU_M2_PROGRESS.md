@@ -378,3 +378,59 @@ $ qemu-system-arm -M zve10 -smp 8  → Invalid SMP CPUs 8.  The max CPUs support
 | CPU 亲和性 CPU15 | ❌ 已排除（返回值未检查） |
 | harness 依赖插桩 | ❌ 已排除（E10 无插桩也能出画 3879） |
 | 参数加载错 UI | ❌ 已排除（"AppConfig.so" 是正常配置） |
+
+---
+
+## ★ 2026-10-28 18:05 第四层：画出阻塞信号量
+
+### 探针工具（新建）
+`/mnt/build/m2qemu/src/probe.c` → `probe.so`（7.7 KB），LD_PRELOAD interpose：
+```
+_ZN2ux6gfxeng14GraphicsEngine15drawFramebufferEv     (转调 RTLD_NEXT)
+_ZN2ux6wgtsys12WidgetSystem11updateFrameEv           (转调 RTLD_NEXT)
+osal_wai_sem_tmo                                      (带 __builtin_return_address(0))
+```
+**加载方式：`LD_PRELOAD=/usr/lib/argtrace.so:/usr/lib/probe.so`**
+
+### 实测输出（Image.m2pr）
+```
+PROBE osal_wai_sem_tmo #1 id=0x9401c3 tmo=-1 caller=0xb80d
+PROBE osal_wai_sem_tmo #2 id=0x9401c3 tmo=-1 caller=0xb80d
+...（连续 8 次，同一个 id、同一个 caller）
+（无任何 PROBE drawFramebuffer / updateFrame 输出）
+```
+
+### 判读
+```
+★ 反复等待同一个信号量 0x9401c3，超时 -1（无限等）
+★ caller 恒为 0xb80d
+★ drawFramebuffer / updateFrame 一次都没被调用
+```
+
+**⚠️ 两个待验证点：**
+1. **interpose 是否真的生效**（若 appFw 用非 dlsym 方式解析，或符号被本地绑定，则"没调用"可能是假阴性）
+2. **caller=0xb80d 属于哪个模块**（低位地址，像 bootin.elf/im.elf 的静态区；需按加载基址换算）
+
+### ⚠️ 本轮对照受限
+**E10 基线（`Image.e10ctl`）是**无插桩**版本，日志里没有 `osal_sem.id` 记录，
+所以无法直接对比 0x9401c3 在 E10 里的行为。**
+**⇒ 下一轮需要：E10 + 仅 probe.so（不带 libuiobserve/argtrace），取得同口径对照。**
+
+### 本轮另一个观察
+**加了 probe.so 后，这次运行**没有**到达 `Application_Start`（无 ARGTRACE 输出），
+说明 probe.so 拖慢了启动或干扰了流程。**
+**⇒ 下一轮要么只挂 probe.so（不挂 argtrace），要么延长 SECONDS_MAX。**
+
+### 下一轮起点
+1. **E10 + 仅 probe.so** → 取 0x9401c3 的同口径对照（E10 是否也等它？等多久？）
+2. **验证 interpose 有效性**：在 probe 里加一个"构造函数打印已安装"；
+   或选一个必定被调用的符号（如 `malloc`）验证 interpose 机制本身
+3. **换算 caller=0xb80d** → 定位到具体库/函数
+4. 若确认 0x9401c3 是 UI 就绪握手信号量 → 找谁该 signal 它
+
+### 镜像
+| 镜像 | 内容 | 结果 |
+|---|---|---|
+| `Image.e10ctl` | E10 无插桩（对照基准） | 帧 3879 ✅ |
+| `Image.m2s2` | M2 + argtrace | Application_Start ENTER，帧 0 |
+| `Image.m2pr` | **M2 + argtrace + probe.so** | 卡在 0x9401c3 等信号量，未到 Application_Start |
