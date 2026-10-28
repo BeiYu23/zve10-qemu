@@ -663,3 +663,19 @@ KEYINJECT V views=30a98000 root=00000000 n=0..2
 的那个字 —— 这样**自动定位**真正的 manager 槽位，不靠硬编码偏移。
 找到后再按对方的槽位结构（`slots = *(mgr+32)`，`id = slots[i*16+8]`，`root = slots[i*16+4]`，
 `id==0xa3`）取 root。
+
+## 169. 2026-10-28 manager 扫描把注入线程打挂了（需要安全读）
+
+`#V 0` 之后日志里既没有 `mgr found` 也没有 `no mgr in window`，连 `V views=... root=...`
+都没打印 ⇒ **vcall 在 scan_manager 里解引用坏指针，SIGSEGV 直接把线程打死**
+（App 本身不受影响，但注入通道哑了）。
+
+同时记录一个工程教训：这次改源码时用"按行号切片"导致函数重复定义/结构破坏，
+连修了 3 次才编译通过——**以后对 keyinject5.c 的修改必须整块替换 + 立即编译校验**。
+
+### 下一轮
+
+1. 先解析 `/proc/self/maps` 建一张"可读区间表"，写 `safe_u32(addr, &out)`：
+   只有落在某个 `rw/r-` 区间内才解引用；
+2. scan_manager 全部改用 safe_u32（窗口扫描 + slots 遍历）；
+3. 再跑 `#V 0..3`，用画面 SHA256 判断是否切页。
