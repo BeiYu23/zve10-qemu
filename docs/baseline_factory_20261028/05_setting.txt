@@ -1,0 +1,6 @@
+-rwxr-xr-x    1 0        0                1 Jan  1 00:05 dmode
+-rwxr-xr-x    1 0        0                0 Jan  1 00:05 preload
+-rwxr-xr-x    1 0        0                4 Jan  1  1980 zve10_net
+---
+3
+off

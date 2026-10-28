@@ -748,3 +748,26 @@ KEYINJECT U send tid=215 n=2 sig=29 ret=0
 * 在构造函数里就调用 `osal_reg_sync_msg_queue_cb(qid, cb)`（而不是等命令），
   对 `0x3e0100..0x3e01ff` 与 `0x00410000..0x004100ff` 两段都试，
   把返回值打日志 —— 也许只有在"uipc 尚未被 App 独占"时才能注册成功。
+
+## 173. 2026-10-28 工程事故与纠正：`systemd-run --scope` 会随调用者 shell 一起被杀
+
+**教训（很重要）**：`systemd-run --scope` 把命令放进**调用者的 cgroup**，
+我这条工具调用一结束，scope 里的 QEMU 就被 SIGTERM 干掉——之前好几轮"实验没结果"都是这个原因。
+
+⇒ 长实验必须用 **transient service**：`systemd-run --collect --unit=<name> -- bash script.sh`
+（已按此改，运行中确认 `active (running)` 且不受调用者退出影响）。
+
+## 174. 2026-10-28 自写 drawFramebuffer hook：装上后 App 起不到菜单，且没有安装日志
+
+在 `libObj+0x6196b8`（对方 `observe_draw` 的同一地址/同一特征码）按 same 手法打补丁，
+连续两次运行都停在 ~22KB、`export_ready` 未出现，且日志里**既没有 `hook draw` 也没有
+`hook prologue mismatch`** ⇒ 说明补丁代码路径上出了问题（很可能在 `dl_iterate_phdr`/
+`mprotect` 之后崩溃，还没来得及打日志），直接把 App 的第一次绘制弄坏。
+
+### 结论与下一步
+
+* **不要在 App 启动早期抢注 drawFramebuffer**（对方 libuiobserve 已经占了这个点，
+  两套 hook 互相踩；而且早期补丁风险极高）；
+* 更安全的顺序：等 `export_ready=1`（菜单已画好）之后**再**打补丁，
+  这样即使补丁有问题，菜单也已经存在；
+* 或者放弃 hook，改走"等对方 hook 的 `try_original_menu` 时机"——但那需要改对方代码，不做。

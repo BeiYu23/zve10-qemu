@@ -1,0 +1,3 @@
+-r-xr-xr-x    1 57285    1000         37204 Jun  4  2026 /usr/lib/libIMDB.so
+-r-xr-xr-x    1 57285    1000      21305528 Jun  4  2026 /usr/lib/libObj.so
+-rwxr-xr-x    1 57285    1000         12252 Jun  4  2026 /usr/share/app/global.xdb
