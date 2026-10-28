@@ -19,6 +19,7 @@
 #include <sys/ptrace.h>
 #include <sys/wait.h>
 #include <sys/user.h>
+#include <dirent.h>
 #include <sys/syscall.h>
 
 static void *g_handle, *g_inst;
@@ -277,6 +278,7 @@ static void try_register_early(void)
 }
 
 static unsigned long g_qid;
+static volatile unsigned g_rq_q[32], g_rq_n[32], g_rq_c;
 static pid_t g_ui_tid;
 static void *sampler(void *a);
 static void discover_qid(void);
@@ -298,6 +300,45 @@ static void *thread(void *a){
                 char *m;
                 m=strstr(t,"#S"); if(m){ klogf("KEYINJECT state inst=%08x base=%08x views=%08x\n",
                       (unsigned)(unsigned long)g_inst,(unsigned)g_base,(unsigned)g_views); continue; }
+                m=strstr(t,"#Rq"); if(m){
+                      klogf("KEYINJECT Rq count=%u\n", g_rq_c);
+                      for (unsigned i = 0; i < g_rq_c && i < 32; i++)
+                          klogf("KEYINJECT RQ qid=%08x n=%u\n", g_rq_q[i], g_rq_n[i]);
+                      continue; }
+                m=strstr(t,"#Wa"); if(m){
+                      /* Walk all threads: attach briefly, read PC; if PC is inside
+                       * libosal*, log r0 (the queue id being waited on). */
+                      static unsigned long osal_b, osal_e;
+                      if (!osal_b) {
+                        unsigned long b = 0;
+                        FILE *f = fopen("/proc/self/maps","r");
+                        if (f) { char line[256];
+                          while (fgets(line,sizeof line,f)) {
+                            if (strstr(line,"libosal") && strstr(line,"r-xp")) {
+                              sscanf(line,"%lx-%lx",&b,&osal_e); osal_b=b; break; } }
+                          fclose(f); }
+                        klogf("KEYINJECT Wa osal=%08x-%08x\n",(unsigned)osal_b,(unsigned)osal_e);
+                      }
+                      DIR *d = opendir("/proc/self/task");
+                      int hit=0;
+                      if (d) { struct dirent *e2;
+                        while ((e2 = readdir(d)) && hit < 12) {
+                          if (e2->d_name[0]=='.') continue;
+                          pid_t tid = (pid_t)atoi(e2->d_name);
+                          if (tid == (pid_t)syscall(224)) continue;
+                          if (ptrace(PTRACE_ATTACH, tid, 0, 0)) continue;
+                          int st; waitpid(tid,&st,0);
+                          struct user_regs r;
+                          if (!ptrace(PTRACE_GETREGS, tid, 0, &r)) {
+                            unsigned pc=(unsigned)r.uregs[15];
+                            if (pc >= osal_b && pc < osal_e) {
+                              klogf("KEYINJECT Wa tid=%d pc=%08x r0=%08x r1=%08x r2=%08x\n",
+                                    (int)tid, pc, (unsigned)r.uregs[0], (unsigned)r.uregs[1], (unsigned)r.uregs[2]);
+                              hit++; } }
+                          ptrace(PTRACE_DETACH, tid, 0, 0); } 
+                        closedir(d); }
+                      klogf("KEYINJECT Wa hits=%d\n", hit);
+                      continue; }
                 m=strstr(t,"#Mh"); if(m){ char *p=m+3;
                       unsigned q=(unsigned)strtoul(p,&p,0);
                       void *h=dlopen("/usr/lib/libosal_uipc.so",RTLD_LAZY);
@@ -394,6 +435,40 @@ static void *thread(void *a){
         usleep(100000);
     }
     return 0; }
+
+/* --- silent queue counter (no serial I/O in the hot path) --- */
+static volatile unsigned g_rq_q[32], g_rq_n[32], g_rq_c;
+static void *g_native_rcv;
+void keyinject_on_rcv(unsigned *regs)
+{
+    if (!g_native_rcv) {
+        void *h = dlopen("/usr/lib/libosal_uipc.so", RTLD_LAZY);   /* already loaded, local */
+        if (h) g_native_rcv = dlsym(h, "osal_rcv_msg_tmo");
+        if (!g_native_rcv) {
+            g_native_rcv = dlvsym(RTLD_NEXT, "osal_rcv_msg_tmo", "GLIBC_2.4");
+            if (!g_native_rcv) g_native_rcv = dlsym(RTLD_NEXT, "osal_rcv_msg_tmo");
+        }
+    }
+    unsigned q = regs[0];
+    for (unsigned i = 0; i < g_rq_c && i < 32; i++)
+        if (g_rq_q[i] == q) { g_rq_n[i]++; return; }
+    if (g_rq_c < 32) { g_rq_q[g_rq_c] = q; g_rq_n[g_rq_c] = 1; g_rq_c++; }
+}
+
+__attribute__((naked)) int osal_rcv_msg_tmo(void)
+{
+    __asm__ volatile(
+        "push {r0, r1, r2, r3, r4, lr}\n"
+        "mov  r0, sp\n"
+        "bl   keyinject_on_rcv\n"
+        "pop  {r0, r1, r2, r3, r4, lr}\n"
+        "ldr  ip, =g_native_rcv\n"
+        "ldr  ip, [ip]\n"
+        "cmp  ip, #0\n"
+        "bxne ip\n"
+        "mvn  r0, #0\n"
+        "bx   lr\n");
+}
 
 /* --- InfraInput queue discovery + key message injection (a7c2-re method) --- */
 static void discover_qid(void)

@@ -234,3 +234,40 @@ MH+24 = 00000100
 * `#Kq` 被 `#K` 吞 → 已把 `#Kq` 提前；
 * `#Mh` 被 `#M` 吞 → 已把 `#Mh` 提前。
 以后新增命令一律**按长度倒序**插入。
+
+## 191. 2026-10-28 ★★★ 找到输入队列 0x007a0020；注入后画面第一次发生变化
+
+### 根因修复：拦截桩解析 native 的方式错了
+
+之前 `dlvsym(RTLD_NEXT, "osal_rcv_msg_tmo")` 拿不到（App 以 RTLD_LOCAL 加载 libosal），
+桩返回 -1 把 App 弄死 → 一直 `menu=0`。改成 **`dlopen("/usr/lib/libosal_uipc.so")`（已加载）+ `dlsym`** 后：
+
+```
+attempt 1 menu=1        ← 带桩也能正常出菜单
+Rq count=4
+RQ qid=007a0020 n=7     ← 7 次
+RQ qid=007a804c n=7
+RQ qid=007ae01f n=1
+RQ qid=0094020a n=1
+```
+
+**`0x007a0020` 与 a7c2 的 `0x807a0020` 只差高位前缀** ⇒ 这就是 InfraInput 的输入队列。
+
+### 注入效果
+
+往 `0x007a0020` 依次注入 `UP(0x3)/DOWN(0x30)/LEFT(0x15)/RIGHT(0x1af)/ENTER(0x1ac)/MENU(0x1ab)`：
+
+```
+before 6f2d7602ca7e75c2 distinct=225
+after  41633658e69bd13a distinct=179    ← 画面变了！
+```
+
+导出的 PNG（`docs/images/zve10-menu-after-inject.png`）是**完整的菜单第 1 页**
+（`画質/画像サイズ1`、`1/11`、六标签栏、第一行高亮），说明注入后菜单从
+"半透明/未完成态"变成"完全渲染/高亮态"。
+
+### 仍需排除的替代解释
+
+画面变化也可能是**菜单自身的淡入动画/自动重绘**。已启动 A/B 对照实验：
+`t0 → 空等 12s → t1 → 注入 DOWN → t2 → 空等 10s → t3 → 注入 ENTER → t4`，
+要求 **t0==t1 且 t2/t4 不同**，才能证明是注入导致的。
