@@ -11,8 +11,11 @@
 > （BootROM 注入 → USB fastboot → eMMC 读+写），用它在真机执行了 1 字节
 > 修复并找回 UI，并定位修复了 ~3 分 40 秒杀死会话的幸存看门狗。
 > 见 [`docs/FASTBOOT_EMMC.md`](docs/FASTBOOT_EMMC.md)。
-> 📌 **下次开工先读** [`docs/STATUS_20261023.md`](docs/STATUS_20261023.md)
-> （当前状态、操作单、全部结论索引）。硬件实现代码在 [`fastboot/`](fastboot/)。
+> 📌 **下次开工先读** [`docs/README.md`](docs/README.md)（文档地图）→
+> [`docs/incidents/INCIDENT_20261028_LDSO_PRELOAD.md`](docs/incidents/INCIDENT_20261028_LDSO_PRELOAD.md)
+> （**当前砖机 3 秒重启的根因与恢复手册**）→
+> [`docs/STATUS_20261023.md`](docs/STATUS_20261023.md)（历史状态与结论索引）。
+> 硬件实现代码在 [`fastboot/`](fastboot/)。
 
 
 ---
@@ -209,8 +212,16 @@ App 的初始化按序加载基础设施库，停在网络栈（`libWlanResource
 ## 目录结构
 
 ```
-docs/                      研究文档（防砖、fastboot/eMMC 通道、固件报告、系统结构、QEMU 进展、交接…）
+docs/                      研究文档，**已按主题分类**（先看 docs/README.md 索引）
+docs/README.md             ★ 文档地图：根目录必读 / rounds / incidents / analysis/*
+docs/incidents/            ★ 事故与恢复（含 2026-10-28 ld.so.preload 变砖复盘）
+docs/rounds/               按轮次的推进记录（ROUND*、SESSION_*、GROUND_TRUTH_*）
+docs/analysis/             gpu / menu / imdb / port / kernel / system / deploy / qemu / memory
 docs/ACKNOWLEDGEMENTS.md   ★ 参考项目与致谢
+fastboot/                  ★ 硬件 fastboot 通道：Pico 注入 + stage1/stage2 + 刷写/校验工具
+  ├─ pico/                 inject_payload.py（注入前先 mkdir -p pico/logs）
+  ├─ host/                 bootstrap.py / flash_partition.py / verify_partition.py / fb_partition.py
+  └─ prebuilt/             stage1.bin / stage2-flash.bin
 rescue/                    ★ 真机救援：payload 源码（裸机 ARMv7）+ 串口启动协议文档
   ├─ payloads/             探测 → 读块 → 定稿 → 最小修复（1~2 字节）的演进
   └─ docs/                 串口协议、方案定稿、现场行动手册
