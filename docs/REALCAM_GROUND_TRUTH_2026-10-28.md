@@ -56,3 +56,17 @@ KEYS = {MENU:0x1ab, ENTER:0x1ac, UP:0x3, DOWN:0x30, LEFT:0x15, RIGHT:0x1af, DELE
 1. 反汇编 0x113d00..0x113e00 找出真正的 qid 传参路径；
 2. 或在运行时用 `#N` 在**输入线程启动后**再 dump helper 对象（当前 +0x20 读到 0）；
 3. 若仍拿不到，就枚举少量候选 qid 发消息、以画面 SHA256 变化为准（有风险需逐个试）。
+
+## 183. 2026-10-28 qid 静态定位失败，改为运行时轮询
+
+* `InfraInput::SetOsalId`(0x8c27b8) 在 libObj 里**没有任何直接 BL 调用者**（扫描全 .text）
+  ⇒ 它是被别的模块/函数指针调用的，静态找不到 qid 实参；
+* `osal_rcv_msg_tmo` 的调用点 0x113d86 用的字面量是 `0x0083014b`（奇数，像 thumb 代码指针），
+  不像 qid；
+* 4.0 区域（0x8c0000-0x8c4000）的候选 qid 字面量有 170 个，无法凭猜确定。
+
+⇒ 改为**运行时轮询**：`#N` 现在会连续 20 次（每 0.5s）调
+`libObj+0x8c2690(instance)` 并打印 `helper+0x20` / `helper+0x1c`，
+一旦看到非 0/非 0xffffffff 的值就选为 qid（日志 `qid selected=`）。
+
+当前实验（expqp）仍在运行，结果待下一轮读取。
