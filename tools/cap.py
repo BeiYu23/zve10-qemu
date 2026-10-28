@@ -31,7 +31,21 @@ for base in bases[:1]:
     if len(d) != SPAN:
         continue
     distinct = len(set(d[i:i+2] for i in range(0, SPAN, 2)))
-    print(tag, hashlib.sha256(d).hexdigest()[:16], 'distinct=%d' % distinct)
+    # detect the orange highlight bar row (menu cursor)
+    best_row, best_cnt = -1, 0
+    rows = {}
+    for y in range(480):
+        cnt = 0
+        base_y = y * 640
+        for x in range(0, 640, 2):
+            o = (base_y + x) * 2
+            w = d[o] | d[o+1] << 8
+            r = ((w >> 12) & 15) * 17; g = ((w >> 8) & 15) * 17; b = ((w >> 4) & 15) * 17
+            if r > 120 and 40 < g < 140 and b < 80: cnt += 1
+        if cnt > best_cnt: best_cnt, best_row = cnt, y
+        rows[y] = cnt
+    print(tag, hashlib.sha256(d).hexdigest()[:16], 'distinct=%d' % distinct,
+          'hl_row=%d hl_cnt=%d' % (best_row, best_cnt))
     if distinct > 3:
         rgba = bytearray(SPAN * 2)
         for o in range(0, SPAN, 2):
