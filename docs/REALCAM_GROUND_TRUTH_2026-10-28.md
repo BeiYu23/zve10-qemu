@@ -70,3 +70,15 @@ KEYS = {MENU:0x1ab, ENTER:0x1ac, UP:0x3, DOWN:0x30, LEFT:0x15, RIGHT:0x1af, DELE
 一旦看到非 0/非 0xffffffff 的值就选为 qid（日志 `qid selected=`）。
 
 当前实验（expqp）仍在运行，结果待下一轮读取。
+
+## 184. 2026-10-28 源码丢失事故与恢复（重要工程教训）
+
+`/mnt/build/keyinject5.c`、`libkeyinject5.so` 等文件在会话中途**消失**（原因未查清）。
+靠 `/run/media/cokee/build/_archive/src_c/keyinject5.c`（14:31 的快照）恢复，
+该版本包含 qpoll / ptrace SAMPLE / inject_key / hk_install 全部功能。
+
+**教训**：注入库源码必须进 git。已加入 `tools/guest/keyinject5.c`（连同 `tools/cap.py`）。
+
+同时确认：`#N` 现在会先轮询 `helper+0x20`（20 次、间隔 0.5s），
+再把 helper 对象 `+0x00..+0xff` 全量 dump（`KEYINJECT H+xx=...`），
+便于人工找出队列 id。
