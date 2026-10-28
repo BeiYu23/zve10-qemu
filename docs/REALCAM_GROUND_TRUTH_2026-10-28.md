@@ -909,3 +909,21 @@ GPIO2SDIO.elf   SDIO2GPIO.elf   SetPort.elf   ...
 3. 找到 libuiobserve 没占用、且**在空闲时仍被调用**的函数（需要更系统的运行时采样手段）。
 
 已完成且可交付：原厂菜单显示、实时抓帧、网页控制台、SD 卡与完整系统启动链路。
+
+## 180. 2026-10-28 下一步方案：用 guest 内 ptrace 采样，找"空闲时仍在跑"的函数
+
+既然不能靠猜，就**实测热点**：
+
+1. 我们的 preload 库在 App 进程里 `fork()` 一个**采样子进程**；
+2. 子进程用 `PTRACE_ATTACH` 附着到 App 的 UI 线程（`tid` 从 libuiobserve 日志取），
+   周期性 `PTRACE_GETREGS` 读 `PC`，`PTRACE_DETACH`，把 `PC` 归一化成
+   `PC - libObj_base` 打到日志（只记录命中次数 Top-N）；
+3. 统计出**空闲态仍在执行**的偏移（应该是消息泵/定时器分发），
+   再在那个函数上下 hook（对方没占用的点）。
+
+> ptrace 必须由**不同进程**附着，所以用 fork 出的子进程；父进程继续跑 App。
+> 若内核没开 CONFIG_PTRACE 或 seccomp 限制，此路会失败，会先做小规模可行性测试。
+
+### 若 ptrace 不可行
+
+改 **SDIO↔GPIO 桥的 QEMU 模型**（真机按键通道，工作量大但最贴近真实）。
