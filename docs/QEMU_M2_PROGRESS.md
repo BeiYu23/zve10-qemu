@@ -2942,3 +2942,23 @@ WCT ---begin pid=126---                       ← im.elf（线程列表被串口
 **"构建器输出目录" ≠ "最终镜像"。**
 我在 `port_m2/out/usr` 上做了修复，却没验证那个目录**是否就是用来生成待刷镜像的那棵树**。
 ⇒ **改任何东西前，先确认"哪个 artifact 才是真正要交付的"，并回溯它的来源链。**
+
+## 🆕 第四十二层（12:40）：v9 的启动链二进制版本（回答 QEMU 线的门控问题）
+
+```
+v9 里：
+  /bin/bootin.elf      15,336 B   md5=d8bfb4f7  ← **E10 版**（非 M2 的 3545261c）
+  /bin/im.elf          23,240 B   md5=f1c746e3  ← **E10 版**（非 M2 的 d2f47a82）
+  /lib/libIMDB.so      40,596 B   md5=91eca62f  ← M2 版
+  /lib/appFwBoot.so     8,312 B   md5=bb4cdbab  ← M2 版
+```
+**⇒ v9 = **E10 启动器 + M2 应用栈** ⇒ 进程名与 E10 完全一致，preload 门控无需修改。**
+
+**★ 但关键：`bootin.elf` 只是启动器，真正跑 `Application_Start` 的是 `im.elf`。
+⇒ 只拦 bootin 会漏掉 im.elf 侧的 osal 调用（而"Application_Start 向哪个 qid 发 sync"正发生在 im.elf）。**
+
+**建议：门控同时匹配 `bootin` 和 `im.elf`；或干脆不门控，计数表按 pid 分开记
+（preload 库的 .bss 是每进程私有，天然隔离）。**
+
+**判据改进：`osal_snd_sync_msg` 是同步发送（阻塞到对端回复）
+⇒ 记录 `entered[qid]` 与 `returned[qid]`，两者差值 > 0 的 qid 就是"发出却无人应答"的队列。**
