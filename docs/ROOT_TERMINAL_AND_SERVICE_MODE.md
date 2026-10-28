@@ -51,10 +51,26 @@ python3 send_payload.py vendor/agent_v14.so --pid 0x0D95 # 真发
 有 root 终端之后，**一条命令就能修掉本次这类砖**：
 
 ```sh
-cp /etc/ld.so.preload.orig /etc/ld.so.preload
+rm /etc/ld.so.preload          # 原厂状态就是「没有这个文件」，删掉即恢复
 ```
 
-（`disable_preload.py` 的文件头里也是这么写的恢复方案。）
+⚠️ **不要用 `cp /etc/ld.so.preload.orig /etc/ld.so.preload`** —— toolkit 的注释里写着这条，
+但那是**在它自己的语境里恢复"指向我们 debug so"的状态**。对我们这台机器：
+`.orig` 的内容就是 `/etc/zve10_agent.so`，而 `zve10_agent.so` 也是我们自己的调试产物。
+一旦那个 `.so` 有问题，这条命令会**立刻再砖一次**（2026-10-28 这次就是这么坏的）。
+
+原厂事实（务必记住）：
+
+| 文件 | 原厂状态 |
+|---|---|
+| `/etc/ld.so.preload` | **不存在 / 空**（size = 0）——ld.so 什么都不加载 |
+| `/etc/ld.so.preload.orig` | **不存在**；存在的话说明是我们留下的 |
+| `/etc/zve10_agent.so` | **不存在**；是我们的调试 so（12,652 B，簇 377） |
+
+所以正确的修复只有两种，都不涉及 `.orig`：
+
+- 文件系统层：`rm /etc/ld.so.preload`
+- 裸块层：把 dirent 的 size 字段改成 0（`disable_preload.py` 干的就是这件事）
 
 ## 4. 对我们当前这台砖机为什么用不上
 

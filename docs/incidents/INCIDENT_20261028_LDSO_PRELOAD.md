@@ -32,6 +32,22 @@
 
 ⇒ **用 `/etc/ld.so.preload` 做实验是"全或全无"的赌局，没有容错空间。**
 
+## 2.1 原厂事实（必须记牢，这是第二次栽在同一处）
+
+| 文件 | 原厂状态 | 我们的调试产物 |
+|---|---|---|
+| `/etc/ld.so.preload` | **不存在 / 空**（size = 0） | 我们把它指向某个 `.so` |
+| `/etc/ld.so.preload.orig` | **不存在** | 我们留的备份（20 B = `/etc/zve10_agent.so`） |
+| `/etc/zve10_agent.so` | **不存在** | 我们的调试 so（12,652 B，簇 377） |
+| `/etc/ldtest.so` | 不存在 | **本次新写的坏 so（5,500 B）** |
+
+**上一次砖机是同一个模式**：把 preload 指向 `zve10_agent.so`，那个 so 出了问题 ⇒ 全系统 exec 失败。
+**这一次换成 `ldtest.so`，一字不差地重演。**
+
+⇒ 唯一正确的恢复目标是 **"`ld.so.preload` 不存在 / size = 0"**，
+**不是**恢复成指向 `.orig`（`.orig` 指向的也是我们的 so，抄 toolkit 注释里的
+`cp .orig preload` 会立刻再砖一次）。
+
 ## 3. 修复尝试中的第二个错误（重要）
 
 `flash_partition.py` 的行为已从源码确认：
@@ -76,7 +92,7 @@ cd /root/fw/oss/fastboot
 # ① 全量逐字节校验 nflasha10 是否已等于原厂镜像（最可信，10-27 验证过 4800 块）
 python3 host/verify_partition.py \
     --part-start 0x0AC00000 \
-    --image /root/fw/zve10_backup/nflasha10.img
+    --image /root/fw/zve10_delivery/nflasha10.img
 
 # ② 同时确认 /setting 健康（dmode="3" 是 appFw 启动的前提）
 python3 host/verify_partition.py \
@@ -105,7 +121,7 @@ cd /root/fw/oss/fastboot
 # 必须显式给 --part-start；不要传 --reference（会触发"差异块=0"跳过）
 python3 host/flash_partition.py \
     --part nflasha10 \
-    --image /root/fw/zve10_backup/nflasha10.img \
+    --image /root/fw/zve10_delivery/nflasha10.img \
     --part-start 0x0AC00000 \
     --full \
     --chunk-kb 768 --block-kb 64 \
@@ -114,7 +130,7 @@ python3 host/flash_partition.py \
 # 刷完立刻全量校验（不要用采样！）
 python3 host/verify_partition.py \
     --part-start 0x0AC00000 \
-    --image /root/fw/zve10_backup/nflasha10.img
+    --image /root/fw/zve10_delivery/nflasha10.img
 ```
 
 `--full` 强制整片覆盖，避免任何"差异块"逻辑把写入悄悄跳过。
@@ -136,8 +152,8 @@ python3 host/verify_partition.py \
 
 | 文件 | 真实性 |
 |---|---|
-| `zve10_backup/nflasha10.img`（10-25） | ✅ 原厂 FAT12，`ld.so.preload` size=0，可作恢复源 |
-| `zve10_delivery/nflasha10.img`（10-16） | ✅ 原厂，但 `/tmp` 是易变分区，内容与 10-25 不同属正常 |
+| `zve10_delivery/nflasha10.img`（10-16） | ✅ **首选恢复源 —— 真原厂语义**：根目录里**没有 `ld.so.preload`**、**没有 `.orig`**、**没有 `zve10_agent.so`**，有 `images/`（UI 字体）。只多了 22 个早期 `.zv10_ran_*` / `.zv10_done_*` 标记文件，无 preload，无害 |
+| `zve10_backup/nflasha10.img`（10-25） | ⚠️ 次选：`ld.so.preload` size=0（与"文件不存在"等效）。但含我们**全部调试残留**：`zve10_agent.so`(12,652 B)、`ld.so.preload.orig`、`dev`/`mnt`/`sd` 目录 |
 | `zve10_backup/nflasha10_current.img`（10-27 13:35） | ❌ **废镜像**：前 1 MiB 是测速图案 `bytes((i*13)&0xFF)`，后 11 MiB 全 0 —— 那是 10-27 测速事故现场，**不要当"当前状态"或"参考"用** |
 | `zve10_backup/nflasha2.img` | ⚠️ 非出厂（缺 `mode/dmode`、`mode/preload`），**不能直接刷回** |
 | `zve10_backup/nflasha2_current.img` | ✅ 含 `dmode="3"`、`preload=空`、`zve10_net="off"`，恢复用这个 |

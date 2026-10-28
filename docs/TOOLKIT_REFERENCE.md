@@ -59,8 +59,10 @@ FAT 目录解析、`ld.so.preload` 定向修复、单级 fastboot 调试原语�
 - **写之前先做零改动写回自检**（写一个必然不变的块再读回）：在写任何真实数据前
   先证明这次会话的写路径是通的。
 - **门禁式写入**：每一步都断言前置条件，任何一条不满足就在碰 eMMC 之前退出。
-- **在相机侧用 `cp /etc/ld.so.preload.orig /etc/ld.so.preload` 一句话恢复**
+- **在相机侧直接删掉 `/etc/ld.so.preload`**（`rm /etc/ld.so.preload`）就能恢复原厂空 preload
   （需要相机能起来 + root 终端，见 `docs/ROOT_TERMINAL_AND_SERVICE_MODE.md`）。
+  ⚠️ **不要抄它的 `cp .orig preload`** —— 在我们机器上 `.orig` 指向的也是我们自己的调试 so，
+  抄了会再砖一次。
 - 硬件接线与协议细节：`/root/fw/zv-e10-toolkit/fastboot/docs/hardware.zh-CN.md`、
   `pico/PROTOCOL.md`（我们已有一份 `fastboot/pico/PROTOCOL.md`）。
 

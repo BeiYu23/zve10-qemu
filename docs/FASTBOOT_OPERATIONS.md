@@ -164,7 +164,7 @@ nflasha10 内部（FAT12，实测 BPB：`bps=512 spc=32 resv=1 nfats=1 spf=3 roo
 # ① 全量校验 nflasha10 是否等于原厂镜像（最可信，按 64 KiB 块报告每一处不符）
 python3 host/verify_partition.py \
     --part-start 0x0AC00000 \
-    --image /root/fw/zve10_backup/nflasha10.img
+    --image /root/fw/zve10_delivery/nflasha10.img
 
 # ② 读一个扇区到文件（看 dirent 的 size 字段）
 python3 host/read_updater_log.py --lba 0x56006 --sectors 1 --out /tmp/n10_dir.bin
@@ -172,7 +172,7 @@ xxd -s 0x60 -l 32 /tmp/n10_dir.bin      # 偏移 0x7C 起 4 字节 = size
 
 # ③ 整片 dump 下来离线比对
 python3 host/read_updater_log.py --lba 0x56000 --sectors 24576 --out /tmp/n10_full.bin
-cmp /tmp/n10_full.bin /root/fw/zve10_backup/nflasha10.img && echo "整片一致"
+cmp /tmp/n10_full.bin /root/fw/zve10_delivery/nflasha10.img && echo "整片一致"
 ```
 
 ## 7. 刷写（要修的时候）
@@ -180,7 +180,7 @@ cmp /tmp/n10_full.bin /root/fw/zve10_backup/nflasha10.img && echo "整片一致"
 ```bash
 python3 host/flash_partition.py \
     --part nflasha10 \
-    --image /root/fw/zve10_backup/nflasha10.img \
+    --image /root/fw/zve10_delivery/nflasha10.img \
     --part-start 0x0AC00000 \
     --full \
     --chunk-kb 768 --block-kb 64 \
