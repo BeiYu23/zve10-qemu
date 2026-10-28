@@ -184,3 +184,55 @@ appFw.so
 1. 在 argtrace 中再 hook `Application_Start`，确认 appFw 的入口是否被调用
 2. 若调用：查 `uxengine_init2` / `setDatabase` / 渲染循环
 3. 若未调用：查 appFwBoot 建线程那一步
+
+---
+
+## ★ 2026-10-28 17:35 第二层：Application_Start 进入但阻塞在 futex
+
+### 实测（Image.m2s2，加 Application_Start / uxengine_init2 探针）
+```
+ARGTRACE dlopen path=appFwBoot.so      -> 0xcacb0    ✓
+ARGTRACE hooked Application_System_Init = 0xeff8271
+ARGTRACE init enter arg="AppConfig.so"
+ARGTRACE dlopen path=appFw.so          -> 0xcb010    ✓ 已修复
+ARGTRACE hooked Application_Start      = 0x2e27b581
+ARGTRACE init return 0x0
+ARGTRACE >>> Application_Start ENTER                ← 入口被调用
+（之后无输出，无 RETURN —— 在事件循环里，符合预期）
+```
+
+### 状态
+```
+im.elf 存活，wchan = futex_wait_queue_me      ← ★ 阻塞在 futex（pthread 互斥/条件变量）
+帧缓冲采样非零 = 0                             ← 仍未有画面
+无 error/fail/panic
+```
+**⇒ `Application_Start` 跑起来后立刻阻塞在一个 futex 上，等一个永远不来的东西。**
+
+### 与 E10 基线对比
+| | E10 基线 | M2 |
+|---|---|---|
+| im.elf CPU 时间 | 8 秒 | 阻塞于 futex |
+| 线程 wchan | 875 × `cond_wait` | 41 × `osal_rcv_msg_tmo`，0 × `cond_wait` |
+| 帧 | 非零 3855 | 0 |
+
+### ★ 新的重要疑问
+**E10 基线是**带 `libuiobserve`**跑的，而 `libuiobserve` 里有 `try_original_menu()`、
+`software_lcd_init()`、`observe_draw/notify` 等主动驱动逻辑。
+**⇒ 有可能"画面出现"本身就依赖 libuiobserve 的驱动，而不是 M2 真的在画。**
+
+**⇒ 必须做对照：E10 基线**去掉 libuiobserve** 再跑一次。**
+- **若也出画** ⇒ harness 不依赖插桩，M2 的 futex 阻塞是真实问题
+- **若不出画** ⇒ E10 的画面是插桩驱动的，M2 的结论需要重新解释
+
+### 下一步（按优先级）
+1. **对照实验：E10 usr + 无 libuiobserve → 抓帧**（决定后续所有结论的有效性）
+2. 若 1 显示 harness 能自绘：查 `Application_Start` 等的那个 futex 是谁该释放
+3. 探针扩展：hook `GraphicsEngine::drawFramebuffer` / `WidgetSystem::updateFrame` 看是否被调用
+
+### 镜像
+| 镜像 | 说明 |
+|---|---|
+| `work/Image.m2fix2` | M2 + libNetCommon 修复（无入口探针） |
+| `work/Image.m2s2` | **当前最新**：+ Application_Start / uxengine_init2 探针 |
+| `work/Image.e10clean` | E10 基线（带 libuiobserve），61/61 + 有画面 |
