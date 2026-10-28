@@ -2760,3 +2760,52 @@ WC pid=126 comm=im.elf     state=S wchan=futex_wait_queue_me
 **串口日志的行首是 `\r`，用 `grep "^X"` 会漏掉全部内容。
 ⇒ 分析串口日志时不要锚定行首；或用 `tr -d '\r'` 先规范化。
 本轮差点因此放弃一个**成功**的探针（wcp.so 其实工作正常）。**
+
+---
+
+# ★★★★★ 2026-10-29 10:00 第三十九层：bootin.elf 线程布局 —— 有 UIPC 代理线程在等内核
+
+## 实测（Image.m2wct，wcp2.so 枚举 /proc/self/task/*）
+```
+WCT ---begin pid=120---                       ← bootin.elf
+WCT pid=120 tid=120 st=S comm=bootin.elf    wchan=osal_rcv_msg_tmo
+WCT pid=120 tid=122 st=R comm=bootin.elf    wchan=0                  ← ★ 有一个线程在 RUN
+WCT pid=120 tid=123 st=S comm=uipc_proxy_0  wchan=__k_4u_wait_cb
+WCT pid=120 tid=124 st=S comm=uipc_proxy_1  wchan=__k_4u_wait_cb
+
+WCT ---begin pid=126---                       ← im.elf（线程列表被串口截断，未打出）
+```
+
+## ★ 关键信息
+**1. `bootin.elf` 有 **4 个线程**：**
+   - **tid=120 主线程**：等 osal 消息（`osal_rcv_msg_tmo`）
+   - **tid=122**：状态 **R（运行中）**，wchan=0 —— **确实有线程在跑**
+   - **tid=123/124 `uipc_proxy_0/1`**：等 **`__k_4u_wait_cb`**（内核 UIPC 等待）**
+
+**2. `uipc_proxy_*` 线程的存在说明 UIPC（微 IPC）通道已建立**
+   ⇒ **系统在正常的多进程消息框架里，不是"卡死"**
+
+**3. `__k_4u_wait_cb` 是内核里 UIPC 的等待回调**
+   ⇒ **这些线程在等对端发消息，符合正常 IPC 形态**
+
+## ★★ 这个发现的意义
+**系统**不是死锁**：有线程在 R 状态、有 UIPC 代理线程在工作。
+⇒ **它是"启动到一半，在等某个 UIPC 对端/服务响应"。**
+⇒ **这正是 a7c2 记录的情况**：他们"对缺失的 CAPID/SA/HDMI 等使用**限定服务**"
+（即：**用替身实现补齐那些在仿真环境里不可用的服务**）。
+
+## 下轮（明确）
+**① 补取 im.elf 的线程列表**（上次被截断）
+   - 减少 dump 频率（12s → 30s）、只打 pid=126 的线程、并把行缩短
+**② 找出"缺哪些服务"**：对照 a7c2 的"限定服务"清单
+   - 他们缺：CAPID / SA / HDMI 等
+   - 我们可能缺同类（尤其 `/dev/` 里没有的硬件对应服务）
+**③ 看 `bootin.elf` 在等哪条 osal 消息（qid）**
+   - 对方已给 qid：`0x007a0020`(输入) `0x007a804c` `0x007ae01f` `0x0094020a`
+   - 可用 argtrace 风格在 `osal_rcv_msg_tmo` 上打 id
+
+### 方法论（第 48 条）
+**"卡住"要看**线程状态分布**，而不是看进程整体：
+本进程有 1 个 R 线程 + 1 个等 osal 的主线程 + 2 个等内核的 UIPC 代理线程
+⇒ **这是"等对端"的形态，不是死锁。**
+（我之前只看进程级 wchan，会误判为"整体卡死"。）**
