@@ -492,3 +492,23 @@ SYNC qid=003e014d w0=00000003 w1=00000000 w2=00000002 w3=003e014d
    完全不碰 App 的库与代码。
 
 这是最贴近真机（真机就是 keyscan 服务应答 InfraInput 的查询）的做法。
+
+## 161. 2026-10-28 OSAL 同步接口的真实位置与注册 API
+
+* `osal_snd_sync_msg`、`osal_reg_sync_msg_queue_cb` 都在 **libosal_uipc.so**（不在 libosal_utm）；
+* 运行时地址已能打印：`OSAL h=... sync=0x407cec9 reg=0x4022ae1 (/usr/lib/libosal_uipc.so)`；
+* 该库还导出 `__osal_snd_sync_msg`、`osal_snd_sync_direct`、`osal_reg_sync_msg_queue_cb`
+  —— 即**服务端注册回调**接口，正是"输入服务"该用的 API。
+
+### 观测结果
+
+menu 已绘制后，用 gdb 在 `osal_snd_sync_msg` 下断，90 秒内**一次都没命中**：
+说明 App 在菜单空闲态并不轮询输入状态（或轮询频率极低/由其它事件触发）。
+
+### 下一轮
+
+1. 改为在 **`InfraInput::GetEventStatus`（libObj+0x8c2a00）** 下断，观察它是否被周期性调用、
+   参数与返回的事件结构 —— 这能直接告诉我们"键事件怎么进来"；
+2. 若它被调用，就用 gdb **在返回后写入伪造的 `_InfraInputEvent`**（纯宿主侧、不改 guest 代码），
+   验证"按键 → 菜单变化"整条路径是否成立；
+3. 路径验证通过后，再把伪造逻辑做成 guest 侧的输入服务（`osal_reg_sync_msg_queue_cb`）。
