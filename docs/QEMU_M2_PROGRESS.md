@@ -291,3 +291,55 @@ initramfs-ui/usr        = E10 原始（对照实验用）
 /mnt/build/m2qemu/usr.e10bak    = E10 原始 usr 备份
 ```
 **恢复 M2 树：`rm -rf initramfs-ui/usr && cp -a /mnt/build/m2qemu/usr.m2_v2 initramfs-ui/usr`**
+
+---
+
+## ★ 2026-10-28 17:40 第三层：iim.elf 无关；发现 CPU 亲和性可能是 harness 限制
+
+### 实验 A：换 M2 版 im.elf
+```
+initramfs-ui/usr/bin/im.elf = ZV-1M2 版 (d2f47a82, 23,240 B)
+依赖全部可解析（libjemalloc_ds/libIMDB/libbackup/libosal_*/libSTMcmdexecute/libssl3/libcrypto3…）
+结果：与 E10 版 im.elf 完全相同 —— Application_Start ENTER，无后续输出，帧仍全零
+⇒ im.elf 版本不是第二层原因（撤回"E10 im.elf 不发 M2 需要的消息"假设）
+```
+
+### 实验 B：线程状态分布（M2）
+```
+futex_wait_queue_me : 35
+osal_rcv_msg_tmo    : 41
+do_wait             :  4
+worker_thread       : 10
+（E10 基线对照：cond_wait 875）
+⇒ M2 有 35 个线程阻塞在 futex，结构上与 E10 的"菜单空闲态"完全不同
+```
+
+### ★★ 新发现：`osal_set_cpu(thread, 15)`
+**反汇编 `appFwBoot.Application_System_Init` 得知：建线程后执行 `osal_set_cpu(thread, 15)`——绑到 **CPU 15**。**
+
+**而 QEMU `-M zve10` 的 CPU 上限：**
+```
+$ qemu-system-arm -M zve10 -smp 16 → Invalid SMP CPUs 16. The max CPUs supported by machine 'zve10' is 4
+$ qemu-system-arm -M zve10 -smp 8  → Invalid SMP CPUs 8.  The max CPUs supported by machine 'zve10' is 4
+```
+
+**⇒ 该机型最多 4 核（0-3）。`osal_set_cpu(...,15)` 在此环境下必然失败。**
+
+### ★★★ 推论（重要，可能改变整个判断）
+**如果 `osal_set_cpu(15)` 失败会影响线程调度/同步，那么 M2 的 futex 阻塞**可能是 harness 的 CPU 拓扑限制导致的，而不是移植本身的问题**。**
+
+**⇒ 这意味着：当前 QEMU 环境可能**无法**验证 M2 栈的渲染能力。**
+
+### 待办（下一轮）
+1. **确认 `osal_set_cpu` 失败是否致命** —— 反汇编 `osal_set_cpu` 实现，看返回值是否被检查
+2. **若失败被忽略** ⇒ futex 阻塞另有原因，继续查锁
+3. **若失败致命** ⇒ 需要给 `zve10` 机型加 CPU 数（改 QEMU device 定义），或用 `-M cxd90045`（对方另一套，可能支持更多核）
+4. 备选：interpose `osal_set_cpu` 让它始终返回成功，看是否能解开 futex 阻塞
+
+### 镜像
+| 镜像 | 内容 | 帧 |
+|---|---|---|
+| `Image.e10ctl` | E10 无插桩（**对照基准**） | 3879 ✅ |
+| `Image.m2s2` | M2 + 入口探针 | 0 |
+| `Image.m2im` | 同上 + M2 版 im.elf | 0 |
+| `Image.m2smp` | 同上但 E10 im.elf，准备测 -smp（未跑成） | — |
