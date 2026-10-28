@@ -1834,3 +1834,82 @@ ZV-E10M2  ARGO / CXD90057 → BIONZ XR → ARM64
 1. **对比 ZV-1F（同 SoC 新菜单）与 ZV-E10（同 SoC 老菜单）** 的
    帧/资源相关库与字符串差异 —— 找出新菜单在显示链上的**新增依赖**
 2. 不碰 a7c2 的实现细节
+
+---
+
+# ★★★★ 2026-10-29 00:55 第二十三层：同 SoC 两代对比 + ldec 假设被否
+
+## ① 引擎同一性（重大发现）
+```
+ZV-1F libObj 导出 571 个符号
+ZV-1M2 libObj 导出 571 个符号
+共有 571，仅 ZV1F 0，仅 M2 0        ← 完全相同的符号集
+```
+**⇒ **ZV-1F 与 ZV-1M2 的新菜单引擎是同一个东西**（同 SoC + 同代软件）。
+**⇒ ZV-1F 是比 a7c2 更贴切的参考（同 SoC、同菜单代）。**
+
+## ② 老菜单 vs 新菜单的引擎架构差异
+```
+渲染入口符号        E10(老)   ZV1F(新)   M2(新)
+drawFramebuffer        0        1         1
+notifyDraw             0        1         1
+updateFrame            0        1         1
+processEvent           0        1         1
+processSystemMessage   0        1         1
+setScreenRotate        0        1         1
+createImage            0        2         2
+switchBank             0        1         1
+cleanupCache           0        1         1
+prefetchTextImage      0        1         1
+```
+**⇒ 老菜单引擎**一个都不导出**（渲染是内部的），新菜单引擎把它们**全部导出**。
+**⇒ 这是两代架构最明确的界线。也解释了为什么对方 libuiobserve 的绘制钩子对 M2 失配
+（它按 E10 老 libObj 的**内部偏移**装钩子，而新引擎是另一套导出符号体系）。**
+
+## ③ 显示链路库集合：两代完全一致
+```
+两边的显示相关库：libInfraHdmi.so、libInfraStreamingUsb.so
+libObj.so 里 /dev/streamfb 引用：E10=1，ZV1F=1
+⇒ 显示硬件路径相同，不是差异点。
+```
+
+## ④ ldec 假设：提出 → 测试 → **否定**
+**假设**：新菜单资源需 LZ77 解码，而 `/dev/ldec` 无驱动（`ldec.ko` 存在但 `/init` 从未加载）
+⇒ 图片解不出来 ⇒ 黑屏。
+**依据**：a7c2 项目正是踩了这个（"31 次原 LZ77 调用都因缺 /dev/ldec 失败"）；
+`ldec.ko` 在 `/kmod/` 里（15,812 B）但原 init 只建节点不加载；M2 libObj 引用 `/dev/ldec` 3 次。
+
+**实验**：`/init` 加入 `load /kmod/ldec.ko`，重编，用**确切 PID** 抓帧。
+```
+MODULE_BEGIN /kmod/ldec.ko
+MODULE_END   /kmod/ldec.ko status=0     ← 加载成功
+帧：非零 0 / 614,400，SHA=34c69899504b   ← 与之前完全一致
+```
+**⇒ **ldec 不是阻塞点**（或新菜单资源不走 LZ77）。假设否定。**
+
+## ⑤ 当前确凿状态（只用确切 PID 的证据）
+```
+✅ 内核稳定启动，无 panic
+✅ 14+1 个 kmod 全部 status=0（含新增 ldec.ko）
+✅ bootin.elf 运行，libObj.so dlopen ×5 成功
+✅ grm_init 解析、DMP_2D_Initialize 完成
+✅ appFwBoot.so → Application_System_Init 返回 0
+✅ appFw.so dlopen 成功（libNetCommon 修复）
+✅ Application_Start ENTER
+❌ 帧缓冲全零（SHA 34c69899504b，多次一致）
+```
+**⇒ 从未渲染过任何画面（之前"渲染成功"是抓错进程，已撤回）。**
+
+## 下一步候选（按怀疑度）
+1. **抓帧地址/格式**：0x22c48000 与 RGBA4444 是老菜单（chocotan/ZV-E10）的结论。
+   **新菜单引擎是否用不同缓冲？** 需在 bootin 之后扫描全 RAM 找非零块（不只 0x22xxxxxx 一段）
+2. **帧完成协议**：新引擎导出 `notifyDraw`/`drawFramebuffer`，
+   但可能需要先有"帧请求"才画（a7c2 记录：完整帧顺序 `notifyDraw → drawFramebuffer`）
+3. **Application_Start 之后是否真进入绘制态**：需要 hook 那两个导出符号（但要先证明探针无害）
+4. **`libgpe.so` 缺失**：对方日志显示 `UI_LOAD libgpe.so result=(nil)`，
+   老菜单容忍缺失，新菜单可能不容忍
+
+## 方法论（第 32 条）
+**"同代参考"的选择要看**两个维度**：SoC 代际 + 软件代际。
+a7c2 = 新软件 + 新 SoC（只能借方法）；ZV-1F = 新软件 + **同 SoC**（可借实现）。
+⇒ 选择参考时必须两个维度都对齐，否则会被"看起来很像"误导。**
