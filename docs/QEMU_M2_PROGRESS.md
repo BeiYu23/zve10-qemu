@@ -689,3 +689,54 @@ qemu.log: qemu-system-arm: terminating on signal 15 from pid 1088925 (pkill)
 **看到调用栈 + `do_exit` 不要直接判定"崩溃"。
 先看日志级别（`<0>` panic / `<3>` err / `<4>` warning）和是否有 `end trace`。
 我把 `<4>WARNING` 误读成崩溃，白走了两轮。**
+
+---
+
+## ★★★★ 2026-10-28 19:30 第九层：Application_Start 是 6 次调用后返回的初始化函数
+
+### 反汇编（72 B 全貌）
+```asm
+0054d580 <Application_Start@@Base>:
+ 54d580: ldr r1,[pc,#64]        ; 取一个字符串指针
+ 54d582: movs r2,#1
+ 54d584: push {r7,lr}
+ 54d586: sub.w sp,sp,#2208      ; 2.2 KB 栈帧
+ 54d58e: add r1,pc
+ 54d590: blx 0x92559c           ; ★ 调用 1
+ 54d59a: bl  0x54d154           ; ★ 调用 2
+ 54d5a6: bl  0x54d2b0           ; ★ 调用 3
+ 54d5ac: bl  0x54f664           ; ★ 调用 4
+ 54d5b0: blx 0x923c84           ; ★ 调用 5
+ 54d5b6: bl  0x54d538           ; ★ 调用 6
+ 54d5c0: pop {r7,pc}            ; ★ 返回
+```
+
+### ★ 重大推论
+**`Application_Start` **不是事件循环**，是**短初始化序列：6 次调用后返回**。**
+
+**而实测：**
+```
+ARGTRACE >>> Application_Start ENTER        ← 进入了
+（无 <<< Application_Start RETURN）          ← 永远没返回
+```
+**⇒ **阻塞发生在这 6 个调用之一里面。** 而不是"Application_Start 自己进了循环"。
+
+### 这也修正了之前的一个理解
+**之前以为"Application_Start 是入口，进去就是主循环，所以没有 RETURN 正常"——错。
+正常运行它应当**返回**，然后由 Main 返回、线程结束或转入别处。**
+
+### 下一轮：定位阻塞在哪个调用
+**6 个调用点已知（0x92559c / 0x54d154 / 0x54d2b0 / 0x54f664 / 0x923c84 / 0x54d538）。**
+
+**方法（从便宜到贵）：**
+1. **argtrace 里按返回地址打印**：hook 一个必定被调用的底层函数（如 `malloc`/`write`），
+   记录 `__builtin_return_address(0)`，看最后落在哪个区间
+2. **对 6 个调用点逐个反汇编**，看哪个是"等待"性质（调用 osal_wai_sem / pthread_cond_wait）
+3. **用 QEMU gdbstub 附加**，卡住时读 PC 直接定位
+
+**建议先做 2（纯静态，最便宜）：反汇编 0x92559c，看它是不是等锁/等消息。**
+
+### 方法论（第 13 条）
+**"函数没有返回 ⇒ 它是事件循环"是一个未经验证的假设。
+反汇编只需要 72 字节就能证伪 —— 先看目标函数多大、是否含 `pop {...,pc}`，
+比猜测便宜得多。**
