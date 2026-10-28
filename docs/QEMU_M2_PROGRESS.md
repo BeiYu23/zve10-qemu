@@ -5458,3 +5458,76 @@ M2 : lr ∈ [0x220000, 0x250000] 的注册 = **0 条**
 
 下一步：确定该 VA 段属于哪个库/组件（需要 E10 运行时 `/proc/pid/maps` 或
 `dladdr(lr & ~1)` 反查），然后检查该库在 M2 树里是否存在、是否被加载。
+
+---
+
+# ★★★ 2026-10-30 04:00 第六十八层：qid→服务映射尝试失败；对"高16位分组"的自我修正
+
+## 尝试：假设 qid 高16位 = libIMDB 表索引 → **验证失败**
+**做法：从 libIMDB.so 的 .rodata 按顺序提取 184 个 lib*.so 名字，把序号当索引。**
+**验证（用已知 `0x3e014d = backup`）：**
+```
+假设成立 ⇒ idx 0x3e(62) 应为 libbackup.so
+实际     ⇒ idx 0x3e(62) = libInfraCacheMgr.so   ❌
+其它抽查：0x30=libdiablo / 0x31=libclema / 0x7a=libusbcmd / 0x8f=libInfraWebApiClient 全不匹配
+⇒ **假设错误，撤回**
+```
+**原因：**
+```
+① .rodata 字符串顺序 ≠ 表索引顺序（表项有显式 idx 字段）
+② libIMDB 有**多张表**（"IMDB:default"/"IMDB:qemu"/"IMDB:nfs"/"IMDB:set"/"IMDB:USBJ"）
+   ⇒ 提取时把多张表混在一起
+```
+
+## 附带收获
+### ① `libInfraInput.so` 是**独立模块**（不只是 libObj 里的符号堆）
+```
+rodata 模块序列前 20：
+ 0 libosal_uipc  1 libosal_utm  2 libosal_ulogio  3 libInfraInterchipDatatrans
+ 4 libNVM  5 libbackup  6 libSaveLoadSettings  7 libbkdmn  8 libOnDemandLoader
+ 9 libInfraKikiLogGenerator  10 libInfraAccessLog  11 libSysDef  12 libMWF
+13 libi2cuipc  14 libI2CRight  15 **libInfraInput.so** ★  16 libInfraError
+17 libJiritsu  18 libAtn  19 libGetLog
+⇒ **待查：v9/E10 树里是否有 libInfraInput.so 这个文件？
+   若有，注册逻辑可能在那里（可解释 libObj 里 osal_reg 0 处直调）**
+```
+### ② `libbackup.so` 在 rodata 出现**两次**（序号 5 和 130）⇒ 印证多表结构
+### ③ 已知可靠映射（用户仓库）
+```
+0x3e014d backup / 0x8f013a ulog / 0x8f0139 ulog 控制
+0x14c0424 grm_ma / 0x14a0429 InputServant
+0x94016a 0x94020a 0x940270  bootin 自己的 sync 队列族
+```
+
+## ⚠️ 对上一轮分析的**自我修正**
+**第 67 层按"高 16 位 = 子系统"分组，得出"27 个子系统整族缺失"。
+但注意 `0x14c0424` / `0x14a0429` 是 **8 位十六进制**（高16位=0x014c/0x014a），
+与 `0x3e014d` 风格不同 ⇒ **qid 编码规则未确认** ⇒ **"高16位分组"可能不成立。**
+⇒ **第 67 层的差集结论需要降级为"待验证"，不能作为结论使用。**
+
+## 更稳妥的判据
+```
+按"固定 vs 动态"分类：
+  - 两代都出现的 qid（91 条）⇒ 固定 id，可靠
+  - 只在一边出现        ⇒ 可能是动态分配差异，不可靠
+⇒ 真正可靠的差异信号很少（共有 91 条不含差异）
+```
+
+## 结论：注册表这条路已到尽头
+**数据噪音（动态分配 + 多表 + 编码未确认）> 信号。
+建议回到**唯一还没排除**的具体位置：**
+```
+帧循环 7 入口全 0 + Application_Start 进入但不返回
+⇒ 断点在 Application_Start 的 6 个调用里
+⇒ 早前已定位：#1 是 veneer → 0x2c2ed85（440 B 栈帧函数，继续调用 0x2ce819c/0x25c848a/0x2ce8754）
+⇒ **这条线一直没走完，比追注册表更直接**
+```
+
+## 方法论（第 76 条）★★
+**"从二进制里提取名字列表"时，**顺序不等于索引**：
+多表结构（不同 profile/场景各一份）、显式索引字段、字符串池复用
+都会让"按位置编号"失效。
+⇒ **必须用**已知样本**做验证（本例：用已知的 backup=0x3e014d 去校验），
+   验证不过就立即放弃该假设，不要继续往下算。**
+**⇒ 教训：我这次是用已知映射做了验证的（所以及时发现失败）；
+   而第 67 层的高16位分组**没有验证**就下了结论 —— 这是不一致的做法。**
