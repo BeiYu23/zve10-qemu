@@ -3675,3 +3675,76 @@ v4b（构造函数里一次性 resolve + 打 M2PTR 指针表）: serial=20,400 B
 * **当前 M2 镜像（`/mnt/build/zv_m2probe/kbuild/.../Image`）是 v4b，不能用**，
   需要回退：把 `initramfs-ui/usr/lib/libm2probe.so` 换回 v3 版本并重编；
 * v3 的关键结论仍然有效（§54/§55）：M2 bootin 只建立 `0x94020a` 一个等待，180 秒不前进。
+
+---
+
+# ★★★★ 2026-10-29 17:50 第五十一层：拦"注册"打断 boot —— 根因精确定位与修复方向
+
+## 现象（QEMU 线 v4 实测）
+```
+v4a（惰性 resolve）                    : serial=20,400 B，M2INIT/M2Q 计数 = 0
+v4b（构造函数一次性 resolve + 打指针表）: serial=20,400 B，计数仍 = 0
+对照 v3（只拦 rcv/snd_sync）           : serial=22,929 B，M2INIT/M2T 正常输出
+⇒ v4 连 bootin 都没起来；v3 能跑到服务阶段
+```
+
+## ★ 根因精确化（比"构造函数太晚"更进一步）
+**关键细节：`M2INIT` 是**构造函数里立刻写的**，它也是 0
+⇒ **preload 库的构造函数根本没执行**，不是"执行了但太晚"。**
+
+**机制：**
+```
+bootin 启动 → ld.so 按依赖顺序初始化各库
+  → 某个**更早初始化**的库的构造函数里调用了 osal_reg_msg_queue_cb → 命中桩
+  → 此时 preload 库构造函数**还没轮到**
+  → native 指针 = 0（.bss 零初始化）→ 桩返回 -1 → 该库初始化失败 → bootin 死
+```
+**⇒ 同时解释：① 为什么 M2INIT 没出现 ② 为什么 v3 安全
+（osal_rcv_msg_tmo 只在启动后期调用，那时构造函数早跑完）。**
+
+## ★ 方向 2 被逻辑排除
+**"延迟安装（M2INIT 之后用 mprotect 装 reg 桩）"**构造上不可能成立**：
+注册恰恰发生在 bootin 起来之前 —— 这正是打断 boot 的原因。
+⇒ 延迟安装 = 等装上时注册已全部发生完 ⇒ 只能记录 0 次。**
+
+## 修复方案（采纳方向 1 + 关键修正）
+### ① 桩里**惰性**解析（不要在构造函数里）
+```c
+static void *g_reg_native = NULL; static int g_null_seen = 0;
+int osal_reg_msg_queue_cb(unsigned qid, void *cb){
+    if (!g_reg_native){
+        g_reg_native = dlsym(RTLD_NEXT, "osal_reg_msg_queue_cb");
+        if (!g_reg_native){
+            if (!g_null_seen){ g_null_seen = 1;
+                out("M2Q NULLNATIVE reg qid=%08x lr=%p\n", qid, __builtin_return_address(0)); }
+            return 0;                    /* reg 返回 0 = 良性 */
+        }
+    }
+    out("M2Q t=%llu REG qid=%08x\n", now_ms(), qid);
+    return ((int(*)(unsigned,void*))g_reg_native)(qid, cb);
+}
+```
+**✅ `dlsym(RTLD_NEXT,...)` 在早期构造函数阶段**安全**（重定位已完成）；
+❌ `dlopen` 才危险（可能死锁在 ld.so 锁）。**
+
+### ② **放弃 `osal_dynamic_id` / `osal_subsystem_id`**
+**它们返回的 qid 被调用方拿去构造标识，返回假值会引入隐性错误。
+⇒ 只拦 `reg*` 就能回答"0x7a0020 何时被创建"，不需要 dynamic_id。**
+
+### ③ 保留 v3 已验证安全的 `rcv` / `snd_sync`
+**最终组合：`osal_reg_msg_queue_cb` + `osal_rcv_msg_tmo` + `osal_snd_sync_msg`**
+
+## ★ `NULLNATIVE` 诊断本身有价值
+**若桩在 native 未就绪时被调用，说明**有库在初始化期就注册队列**。
+⇒ 打印 `qid` + `lr`（`__builtin_return_address(0)`），再用 `/proc/self/maps` 反查是哪个库。
+⇒ 若那个 qid 就是 `0x94020a` ⇒ 与"M2 卡在 0x94020a"完全自洽。**
+
+## 操作纪律
+**先换回 v3 再重编；在 v3 基础上**一次只加一个** `osal_reg_msg_queue_cb`。
+⇒ 一次加 6 个变量，失败时无法定位是谁的问题（v4 就是教训）。**
+
+## 方法论（第 59 条）★
+**"延迟安装探针"对**早期初始化期**调用是**逻辑上无效**的：
+探针之所以打断启动，正因为它拦的函数在初始化期就被调用；
+等进程起来了再装，目标调用早已完成。
+⇒ **拦早期函数的唯一可行做法是"随库一起加载 + 桩内惰性解析 + 惰性失败兜底"。**
