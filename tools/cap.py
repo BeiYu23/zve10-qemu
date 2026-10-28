@@ -13,7 +13,11 @@ def write_png(path, rgb, w, h):
     open(path, 'wb').write(png)
 
 tag = sys.argv[1]
-pid = int(subprocess.check_output(['pgrep', '-x', 'qemu-system-arm']).split()[0])
+A='build-zve'; B='10/qemu-system-arm'
+pids = subprocess.run(['pgrep','-f',A+B], capture_output=True, text=True).stdout.split()
+if not pids:
+    print('NO_QEMU'); raise SystemExit(2)
+pid = int(pids[0])
 bases = []
 for line in open(f"/proc/{pid}/maps"):
     p = line.split()
