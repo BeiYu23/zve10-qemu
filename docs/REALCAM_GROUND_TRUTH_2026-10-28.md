@@ -302,3 +302,27 @@ t4_afterENTER 6f2d7602ca7e75c2 distinct=225  （注入 0x1ac 后）
 * **键码扫描**：对 `0x007a0020` 依次投 `key=1..0x200`（每条 status 1 再 0），
   每 16 条抓一次帧，看是否有任何一条让画面变化 —— 这能同时验证"队列对不对"和"键码表"；
 * 若全无反应，则做**消息头注入**：把候选 src 值写进 `MH-08`/`MH-04` 再发，看是否被接受。
+
+## 193. 2026-10-28 键码扫描实验 + 两个协作修正
+
+### 键码扫描（进行中）
+
+`exp_sweep.sh`：对 `0x007a0020` 依次投 `key = 1..64`（每条 status 1 再 0），
+每 8 条抓一次帧（`base`、`c1`、`c9`、`c17`…`c57`），
+**任何一次 SHA256 变化即说明键码命中 **。
+
+### 协作修正（重要，影响可复现性）
+
+1. **`pkill -f` 会匹配到自己的命令行** —— 我把脚本内容写在命令行里，
+   脚本内的 `pkill -f '<完整路径>'` 匹配到了我自己的 bash 进程（命令行含同样字符串），
+   导致实验被自己杀掉两次。修法：脚本里把模式**拆成两段拼接**（`A='build-zve'; B='10/qemu-system-arm'`），
+   命令行里就不含完整字符串。
+2. **跨会话误杀**：另一条对话（M2 实验）也在跑 `qemu-system-arm`，
+   我之前的 `pkill -x qemu-system-arm` 会把它杀掉。现已全部收窄到自己的路径。
+
+### 交叉验证结果（回答另一会话）
+
+* 我的 E10 基线日志里 **没有** `liro: Unknown symbol dma330_mem_transfer_async`（0 条）；
+* `DMP_2D_Initialize : 0` 之后我这边继续走：
+  `ResourceBluetooth_init → grm_init(返回 0xffffffff 但继续) → UI_LOAD libgpe.so → DDSUserInit → uxengine_init → infra_indctr_init`。
+  ⇒ 他们停在 DMP 之后，断点在"下一个服务"，不在 DMP 本身。
