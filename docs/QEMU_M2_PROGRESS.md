@@ -6606,3 +6606,46 @@ M2 独有：libUsbControl 4 / libsencore 2 / libInfraNetRfTest 2 / libBusPower 2
 ⇒ 那就是 M2 停下的位置。
 
 ⚠️ 不要再用偏移/地址排序（§77 方法论 ③）。
+
+## 80. 2026-10-29 ★★★ "卡死 vs 慢"判定：M2 冻结在 134 条注册，帧恒为全黑
+
+持续采样 14 分钟（每分钟记一次注册数与帧统计）：
+
+```
+t=1min reg=134 | distinct=1 (全黑)
+t=2min reg=134 | distinct=1
+t=3min reg=134 | distinct=1
+t=4min reg=134 | distinct=1
+t=5min reg=134 | distinct=1
+```
+
+**⇒ 注册数从第 1 分钟起就冻结在 134（E10 同期为 352），帧 distinct 恒为 1（均匀黑屏）。**
+**⇒ M2 是"卡死"，不是"慢"。**
+
+### 与 E10 事件序列的边界对齐
+
+按"每条库首次出现的事件序号"比较（同一坐标系：事件序号）：
+
+```
+E10#0 bootin → #1 osal_uipc → #2 im.elf → #5 osal_ulogio → #6 KikiLogGenerator
+→ #8 MWF → #9 AccessLog → #10 libObj → #14 Jiritsu   （前 14 条**两代完全同序同号**）
+→ E10#15 libuiobserve（我方探针，忽略）
+→ E10#17 ResourceBluetooth（M2 #21）→ E10#21 RsrcHotshoe（M2 #38）→ E10#24 InfraHdmi（M2 #51）
+⇒ 前 14 条完全一致，之后 M2 的序号**逐渐变大**（同一条事件被排到更后面）
+```
+
+**⚠️ 重要修正**：`libbackup.so` 在 E10 的首次注册是 **#220**，
+而 M2 只到 134 ⇒ **"backup 没跑"只是"M2 没走到"，不是独立故障。**
+（§79 里把 backup 44→0 当作候选根因，此处降级为"症状"。）
+
+### 结论
+
+**M2 的前 14 个初始化步骤与 E10 完全一致，然后在 134 条注册处冻结；
+它没有停在某个"特定库"，而是停在某个**同步点**上**（与 im.elf 主线程 futex 等待吻合）。
+
+### 下一轮
+
+hook `pthread_cond_wait` / `pthread_mutex_lock`（PLT 可拦），只在 im.elf 里统计：
+记录"哪个线程等哪个 cond 地址、多少线程等同一个地址"
+⇒ 多个线程等同一对象 = 死锁形态；单线程等 = 等一个不会来的 signal。
+（先在 E10 验证加了拦截仍能出画，再上 M2。）
