@@ -2278,3 +2278,51 @@ function:void infra_wrapper_bluetooth::detail::load_im()
 - 集中在 1~2 个 PC ⇒ 卡在自旋或断点
 **⇒ 采样 profiler 比"探针计数为 0"更进一步：后者只说"没到那里"，
 前者能说"时间花在哪"。**
+
+---
+
+# ★★★ 2026-10-29 04:05 第三十层：补齐 /system 未解决 BLE assert
+
+## 发现：initramfs 的 /system 是**空目录**
+```
+我的 initramfs-ui/system/       → 0 个文件
+M2 nflasha3 (/system)           → av-cam.bin(17MB) bonobo.bin bt_firm.hcd(60KB)
+                                  initrd.img ldr_drv.bin sabin/ vmlinux.bin wole_app.bin
+E10 nflasha3                    → 同结构（bt_firm.hcd 61,787 B）
+```
+**⇒ `bt_firm.hcd`（蓝牙固件）在 /system 里，而我的 initramfs 完全没有 /system 内容。**
+**⇒ 这解释了 `load_im()` 失败 + assert 的**直接原因**。**
+
+## 实验：补齐 /system 后重跑（Image.m2sys，cpio 275,110,400 B）
+**补入**：`bt_firm.hcd`、`bonobo.bin`、`wole_app.bin`、`ldr_drv.bin`、`sabin/`（只取到 1 个文件 364K）
+**结果：**
+```
+BLE assert 出现次数: 2      （仍存在）
+帧循环 7 入口: 全部 0        （仍未启动）
+serial: 13,989 B
+```
+**⇒ **补齐 /system 没有解决**。**
+**⚠️ 但注意：`sabin/` 只提取到 1 个文件（364K），提取逻辑有缺陷，可能没取全。**
+**⇒ 不能据此完全否定 /system 的作用，只能说"补这几个文件不够"。**
+
+## ★ 下一步的关键改进（必须做）
+**当前采样 profiler 只记 PC，**不知道 appFw 的加载基址**，
+所以无法把样本 PC 换算成 appFw 内的偏移 ⇒ **无法定位到具体函数**。**
+
+**改进：在 preload 库的构造函数里用 `dladdr()` 取某个 appFw 导出符号的地址，
+得到 appFw 的加载基址并打印。**
+```c
+Dl_info info;
+if (dladdr((void*)&some_appFw_symbol_or_dlsym_result, &info))
+    print base = info.dli_fbase;
+```
+**⇒ 有了 base 就能算 `offset = pc - base`，再与 appFw 的符号表/反汇编对照，
+直接得到"CPU 花在哪个函数"。**
+
+**⚠️ 更简单：`dlsym(RTLD_DEFAULT, "Application_Start")` 得到绝对地址，
+减去已知的 vaddr 0x54d581 即得 base。**
+
+## 方法论（第 39 条）
+**采样 profiler 的价值取决于"能否把样本地址映射回源码/函数"。
+只有 PC 而没有加载基址 ⇒ 样本等于无用。
+⇒ 设计采样器时，**基址记录和 PC 采样同等重要**，必须在同一轮里拿到。**
