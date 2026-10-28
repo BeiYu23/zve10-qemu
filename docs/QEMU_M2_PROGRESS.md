@@ -2896,3 +2896,49 @@ WCT ---begin pid=126---                       ← im.elf（线程列表被串口
 
 **要真正出画面，剩余工作量参照 a7c2：软件 GPE + LZ77 解码 + 帧完成协议 + 显示桥，
 属实质性工程，不是再调探针能解决的。**
+
+---
+
+# 🚨 2026-10-29 12:10 第四十一层【重要更正】：`port_m2/out/usr` 不是正确基准，`nflasha15_v9.ext2` 才是
+
+## 我的交接错误（已撤回并更正）
+
+**我曾让真机线刷 `/mnt/build/fw/port_m2/out/usr` —— 三重错误：**
+1. **那是构建器输出目录，不是可刷镜像**
+2. **它整体落后**：17 个文件还是 E10 版
+3. **我在它上面做的"两个修复"是在修一棵旧树**（其中 libNetCommon 在 v9 里本来就是对的）
+
+## 独立验证结果：v9 才是正确基准
+
+```
+/mnt/build/nflasha15_v9.ext2
+  249,102,336 B (237.56 MiB, = 243,264 块 × 1024, 与原厂几何一致)
+  md5 f6ae9f576821b35c    Oct 28 02:47
+
+  /lib/libNetCommon.so              122,876  md5=1444fb66  ✅ M2 版
+  /lib/libmprctrl.so                263,812  md5=1350def2  ✅ 存在
+  /lib/appFw.so                  64,273,528  md5=f079cda0  ✅
+  /lib/libObj.so                  3,931,624  md5=738a2331  ✅
+  /lib/libIMDB.so                    40,596  md5=91eca62f  ✅
+  /lib/libInfraBluetoothLowEnergy.so 541,484 md5=2ceb0d0d  ✅ 保留
+  /bin/bt_firm.hcd                   61,787  md5=be8ac916  ⚠️ E10 版（唯一待修）
+```
+
+**⇒ 那条致命链（appFw → libNetCommon(E10) → libmprctrl 缺失）在 v9 里**已提前修好**。**
+
+## 待做的 v9′ = v9 + M2 蓝牙固件
+
+```
+把 /bin/bt_firm.hcd      换成 M2 版：60,143 B, md5 208b064a68b3300a5dceae48416502f0
+把 /bin/bt_firm_sar.hcd  换成 M2 版：54,028 B, md5 374229da
+步骤：debugfs 替换 → e2fsck -fn → 回读校验 md5 → 重算镜像 md5
+```
+
+## 给 QEMU 线的同步
+**他们原计划把 `port_m2/out/usr` 复制到 `/mnt/build/zv_m2probe/`，
+我已提醒改用 v9 解包出的树作 base，否则会在一棵落后 17 个文件的树上测。**
+
+## 方法论（第 50 条）★
+**"构建器输出目录" ≠ "最终镜像"。**
+我在 `port_m2/out/usr` 上做了修复，却没验证那个目录**是否就是用来生成待刷镜像的那棵树**。
+⇒ **改任何东西前，先确认"哪个 artifact 才是真正要交付的"，并回溯它的来源链。**
