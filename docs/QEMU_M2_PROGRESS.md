@@ -2040,3 +2040,82 @@ serial = 13,989 B（与无探针时同量级）
 ```
 **⇒ 必须先确定在哪一层，否则会在错误层级上浪费大量时间。
 本次用 3 个 interpose 计数（纯转发、不改变行为）一次就确定了是 (a)。**
+
+---
+
+# ★★★★★ 2026-10-29 02:10 第二十六层：完整解出帧循环，阻塞点收窄到 Application_Start 前 3 个调用
+
+## ① 扫到了 drawFramebuffer 的唯一调用点
+**方法**：写 ARM/Thumb BL+BLX 扫描器查 `bl`/`blx` 到 PLT 桩（`0x529684`）。
+**⚠️ 先做正对照**：`malloc@plt` → 16 处 ✅（扫描器有效）；
+但 `memcpy@plt`/`memset@plt` → 0 处（可能被内联或走 `__memcpy_chk`，不影响结论）。
+**⚠️ 第一版扫描器漏了 Thumb `BLX`（h2 bit12=0）—— 正对照当场暴露，修正后才有效。**
+
+**结果：`drawFramebuffer` 在 appFw.so 里**只有 1 处调用**：**
+```
+0x0054ed82   THUMB_BLX → drawFramebuffer@plt
+```
+
+## ② 帧循环全貌（0x54ed12 内）
+```asm
+54ed1e: blx UXEngine::wgtsys()
+54ed22: blx WidgetSystem::updateCurrentTime()
+54ed26: movw r1, #0x3f6 (1014)
+54ed2c: blx 0x9245a8                     ; 分发（id=1014）
+54ed32: blx WidgetSystem::processEvent()  ; ← 事件循环
+54ed3e: bne 54ed32                        ; while (processEvent()!=0)
+54ed46: blx ResourceManager::processCommands()
+; ── 帧延迟循环 ──
+54ed4c: blx isFrameDelay()
+54ed54: cbz → 54ed90
+54ed5a: blx updateFrame()
+54ed62: b 54ed4c
+; ── 绘制段（顺序、无条件）──
+54ed90: cmp r6,#0 ; beq 54ed6a  （r6 决定是否走 54ed64 的预处理）
+54ed6a: blx 0x925544(0)                   ; 状态机：置 0
+54ed74: blx WidgetSystem::notifyDraw()
+54ed7a: blx 0x925544(1)                   ; 状态机：置 1
+54ed82: blx GraphicsEngine::drawFramebuffer()   ★ 唯一绘制
+54ed86: movs r0,#2
+54ed8c: b.w 0x925b0c                      ; 尾调用（状态 2）
+```
+
+**⇒ `drawFramebuffer` 在该函数末尾**无条件**到达（只要函数被调用并跑完）。**
+**⇒ 探针测到 0 次 ⇒ **该函数（0x54ed12）根本没被执行**。**
+
+## ③ 反查调用链
+```
+0x54ed12 ← 被 2 处调用: 0x54f5f6, 0x54f850   （都在 0x54f664 内）
+0x54f664 ← 被 1 处调用: 0x54d5ac             （= Application_Start 的第 4 个调用）
+```
+**Application_Start 的 6 个调用顺序：**
+```
+#1 0x92559c  (ARM态)
+#2 0x54d154  (vtable 构造)
+#3 0x54d2b0  (初始化序列)
+#4 0x54f664  ← 含帧循环，★ 未到达
+#5 0x923c84  (ARM态)
+#6 0x54d538  (vtable 构造)
+```
+
+## ★★ 结论：阻塞在 Application_Start 的 **#1/#2/#3** 之一
+**探针已证明：`Application_Start ENTER` 出现过，但没有返回，且 #4 的帧循环从未执行。**
+**⇒ 阻塞位置就在前三个调用内。**
+
+**⚠️ 注意：`Application_Start` 是**被动初始化**，真正的主循环是 0x54ed12
+（updateCurrentTime → processEvent 循环 → updateFrame → notifyDraw → drawFramebuffer）。
+**这个主循环本该由 #4（0x54f664）里的某处**反复调用**（0x54f5f6 / 0x54f850 两处）。**
+
+## 下一步（两条）
+**① 用 gdb 采样用户态 PC**（卡住时多次采样，取落在 appFw 地址范围的样本）
+⇒ 直接得到阻塞在 #1/#2/#3 的哪个。
+**② 或反汇编 #1/#2/#3 三个函数**，看哪个含等待原语
+（#1 是 ARM 态 `0x92559c`，#2/#3 是 Thumb）。
+
+**优先 ②（纯静态，便宜）。**
+
+### 方法论（第 35 条）
+**扫描器/正则类工具必须**先跑正对照**。
+本次第一版漏了 Thumb BLX，正对照（malloc）也是 0 却因为我把 0 当成"符合预期"而差点放过；
+是 `memcpy/memset 也是 0` 这个**不一致**才让我回头检查。
+⇒ 正对照要选**明确应该非零**的样本，并且**多个**样本互相印证。**
