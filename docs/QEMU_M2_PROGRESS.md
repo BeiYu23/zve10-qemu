@@ -1163,3 +1163,66 @@ INIT_V3_LAUNCHED            bootin.elf 启动
 **gdbstub（`-s`）本身会改变时序，可能诱发原本不出现的问题。**
 **⇒ 用 `-s` 得到的失败必须与不带 `-s` 的结果交叉验证，
 不能把 gdbstub 引起的问题当成镜像的问题。**
+
+---
+
+## ★★★★★ 2026-10-28 22:20 第十七层：卡点在 `InfraBluetoothLowEnergy_init`（不是 DMP！）
+
+### 方法：扩展 argtrace 记录每次服务 init 的 dlsym
+```c
+if(r && name && (strstr(name,"_init")||strstr(name,"Init")))
+    logline("INITSEQ resolve %s\n", name);
+```
+
+### 实测服务解析序列（Image.m2seq，最后 15 条）
+```
+INITSEQ resolve InfraIPTC_init
+INITSEQ resolve CameraStillDate_init
+INITSEQ resolve dig_level_init
+INITSEQ resolve netservice_init
+INITSEQ resolve InfraIPsec_init
+INITSEQ resolve InfraNetDeviceInfo_Init
+INITSEQ resolve gps_rsrc_init
+INITSEQ resolve gps_init
+INITSEQ resolve compass_init
+INITSEQ resolve geo_init
+INITSEQ resolve InfraMFi_init
+INITSEQ resolve InfraHttpClient_Init
+INITSEQ resolve CameraBackground_init
+INITSEQ resolve Application_System_Init          ← appFw 启动
+INITSEQ resolve InfraBluetoothLowEnergy_init     ← ★ 最后一条，此后无输出
+```
+
+**⇒ 之前的判断"卡在 DMP_2D_Initialize"是**错的**（我只看了 tail，实际日志早就过了 DMP）。
+⇒ **真正的卡点是 `InfraBluetoothLowEnergy_init` —— 蓝牙低功耗初始化。**
+
+### 与对方成功日志的差异（对方提供）
+**对方 E10 在 `DMP_2D_Initialize : 0` 之后继续走：**
+```
+ResourceBluetooth_init → grm_init(返回 0xffffffff 但继续) → libgpe.so(nil 但继续)
+→ DDSUserInit → uxengine_init → infra_indctr_init → ...
+```
+**⇒ 对方也走蓝牙相关，但**没有卡住**。差异可能在于：
+- 对方的环境里 BLE 初始化会失败**快速返回**
+- 我的环境里 BLE 初始化**阻塞等待硬件/驱动**
+
+### 关键观察：两棵树都没加载蓝牙内核模块
+**我的 `/init` 加载 14 个 kmod，**没有蓝牙模块**；E10 原版 `/init` 同样没有。**
+**⇒ 但两边的 `libInfraBluetoothLowEnergy.so` 都存在（541 KB）。**
+**⇒ 若 BLE 初始化需要内核驱动而驱动缺失，可能在**等待设备节点出现**从而阻塞。**
+
+### 下一轮（三个方向）
+1. **确认 `InfraBluetoothLowEnergy_init` 是否真的被调用**（当前只记录到 resolve）
+   ⇒ 扩展 argtrace 给该符号装 trampoline，打印 enter/exit
+2. **若确认阻塞在 BLE init**：
+   - 方案 A：在混合树里**删掉 `libInfraBluetoothLowEnergy.so`**，让该服务 resolve 失败被跳过
+   - 方案 B：给 BLE 提供 fake 设备节点 / stub 驱动
+   - 方案 C：只给 QEMU 加蓝牙控制器（若机型支持）
+3. **对方建议先补 `dma330_mem_transfer_async`**（他们基线 0 条 warning，我这边有）
+   ⇒ 消掉这个噪声，避免干扰判断
+
+### 方法论（第 23 条）
+**"日志尾部最后一行" ≠ "卡点"。**
+**我看到 `DMP_2D_Initialize : 0` 在 tail 里就以为卡在那，
+实际上后面还有 15+ 条服务解析，只是**被我的 grep 过滤条件漏掉了**。**
+**⇒ 排查顺序问题必须看**完整有序日志**，不能只看 tail。**
