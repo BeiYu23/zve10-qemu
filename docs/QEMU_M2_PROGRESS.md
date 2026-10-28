@@ -2962,3 +2962,62 @@ v9 里：
 
 **判据改进：`osal_snd_sync_msg` 是同步发送（阻塞到对端回复）
 ⇒ 记录 `entered[qid]` 与 `returned[qid]`，两者差值 > 0 的 qid 就是"发出却无人应答"的队列。**
+
+---
+
+# ✅ 2026-10-29 13:20 第四十三层：v9b 复核通过（真机待刷镜像就绪）
+
+## v9b 独立复核结果（全部通过）
+```
+/mnt/build/nflasha15_v9b.ext2
+  249,102,336 B (237.56 MiB = 3801 × 64 KiB，精确相等)
+  md5 2ff338bc3462fc9dc9c3a66da27ade8a
+  e2fsck: 985/60960 files, 233039/243264 blocks — 无错误
+
+超级块几何 vs 原厂：blocks/inodes/isize/first/uuid/label/compat **逐字段一致**
+
+关键文件:
+  /bin/bt_firm.hcd       60,143  208b064a  ✅ M2 版（v9 里是 be8ac916 E10 版）
+  /bin/bt_firm_sar.hcd   54,028  374229da  ✅ M2 版（v9 里本来就对）
+  /lib/libNetCommon.so  122,876  1444fb66  ✅ M2 版
+  /lib/libmprctrl.so    263,812  1350def2  ✅ 存在
+
+权限: 两个 hcd 文件 Mode 0755 uid 57285 gid 1000
+      （v9 原版与原厂 dump 均为 0755，✅ 正确）
+```
+
+## 三方超级块指纹（重要参考）
+```
+镜像                    超级块 md5                          前 1KB 引导区 md5
+原厂 dump               a24bfd7e5891016567c363b3d541e0a6    0f343b0931126a20f133d67c2b018a3b
+v9 原版                 53f4a9de782b1169440847da6ae8a37a    0f343b0931126a20f133d67c2b018a3b
+**v9b（待刷）            9c0d90e679d665b0fe9df1661c13385c**  0f343b0931126a20f133d67c2b018a3b
+```
+**⇒ 三者引导区（前 1KB）完全相同（1024 字节全零的 md5）⇒ ext2 引导区没人动过。**
+**⇒ 超级块三家各异（重建镜像会变时间戳/空闲计数/hash seed）⇒
+   **超级块 md5 不能证明"是 v9b"，但能**立刻排除"完全没写进去"**（读到 a24bfd7e 即没刷）。**
+
+## `--full` 语义（对方查源码确认）
+```python
+nblocks = len(target) // bgran          # 249102336/65536 = 3801
+if a.full: runs = [[0, nblocks-1]]      # 只覆盖镜像范围内的块
+```
+**⇒ 只写 3801×64KiB = 237.56 MiB，分区尾部 62.4 MB 原样不动。**
+**耗时：写 237.6 + 回读 237.6 = 475.1 MB ÷ 3.1 MB/s ≈ 153 秒（+bootstrap ≈ 175 秒）。**
+
+## 回退双保险（已核实）
+```
+/root/fw/zve10_backup/nflasha15.img    314,572,800 B  sb_md5 a24bfd7e  整文件 cdec7ad4
+/root/fw/zve10_delivery/nflasha15.img  314,572,800 B  sb_md5 a24bfd7e  整文件 cdec7ad4
+⇒ 两份独立采集完全一致
+```
+
+## 余量
+```
+v9b: 空闲 10,225 块 = 9.98 MB（以后补小文件不用重建几何）
+```
+
+## 方法论（第 51 条）
+**重建镜像的超级块 md5 必然与"原厂克隆"不同（时间戳/空闲计数/hash seed）。
+⇒ 超级块指纹只能做**反向判据**（"是否还是原厂"），不能做**正向判据**（"是否是目标镜像"）。
+⇒ 正向判据必须靠逐块比对（或整文件 md5）。**
