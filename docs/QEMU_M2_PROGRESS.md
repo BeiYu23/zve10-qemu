@@ -3194,3 +3194,40 @@ v9b 启动链（已核实）：
 **"恢复某个分区"会**同时清除**上面所有后续注入的东西。**
 本案例：恢复 nflasha2 修 dmode，顺带清掉了 agent 的 preload ⇒ 断了自己的调试通道。
 **⇒ 恢复分区前，先列出该分区上"非原厂添加的内容"，确认哪些是可弃的、哪些是调试命脉。**
+
+## 51. 2026-10-28 ZV 侧接手：qid 计数表（M2 混合树，v9 基准）
+
+交接后按纠正后的基准重建了探针镜像：
+* 基准树：`nflasha15_v9.ext2`（md5 `f6ae9f57…`，249,102,336 B）解包 → `/mnt/build/zv_m2probe/root`（858 文件, 230MB）
+  - `lib/libNetCommon.so` md5 `1444fb66…`（M2 版，非 E10 版）✅
+  - `lib/libmprctrl.so` 263,812 ✅（混树漏带的那支）
+* initramfs：复制对方 `/mnt/build/m2qemu/work/initramfs-ui`，`usr` 换成 v9 树，
+  `init` 里的 `LD_PRELOAD` 换成我们的探针（去掉 argtrace/wcp4，减少变量）
+* 探针 `libm2probe.so`：裸汇编 ABI 透明桩，只拦**无前缀** `osal_rcv_msg_tmo` / `osal_snd_sync_msg`，
+  **零串口热路径**，只写内存计数；`ttyAM1` 收 `#M2` 命令 dump
+* 镜像 `kbuild/arch/arm/boot/Image`（279,454,084 B，`strings | grep M2PROBE` = 1 校验通过）
+
+### 实测计数（boot 后约 2 分钟）
+
+```
+M2PROBE pid=120 rq_c=1
+M2R pid=120 q=0094020a n=1
+M2S pid=120 q=008f013a enter=22 ret=11 stuck=11
+M2S pid=120 q=003e014d enter=8  ret=4  stuck=4
+```
+
+### 判读
+
+| qid | 语义（E10 参照） | 观测 |
+|---|---|---|
+| `0x0094020a` | E10 上也是 rcv 队列之一 | rcv n=1（在等） |
+| `0x008f013a` | E10 侧同族 `0x008f0139` | **11 次 sync 发送未返回 ← 最大嫌疑** |
+| `0x003e014d` | **backup 服务队列**（E10 已知） | 4 次 sync 未返回 ← backup 无响应 |
+
+**⇒ "发了没人回"的队列已定位：`0x008f013a` 和 `0x003e014d`(backup)。**
+这与"不是死锁、是在等 IPC 响应"的定性一致。
+
+### 待办
+
+1. `im.elf`(pid≈126) 侧没吐出计数 —— 需要确认它的 cmdline 是否含 `im.elf`（门控），或改门控为"在 im 里也装 reader"
+2. 对照 E10 的 `0x008f0139/0x008f013a` 族语义，确认缺的是哪个服务
