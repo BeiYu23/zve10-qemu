@@ -2438,3 +2438,60 @@ S3 pid=123 mod=appFw.so base=0x2dfb6000 off=0x59d040
 - 有热点 ⇒ 自旋/死等/单点重试
 - 无热点 + 单进程 + 长日志 ⇒ **长初始化或反复重跑**
 ⇒ 采样分布的形状（集中 vs 分散）比单个热点更有诊断价值。**
+
+---
+
+# ★★★★★ 2026-10-29 06:20 第三十三层：assert 是**我移除 BLE 库的后果**，不是独立阻塞
+
+## 本轮工作
+**① 查 a7c2 的蓝牙处理方式（同代新菜单参考）**
+```
+a7c2 资产清单里蓝牙固件放在**两个位置**：
+  menu-root/system/bt_firm.hcd        43,624 B
+  menu-root/usr/bin/bt_firm.hcd       60,143 B   ← 还有一份在 /usr/bin
+  menu-root/usr/bin/bt_firm_sar.hcd   1,738,760 B
+且 prepare-menu-initramfs.sh 明确：
+  for file in "$boot/"*.bin "$boot/"*.hcd; do cp -a "$file" "$root/system/"; done
+⇒ 他们的做法：把 boot 资产全部塞进 /system
+```
+
+**② 发现我的树里蓝牙固件是**混搭**的**
+```
+system/bt_firm.hcd          60,143 B  = M2 版（我从 nflasha3 拷的）
+usr/bin/bt_firm.hcd         61,787 B  = **E10 版**（M2 原版是 60,143）★不一致
+usr/bin/bt_firm_sar.hcd     54,028 B
+```
+**修复：/usr/bin 两个文件都换成 M2 版（md5 208b064a / 374229da）**
+
+**③ 修复后重跑（Image.m2bt）**
+```
+BLE assert 出现次数: 2         （仍存在）
+帧循环 7 入口: 全部 0
+帧采样非零: 0
+```
+**⇒ **固件版本不一致不是原因**。**
+
+## ★★ 真正的解释：assert 是我自己造成的
+```
+我为了越过 InfraBluetoothLowEnergy_init 的阻塞，
+**移除了 libInfraBluetoothLowEnergy.so**
+而 appFw 里的 infra_wrapper_bluetooth::detail::load_im() 正是调用该库的 API
+⇒ 库不存在 ⇒ 调用失败 ⇒ assert ⇒ 上层重试 ⇒ 大量 CPU 时间落在 appFw 里（与采样数据吻合）
+```
+**⇒ 上一阶段观察到的"进程在 appFw 里忙碌、无热点、以 load_im assert 收尾"
+**全部是我移除 BLE 库的副作用**，不是原始阻塞。**
+
+## 因此路线必须修正
+**原路线（错误）：移除 BLE 库 → 越过阻塞 → 期待出画**
+**正确路线：**让 `InfraBluetoothLowEnergy_init` **成功**（而不是跳过它）**
+
+**下轮要做的：**
+1. **恢复 libInfraBluetoothLowEnergy.so**
+2. **查它 init 时阻塞在什么**（用什么采样器/探针看）
+   - 可能的依赖：BT 内核驱动、`/dev/` 节点、`/system/bt_firm.hcd`、某个 osal 队列
+3. **对照 E10 老菜单**：E10 的 BLE init 为什么能过？（同 SoC，老菜单也初始化 BLE）
+
+### 方法论（第 42 条）
+**"移除组件越过了阻塞" ≠ "该组件是问题"：
+它也可能是**下一个阻塞的原因**（因为该组件被别处依赖）。
+⇒ 移除前先查"谁依赖它"，移除后若出现**新的**失败，要怀疑是自己造成的。**
