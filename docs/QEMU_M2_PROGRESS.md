@@ -540,3 +540,18 @@ appFw.so 重定位类型：
 | `Image.e10ctl` | 3879 帧 ✅（基准） |
 | `Image.m2s2` | Application_Start ENTER，帧 0（**最能说明问题的一版**） |
 | `Image.m2long` | 内核 Oops，未到应用层（同内容，不稳定证据） |
+
+### ★ Oops 精确定位（补充）
+```
+[<604622a8>] (sched_init_smp+0x0/0x110) from [<6045aa78>] (kernel_init+0xa8/0x1dc)
+[<6045a9d0>] (kernel_init+0x0/0x1dc)  from [<6016242c>] (do_exit+0x0/0x6f4)
+→ do_basic_setup
+```
+**⇒ 崩在 `sched_init_smp`（SMP 调度初始化），与日志里的 `CPU1/2/3: failed to boot: -38` 对应。**
+
+**⇒ 这是**副 CPU 启不起来的间歇性失败**，属 QEMU 仿真时序/争用问题，不是 M2 移植问题。**
+
+### 应对（下一轮验证）
+1. **跑前确保 `pgrep -x qemu-system-arm` 为空**，并检查宿主机负载（`uptime`）
+2. **改试 `-smp 1`**（单核，无 SMP 初始化 ⇒ 绕开这个崩溃点；代价是慢，但能先拿到功能层结果）
+3. 每次跑完都跑一次 **E10 基准** 校验环境仍健康（应 3879 帧）
