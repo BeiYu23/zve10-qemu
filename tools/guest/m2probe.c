@@ -177,7 +177,5 @@ __attribute__((constructor)) static void init(void)
     n = snprintf(b, sizeof b, "M2INIT pid=%d cmd=%.48s\n", (int)getpid(), cmd);
     out(b, n);
     if (strstr(cmd, "im.elf")) {
-        pthread_t t; pthread_create(&t, 0, reader2, 0);
-        pthread_t g; pthread_create(&g, 0, gi_worker, 0);   /* lazy-singleton call */
     }
 }
