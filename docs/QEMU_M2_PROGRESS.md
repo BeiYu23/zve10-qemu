@@ -4533,3 +4533,32 @@ LD_DEBUG=libs 每库 5~10 行；im.elf ~100 库 + bootin ~20 库 + 子进程
 ② `LD_DEBUG` 支持性：从 initramfs 提取 loader 查字符串表，当场确认。
 ⇒ **每轮结束前问一句："还有哪个'必须开机才能验'的前提，其实现在就能静态确认？"**
    —— 这能把真机实验次数压到最少（每次刷写/重启都有风险与成本）。**
+
+## 🌙 第五十九层补遗（真机线明日实操三要点）
+
+**① `env.txt` 千万别带 `\r`**
+`parse_and_set_env` 按行 `putenv(整行)` ⇒ 行尾 `\r` 会变成值的一部分
+⇒ `LD_DEBUG=libs\r` 会变成未知选项，静默失效。
+**正确写法：**
+```sh
+printf 'LD_DEBUG=libs\nLD_DEBUG_OUTPUT=/setting/ldd\n' > /setting/env.txt
+```
+
+**② 启动若循环（camfs.log 显示 3 轮），`ldd.<pid>` 文件会累积**
+3 轮 × 若干进程 × <100KB ≈ 1~2 MB，12.7 MB 仍够，**不要删**
+⇒ 累积的多轮文件反而能对比"哪一轮走得更远"。
+
+**③ 若 `ls /setting/ldd.*` 一个文件都没有**
+⇒ 说明 `env.txt` 没生效（不是 LD_DEBUG 的问题）
+⇒ 直接转查"env.txt 是否被 init 覆盖 / 路径是否正确"，
+   **不要在 LD_DEBUG 上继续花时间**（避免把"注入失败"误判成"工具不可用"）。
+
+## 真机线今日收敛质量（对方台账记录，我认同）
+```
+起点：只有崩溃现象（DMP 之后断在 appFw），相机连不上
+  ↓ 反汇编 /sbin/init（putenv + /setting/env.txt）
+中间：代码级确认的注入点（无白名单，execve 前生效）
+  ↓ 提取 initramfs ld-2.11.2.so 查字符串表
+终点：LD_DEBUG 可用性离线证实 + 发现 LD_BIND_NOW 不支持
+⇒ 明日实验：**写一个文件 + 重启 + 看结果**；失败成本 = 写一个文件（不碰 /usr、不刷分区、删掉即恢复）
+```
