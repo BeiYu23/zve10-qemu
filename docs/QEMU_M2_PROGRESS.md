@@ -4148,3 +4148,41 @@ _ZN10InfraInput9SetOsalIdEPii  →  InfraInput::SetOsalId(int*, int)   size=108
 ⇒ 更严重的是：它差点被用来给真机 v9b **判死刑**（"QEMU 都不行，真机肯定不行"）——
    而真机上 v9b 的成败与 QEMU 是否缺键盘**毫无关系**。**
 **⇒ 教训：环境性结论不能跨环境外推，尤其是用来做"放弃"决策时。**
+
+## 61. 2026-10-28 ★★★ 补齐 sync 变体后定论：M2 的输入队列 `0x7a0020` **两个 API 都没注册**
+
+协作方指出 v5 只 hook 了 `osal_reg_msg_queue_cb`，漏了 `osal_reg_sync_msg_queue_cb`
+（libObj/appFw 两个都导入）。补上后重跑 M2：
+
+```
+M2REGSY 条数 = 82        （此前 M2REG = 40）
+两变体合计 unique qid = 122
+
+关键队列：
+  0x7a0020  ❌ 未注册        ← InfraInput 输入队列
+  0x7a804c  ❌ 未注册
+  0x7ae01f  ❌ 未注册
+  0x7a0029  ✅ 已注册
+  0x94020a  ✅ 已注册（pid=121 bootin，lr=0x13208，sync 变体）
+  0x3e014d  ❌ 未注册（backup，应为内核模块注册）
+  0x8f013a  ❌ 未注册（ulog，内核模块）
+  0x8f0139  ✅ 已注册（pid=127）
+```
+
+### 定论
+
+1. **`0x94020a` 是 bootin 自己通过 sync 变体注册的**（不是内核模块），
+   它注册完就等它 —— 这是正常的同步 RPC 模式；
+2. **`0x7a0020` / `0x7a804c` / `0x7ae01f` 在 M2 上两个 API 都没有注册记录**
+   ⇒ 不是"hook 漏了"，是真的没创建；
+3. 而 M2 的 `libObj.so` **仍导出 16 个 InfraInput 符号**（含 `SetOsalId`）
+   ⇒ **InfraInput 的初始化没有执行到"注册队列"这一步**，断点在更上游。
+
+### 下一步（精确到 InfraInput）
+
+* M2 的 `InfraInput::GetInstance` 在 `libObj` dynsym 偏移 **0x208005**（E10 为 0x8c22a0）；
+* 直接在 guest 里调用它：
+  * 返回 NULL ⇒ `InfraInput` 单例从未构造 ⇒ 断点在 `infra_input_init` 的调用者
+  * 返回非空 ⇒ 单例已建但没注册队列 ⇒ 断点在 `SetOsalId`/`RegQueue` 分支
+
+完整注册表（122 条）：`docs/m2-registered-qids-full.txt`。
