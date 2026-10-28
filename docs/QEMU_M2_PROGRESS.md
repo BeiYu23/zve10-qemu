@@ -434,3 +434,59 @@ PROBE osal_wai_sem_tmo #2 id=0x9401c3 tmo=-1 caller=0xb80d
 | `Image.e10ctl` | E10 无插桩（对照基准） | 帧 3879 ✅ |
 | `Image.m2s2` | M2 + argtrace | Application_Start ENTER，帧 0 |
 | `Image.m2pr` | **M2 + argtrace + probe.so** | 卡在 0x9401c3 等信号量，未到 Application_Start |
+
+---
+
+## ★★ 2026-10-28 18:15 撤回：probe.so 破坏渲染，上一轮结论作废
+
+### 静态验证（有效）
+```
+appFw.so 重定位类型：
+  _ZN2ux6gfxeng14GraphicsEngine15drawFramebufferEv   R_ARM_JUMP_SLOT  ← 走 PLT
+  _ZN2ux6wgtsys12WidgetSystem11updateFrameEv          R_ARM_JUMP_SLOT
+  osal_wai_sem_tmo                                    R_ARM_JUMP_SLOT
+⇒ LD_PRELOAD interpose 机制【原理上有效】，且 osal_wai_sem_tmo 探针确实触发过
+```
+
+### ❌ 但对照实验推翻了上一轮的解读
+| 配置 | 串口 | 帧采样非零 |
+|---|---|---|
+| E10 无插桩（`Image.e10ctl`） | 865 KB | **3879 ✅** |
+| **E10 + 仅 probe.so（`Image.e10pr`）** | **11.6 KB** | **0 ❌** |
+
+**⇒ `probe.so` **本身把 E10 的渲染打死了**（串口从 865 KB 掉到 11.6 KB）。**
+
+### ⇒ 因此【撤回】上一轮结论
+**~~"M2 里 drawFramebuffer 从未被调用"~~—— 那是在 probe.so 破坏过的配置上测的，不成立。**
+**~~"反复等待信号量 0x9401c3 是阻塞点"~~ —— 同样可能由 probe.so 引入。**
+
+**⇒ 教训（第 10 条规则）：任何 interpose 探针都必须先在【能出画的 E10 基线】上验证"加了探针仍能出画"，
+否则测量结果无效。这和"改 cpio 没重编"是同一类错误。**
+
+### 当前可信的状态（未受探针污染）
+```
+✓ 59/59 服务初始化
+✓ appFwBoot.so 加载、Application_System_Init 返回 0
+✓ appFw.so 加载成功（libNetCommon 修复）
+✓ Application_Start ENTER（Image.m2s2，仅 argtrace，未观察到行为异常）
+✗ 帧全零
+✗ 35 个线程 futex_wait_queue_me
+```
+**⇒ 目前唯一"干净"的观察工具只剩 `argtrace.so`（它只打印不转调改变行为），
+但它只能看到 dlsym/dlopen 层，看不到绘制/锁。**
+
+### 下一轮起点
+1. **不要再用 probe.so**（除非先证明它在 E10 上不破坏渲染）
+2. **找非侵入式观测手段**：
+   - `oled`/`gdb` 附加到 QEMU 里读内存/寄存器（QEMU 支持 `-s` 或 gdbstub）
+   - 或只在**已确认 AppStart 已进入之后**注入探针（延迟安装）
+3. **回到最基础的判据**：E10 能画出帧，M2 不能 —— 差异在 M2 栈内部
+4. 可考虑：把 M2 的 `libObj`/`appFw` 逐个换回 E10 版本做二分（定位是哪个库的问题）
+
+### 镜像状态
+| 镜像 | 内容 | 帧 |
+|---|---|---|
+| `Image.e10ctl` | E10 无插桩 | 3879 ✅（**唯一可信基准**） |
+| `Image.e10pr` | E10 + probe.so | 0 ❌（证明 probe 有害） |
+| `Image.m2s2` | M2 + argtrace（**行为未见异常**） | 0 |
+| `Image.m2pr` | M2 + probe.so | 结果作废 |
