@@ -183,3 +183,30 @@ App 没有崩（之前用 C 原型声明时是直接卡死/不调用）。
 打了这个桩之后，那两次运行的 `export_ready` 没出现（`menu=0`）——
 可能是日志刷太多拖慢了启动（每 200 次打一条）。已改为**每个 qid 只打一次**，
 并开始试 `#Kq 0x008f0139 3`（UP 键）与 `#Kq 0x00bd017a 3`，比对画面 SHA256。
+
+## 189. 2026-10-28 移除拦截桩后菜单恢复；注入"发得出去但画面不动"
+
+1. **拦截 `osal_rcv_msg_tmo` 的桩是有害的**（另一个会话独立验证：清空 preload 后 61/61 init 全过）。
+   我们这边同样现象：打桩的运行 `menu=0`，删桩后 `menu=1`。桩已**整体删除**。
+2. `#Kq` 曾被前面的 `#K` 分支吞掉（`#K` 先匹配 → 解析出空 qid → `no qid`），已把 `#Kq` 提前。
+3. 修复后**注入链路机械上成功**：
+
+```
+KEYINJECT Kq qid=008f0139 key=3
+KEYINJECT api valloc=0x407afed setsrc=(nil) snd=0x407ac35
+KEYINJECT valloc r=0 msg=0446b00c
+KEYINJECT snd qid=008f0139 key=3 st=1 r=0     ← 发送成功
+```
+
+共发出 32 条（2 队列 × 4 键码 × 按下/抬起 × 重复），**画面 SHA256 全部不变**。
+
+### 新发现的关键缺陷
+
+`osal_set_msg_src` **在 ZV-E10 的 libosal_uipc.so 里不存在**（dynsym 里只有
+`osal_set_msg_pri` / `osal_set_msgq_*`），所以 `setsrc=(nil)`——
+a7c2 的注入器能链到这个符号（他们的固件里有），我们这里没有。
+
+⇒ 消息缺少"来源 id"，InfraInput 很可能直接丢弃。下一步要么：
+
+* 找到 ZV-E10 设置消息来源的等价 API（`osal_set_msg_pri`？或直接写消息头某个字）；
+* 或枚举更多 qid（当前只确认了 `0x008f0139`、`0x00bd017a` 两个）。
