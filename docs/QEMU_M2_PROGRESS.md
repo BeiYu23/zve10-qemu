@@ -2652,3 +2652,62 @@ emg_check_memory_shortage size = 332   ← 唯一有实质逻辑的
 **"日志最后一条" ≠ "阻塞点" —— 又一次上当：
 服务序列停在 `emg_init`，但它是个 6 字节桩。
 ⇒ 判断阻塞点必须看**函数大小/是否含等待原语**，而不是"日志停在哪"。**
+
+---
+
+# ★★★★ 2026-10-29 09:00 第三十七层：emg_init 是空桩；阻塞在 Application_Start #1 链；观测工具连续失败
+
+## ① 静态确证：emg_init 是空桩
+```asm
+00000914 <emg_init@@Base>:
+   914: b580   push {r7, lr}
+   916: af00   add  r7, sp, #0
+   918: bd80   pop  {r7, pc}        ← 6 字节，立即返回
+```
+**libEMG.so 总 5,872 B，导出函数全是 6~8 字节的桩（唯一有逻辑的是
+`emg_check_memory_shortage`，332 B）。**
+**⇒ 服务序列停在 emg_init **只是日志最后一条**，它不是阻塞点（第 45 条成立）。**
+
+## ② 阻塞位置（三点交叉）
+```
+Application_Start 被进入但从未返回（argtrace 只有 ENTER，无 RETURN）
+帧循环（在 #4 0x54f664 内）7 个入口全 0
+CPU 空闲（100 秒仅 10 个采样）
+⇒ 阻塞在 Application_Start 的 #1/#2/#3 之一，且性质是"等待"
+   #2/#3 是 vtable/构造器，很快返回
+   #1 是 veneer → 0x2c2ed85（440 B 栈帧，继续调 0x2ce819c/0x25c848a/0x2ce8754…）
+⇒ 等待最可能在 #1 那条链里
+```
+
+## ③ ★ 观测工具连续失败（重要教训）
+**尝试了 4 种方式读取 wchan，全部无输出：**
+| 方式 | 结果 | 原因 |
+|---|---|---|
+| `/init` shell + `case`/`awk` 筛选 | 无输出 | **`/dev/kmsg` 缓冲区满 ⇒ shell 的 echo 静默失败**（之前见过 `write error: No space left on device`）|
+| 同上，改 `exec >/dev/console` | serial 掉到 8,276 B，更糟 | /dev/console 在该时刻不可用或阻塞 |
+| 最简 shell（无 case/awk） | 无输出 | 同上，仍是 kmsg 满 |
+| **C 探针 `wcp.so`（pthread + write(2) + /proc/self/wchan）** | **仍无输出** | **未查明**（可能 pthread_create 在 constructor 早期失败）|
+
+**★ 一个已确认的事实：`ARGTRACE` 的 C `write(2)` 一直有输出，而 shell 的 `echo` 没有
+⇒ **/dev/kmsg 满了以后，shell 输出全失效，但 C 的 write(2) 仍可用。**
+⚠️ 但 wcp.so 也是 write(2)，却无输出 ⇒ 说明问题在 `pthread_create` 或 constructor 时机。**
+
+## ④ 下一步（两条，都很具体）
+**① 修 wcp.so**：不做线程，改为在 constructor 里直接 sleep+读一次（阻塞 constructor，
+   但 bootin 的 constructor 阶段很快就会结束，之后...）——不行，会阻塞启动。
+   **更稳妥：用 `__attribute__((destructor))` 或在 argtrace 的某个高频函数里顺带采样。**
+   **最简方案：在 argtrace 的 dlsym wrapper 里（它被高频调用）计数，
+   每 N 次就顺带读一次 /proc/self/wchan 输出 —— 零额外线程。**
+
+**② 或换个思路：直接静态分析 #1 链**（不依赖运行时）
+   - 反汇编 `0x2c2ed85` 及其子调用，找 `osal_wai_sem`/`osal_rcv_msg_tmo`/`futex` 等
+   - 缺点：链很深，但可用"找 PLT 等待原语"的扫描器自动做
+
+**⇒ 优先 ②（静态、确定、不依赖有问题的运行时观测）。**
+
+### 方法论（第 46 条）
+**当观测工具连续失败时，不要继续加码工具，而是**换观测通道**：
+本轮的教训是 shell 走 kmsg（会满）、C 走 fd2（可用），
+但 C 的多线程 constructor 又引入了新不确定性。
+⇒ **最可靠的观测点是"已经在工作的高频函数"里顺带采样**，
+因为它已被证明能正常输出。**
