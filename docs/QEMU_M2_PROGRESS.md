@@ -2174,3 +2174,46 @@ updateFrame / notifyDraw / drawFramebuffer
 **gdbstub（`-s`）会改变仿真时序，在"边缘稳定"的镜像上直接导致 panic。
 ⇒ 需要运行时观测时，**优先用 guest 内的 preload 探针**（不影响宿主时序），
 gdb 只用于**已经稳定**的场景。**
+
+---
+
+# ★★★★★ 2026-10-29 03:05 第二十八层：7 个探针全部为 0 —— 帧循环确定从未启动
+
+## 测量（Image.m2fp7，确切 PID=1195825，实例数=1）
+**探针 `fp7.so`（8,332 B）interpose 帧循环里的**全部 7 个 PLT 入口**，纯转发计数：**
+```
+_ZN2ux6wgtsys12WidgetSystem17updateCurrentTimeEv     → 0
+_ZN2ux6wgtsys12WidgetSystem12processEventEv          → 0
+_ZN2ux6resmgr15ResourceManager15processCommandsEj    → 0
+_ZNK2ux6wgtsys12WidgetSystem12isFrameDelayEv         → 0
+_ZN2ux6wgtsys12WidgetSystem11updateFrameEv           → 0
+_ZN2ux6wgtsys12WidgetSystem10notifyDrawEv            → 0
+_ZN2ux6gfxeng14GraphicsEngine15drawFramebufferEv     → 0
+```
+**流程未受影响：serial 13,988 B（与无探针同量级）。**
+
+## ★ 结论（现在是硬结论）
+**帧循环函数 `0x54ed12` **从未执行**。**
+**⇒ 阻塞点在 `Application_Start`（0x54d581）内部，且**早于**帧循环的调用点。**
+**⇒ 静态已知：#4（`0x54f664`）内部在 `0x54f5f6` / `0x54f850` 调帧循环；
+       #1 是 veneer → `0x2c2ed85`（440 B 栈帧，继续调 `0x2ce819c`/`0x25c848a`/`0x2ce8754`…）。**
+
+## 下一步：**guest 内采样探针**（沿用第 36 条方法论：不用 gdbstub）
+**方案：在 preload 库里装 `setitimer(ITIMER_PROF)` + `SIGPROF` 处理函数，
+在 handler 里记录被打断的 PC（`ucontext` 的 `arm_pc`），累积成直方图，定期输出到串口。**
+
+**优点：**
+- **完全在 guest 内，不扰动宿主/QEMU 时序**（不会像 `-s` 那样诱发 panic）
+- **直接回答"CPU 时间花在哪"** —— 若卡在某个等待，PC 会集中在同一处
+- **不需要知道调用链**，静态追 veneer 的高成本可以跳过
+
+**判据：**
+- **PC 集中在 appFw 的某偏移 ⇒ 直接得到阻塞函数**
+- **PC 集中在 libc（如 `pthread_cond_wait`/`select`）⇒ 是在等某个条件**
+- **PC 分散 ⇒ 是在跑（不是卡住），只是还没到帧循环**
+
+### 方法论（第 37 条）
+**"多个独立探针全部为 0" 比"单个探针为 0" 强得多：**
+- 单点为 0 可能是"该符号没被解析到我的实现"
+- **7 个点全为 0，且流程仍能走到 Application_Start ⇒ 探针机制确实生效，结论可信**
+**⇒ 做否定性判断时，要尽量用多个互相独立的观测点同时证伪。**
