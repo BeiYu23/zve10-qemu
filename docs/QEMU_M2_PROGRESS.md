@@ -3636,3 +3636,42 @@ osal_subsystem_id            ← 子系统 id
 我引用了 §191，却没看到 §192 已经自查否定 —— 同一个文档里前后矛盾时，
 **后面的通常是修正**。
 ⇒ **引用前，在同一文档里搜一下该结论的关键数字，看它是否在更后面被否定。**
+
+## 56. 2026-10-28 尝试"拦队列注册"（v4）：两次都提前打断 boot，暂缓
+
+按协作方建议，v4 改为拦**冷路径**：`osal_reg_msg_queue_cb` / `osal_reg_sync_msg_queue_cb` /
+`osal_dynamic_id` / `osal_subsystem_id`（+ 保留 rcv/snd），并给每条事件打 monotonic 时间戳。
+
+### 结果：boot 在 bootin 启动前就停住
+
+```
+v4a（惰性 resolve）: serial=20,400 B，M2INIT/M2Q 计数 = 0
+v4b（构造函数里一次性 resolve + 打 M2PTR 指针表）: serial=20,400 B，计数仍 = 0
+（对照：v3 能跑到 serial=22,929 B，有 M2INIT/M2T 输出）
+```
+
+**⇒ 这两个版本连 `bootin` 都没起来。**
+
+### 最可能的根因
+
+`osal_reg_msg_queue_cb` / `osal_dynamic_id` / `osal_subsystem_id` 属于**库初始化期就会被调用**的
+早期 API；而我们的 preload 库**构造函数执行时机晚于**这些早期调用 ⇒ 桩被调用时
+`n_*` 指针仍为 NULL ⇒ 桩返回 -1 ⇒ **初始化链被打断**。
+
+（v3 只拦 `osal_rcv_msg_tmo` / `osal_snd_sync_msg`，这两个只在启动后期才被调用，
+所以在构造函数补上 resolve 之前也能工作——这也解释了为什么 v3 没事而 v4 必挂。）
+
+### 修复方向（下一轮，三选一）
+
+1. **桩内 NULL 兜底**：指针为空时用 `dlsym(RTLD_NEXT, name)`（**不用 dlopen**，可在早期安全调用），
+   再不行就返回"良性值"（reg 类返回 0）而不是 -1；
+2. **不在 loader 阶段拦**：保留 v3（rcv/snd），另想办法读**队列注册表**——
+   例如在 bootin 起来后（`M2INIT` 之后）再通过 `mprotect` 动态安装 reg 桩；
+3. **放弃 reg 拦截**，回到 v3 + 加密 rcv 采样（每 5 秒一次前 60 秒）。
+
+### 备注
+
+* v4 源码已存档：`tools/guest/m2probe_reg_v4.c`；
+* **当前 M2 镜像（`/mnt/build/zv_m2probe/kbuild/.../Image`）是 v4b，不能用**，
+  需要回退：把 `initramfs-ui/usr/lib/libm2probe.so` 换回 v3 版本并重编；
+* v3 的关键结论仍然有效（§54/§55）：M2 bootin 只建立 `0x94020a` 一个等待，180 秒不前进。
