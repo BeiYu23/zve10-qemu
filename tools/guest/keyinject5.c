@@ -386,6 +386,15 @@ static void *thread(void *a){
                       klogf("KEYINJECT Z selftest tid=%ld ret=%ld\n", me, r);
                       continue; }
                 m=strstr(t,"#N"); if(m){ discover_qid(); continue; }
+                m=strstr(t,"#Lg"); if(m){ int mode=(int)strtol(m+3,0,0);
+                      void *h=dlopen("/usr/lib/libObj.so",RTLD_LAZY);
+                      int (*setmode)(int)= h?dlsym(h,"_ZN13LkmLanguageIF7SetModeEi"):0;
+                      int (*getmode)(void)= h?dlsym(h,"_ZN13LkmLanguageIF7GetModeEv"):0;
+                      klogf("KEYINJECT Lg api=%p get=%p\n",(void*)setmode,(void*)getmode);
+                      if(getmode) klogf("KEYINJECT Lg before=%d\n", getmode());
+                      if(setmode){ int r=setmode(mode); klogf("KEYINJECT Lg set(%d)=%d\n", mode, r); }
+                      if(getmode) klogf("KEYINJECT Lg after=%d\n", getmode());
+                      continue; }
                 m=strstr(t,"#Kq"); if(m){ char *p=m+3;
                       unsigned q=(unsigned)strtoul(p,&p,0);
                       unsigned k2=(unsigned)strtoul(p,&p,0);

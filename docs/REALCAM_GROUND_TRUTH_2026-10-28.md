@@ -484,3 +484,37 @@ r2 626a5d87 hl_row=326
 满足目标判据"注入按键后导出原厂 PNG 序列出现可复现差异"。
 
 证据：`docs/images/keynav-final/`（第一次）与 `.../repl/`（第二次）。
+
+## 199. 2026-10-28 网页控制台重做 + 相机菜单语言尝试
+
+### 网页控制台（`tools/zvapp.py`，部署在 /mnt/build/zvapp.py）
+
+按用户反馈重做：
+* **启动不再开窗口**：QEMU 用 `-serial file:` 直接写日志文件（不再依赖 unix socket + 守护进程），
+  **点"启动"立刻能看到内核日志滚动**；
+* **启动状态机**：后台线程自动重试最多 5 次（每次等 6 分钟），状态栏显示"第 n 次 · 进程 pid"，
+  阶段提示（内核启动 → 服务初始化 → 图形层 → 绘制中 → 菜单已就绪）；
+* **布局稳定**：屏幕区固定 4:3 容器 + `object-fit:contain`、`max-height:52vh`（可"缩放"放大到 88vh），
+  不再撑满整页；日志区占右侧整列高度（≥220px 可滚动），等宽字体、`white-space:pre` 不换行堆叠；
+* **按键只发按下**（status=1），不再走两格；按钮中文化（确定/菜单/返回）；
+* 浏览器里也支持方向键/回车/Esc 直接操作。
+
+### 相机菜单语言（日文 → 中文）
+
+固件里有 `LkmLanguageIF::SetMode(int)` / `GetMode()`（libObj 导出）。
+guest 内新增 `#Lg <mode>` 命令调用它：
+
+```
+KEYINJECT Lg api=0x6294cf1 get=0x6294d0d
+KEYINJECT Lg before=-1
+KEYINJECT Lg set(0..5)=0
+KEYINJECT Lg after=-1
+```
+
+**SetMode 返回 0（成功），但 `GetMode` 仍是 -1、画面完全不变**
+⇒ 语言模式不是"运行中可切换"，很可能只在 UI 初始化时读取（或在 settings 里持久化）。
+另外 `/usr/share/app/` 里同时存在日文字体（HeiseiKakuGoth）和**中文字体**
+（`MYingHeiC-KSX1001-SJ_wIcon.ltt`），说明固件本身带中文资源。
+
+**下一轮**：在库的构造函数里（UI 初始化之前）调 SetMode，或在 `/setting` 里预置语言项，
+让菜单从第一帧就是中文。
