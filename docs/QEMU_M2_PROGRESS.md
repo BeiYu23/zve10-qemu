@@ -3231,3 +3231,78 @@ M2S pid=120 q=003e014d enter=8  ret=4  stuck=4
 
 1. `im.elf`(pid≈126) 侧没吐出计数 —— 需要确认它的 cmdline 是否含 `im.elf`（门控），或改门控为"在 im 里也装 reader"
 2. 对照 E10 的 `0x008f0139/0x008f013a` 族语义，确认缺的是哪个服务
+
+---
+
+# ★★★★★ 2026-10-29 15:30 第四十七层：`0x8f013a` 是**正常 UI 发送队列**（QEMU 线的嫌疑被推翻）
+
+## QEMU 线测到的 qid 计数表（M2 树）
+```
+M2PROBE pid=120 rq_c=1
+M2R pid=120 q=0094020a n=1
+M2S pid=120 q=008f013a enter=22 ret=11 stuck=11    ← 他们判断为"最大嫌疑"
+M2S pid=120 q=003e014d enter=8  ret=4  stuck=4     ← backup 队列
+```
+
+## ★ 我的对照结论：`0x8f013a` 在 E10 上是**正常路径**
+**E10 成功出画的日志（`/mnt/build/tmp/webui/serial.log`，871 KB）里：**
+```
+19 次  UI_OBSERVE pid=122 tid=237 ui.send.queue=0x8f013a     ← ★ 就是它！
+11 次  UI_OBSERVE pid=122 tid=237 ui.send.queue=0x11006e9
+ 1 次  ui.send.queue=0x80003b
+ 1 次  ui.send.queue=0x59000e
+```
+**⇒ `0x8f013a` 是 **UI 线程发送的目标队列**（`ui.send.queue`），
+  E10 渲染成功时也往它发 19~30 次。**
+
+**⇒ M2 测到 `enter=22`，与 E10 的 19~30 次**同量级** ⇒ M2 的 UI 在做和 E10 一样的事。**
+**⇒ 它**不是**缺失的服务，而是正常路径。**
+
+## ★ E10 成功出画的完整观测分布（关键参照）
+```
+239 thread.cond_wait.*          ← UI 线程绝大多数时间在 cond_wait（菜单空闲态）
+180 ui.send.word
+150 thread.osal_sem.*
+105 native.setting /  36 native.setting.tree /  27 native.setting.list
+ 32 ui.send.queue               ← 只有 32 次发送
+ 18 native.view.id
+ 16 notify                      ← 绘制通知
+ 16 draw                        ← 绘制调用
+  9 headless.export_ready       ← ★ 帧导出就绪
+  9 headless.committed_native_frame ← ★ 原生帧已提交
+  8 native.menu.views.base /  6 native.menu.vptr
+```
+**⇒ E10 成功路径：少量 ui.send.queue(~32) → notify/draw(各16) → export_ready → committed_native_frame。**
+
+## ★★ `enter - ret = 11` 可能是**在途**，不是卡死
+**单次快照无法区分"真卡死"与"采样时在途"。**
+**⇒ 改进：采样两次，间隔 30 秒**
+```
+T=0  enter=22 ret=11
+T=30 enter=22 ret=11  ⇒ 差距不变 ⇒ 真卡死
+T=30 enter=22 ret=22  ⇒ 差距归零 ⇒ 采样在途，正常
+T=30 enter=30 ret=20  ⇒ 双方都在涨 ⇒ 持续工作
+```
+**⚠️ E10 该队列是**单线程**（tid=237）在发；若测的是 pid 聚合多线程，在途更正常。**
+
+## `0x003e014d`（backup）：倾向认同他们的怀疑，但需对照
+**E10 的 UI_OBSERVE 日志里 0 次出现 `0x3e014d`。
+⚠️ 但 UI_OBSERVE 只覆盖 libuiobserve 挂钩点，不是全量 osal ⇒ **"E10 日志里没有"≠"E10 没发过"**。
+⇒ 建议在 E10 上跑同一个 m2probe，拿 backup 队列的 enter/ret 基线。**
+
+## 给 QEMU 线的下一步建议
+**按 E10 成功路径，M2 要出画应经过：**
+```
+少量 ui.send.queue → notify/draw → export_ready → committed_native_frame
+```
+**⇒ 在 M2 上也挂 E10 的 libuiobserve（它本就覆盖这些点），一次就能看出 M2 走到哪一步：
+   - 有 ui.send.queue ⇒ UI 在发请求（已确认 22 次，正常）
+   - 有 notify/draw ⇒ 绘制被调用
+   - 有 export_ready / committed ⇒ 帧真的交付了
+⇒ 这比猜"哪个 qid 缺服务"直接得多。**
+
+## 方法论（第 55 条）
+**跨环境数值对照（E10 vs M2）比单环境异常检测可靠得多：
+`enter-ret>0` 在单环境里看似"卡住"，但有了 E10 的基线（19~30 次正常发送）
+就能立刻判断 22 次是正常范围。
+⇒ **看到异常数值时，先找"正常情况下的同类数值"，再决定是否异常。**
