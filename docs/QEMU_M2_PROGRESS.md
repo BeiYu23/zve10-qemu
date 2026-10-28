@@ -236,3 +236,58 @@ im.elf 存活，wchan = futex_wait_queue_me      ← ★ 阻塞在 futex（pthre
 | `work/Image.m2fix2` | M2 + libNetCommon 修复（无入口探针） |
 | `work/Image.m2s2` | **当前最新**：+ Application_Start / uxengine_init2 探针 |
 | `work/Image.e10clean` | E10 基线（带 libuiobserve），61/61 + 有画面 |
+
+---
+
+## ★★★ 2026-10-28 17:45 对照实验：harness 有效性已证明
+
+### 实验
+**E10 原始 usr + 完全无插桩（`/init` 无 LD_PRELOAD，usr/lib 无 libuiobserve/argtrace）**
+
+### 结果
+| 配置 | 帧采样非零 |
+|---|---|
+| E10 + libuiobserve | 3855 |
+| **E10 无任何插桩** | **3879** ✅ |
+| M2 混合（已修 libNetCommon） | **0** ❌ |
+
+**⇒ harness 不依赖 libuiobserve 的驱动逻辑（`try_original_menu`/`software_lcd_init` 等）。
+⇒ **M2 的"帧全零"是真实问题，不是插桩伪影。**
+⇒ 前面关于 libNetCommon/libmprctrl 的修复是**真实有效的**，且后续结论可信。**
+
+### 当前确定的状态
+```
+✓ 59/59 服务初始化
+✓ appFwBoot.so 加载、Application_System_Init 调用返回 0
+✓ appFw.so 加载成功（libNetCommon 修复后）
+✓ Application_Start 被调用并进入
+✗ 帧全零
+✗ im.elf 阻塞于 futex_wait_queue_me
+✗ 无任何 error/fail/panic 输出
+```
+
+### 剩余问题（唯一）
+**`Application_Start` 在入口后立刻阻塞在一个 futex 上，等一个永远不来的释放者。**
+
+### 下一步（下一轮从这里开始）
+1. **确认 `Application_Start` 里第一条阻塞调用是什么**
+   - 扩展 argtrace：hook `pthread_mutex_lock` / `pthread_cond_wait` / `osal_wai_sem_tmo` / `osal_rcv_msg_tmo`
+   - 或 hook `GraphicsEngine::drawFramebuffer` 看是否被调用过
+2. **对比 E10 里谁释放那个 futex**
+3. **检查是否缺少某个 `/dev` 或资源导致等待**
+
+### 镜像清单（当前）
+| 镜像 | 内容 | 帧 |
+|---|---|---|
+| `Image.e10clean` | E10 + libuiobserve | 3855 ✅ |
+| `Image.e10ctl` | **E10 无插桩** | **3879 ✅（对照基准）** |
+| `Image.m2fix2` | M2 + libNetCommon 修复 | 0 ❌ |
+| `Image.m2s2` | 同上 + 入口探针（当前最有信息量） | 0 ❌ |
+
+### 树状态（重要，下一轮别搞混）
+```
+initramfs-ui/usr        = E10 原始（对照实验用）
+/mnt/build/m2qemu/usr.m2_v2     = M2 修复版 usr（含 libNetCommon 1444fb66）
+/mnt/build/m2qemu/usr.e10bak    = E10 原始 usr 备份
+```
+**恢复 M2 树：`rm -rf initramfs-ui/usr && cp -a /mnt/build/m2qemu/usr.m2_v2 initramfs-ui/usr`**
