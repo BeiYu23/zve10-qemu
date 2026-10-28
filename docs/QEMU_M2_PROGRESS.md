@@ -490,3 +490,53 @@ appFw.so 重定位类型：
 | `Image.e10pr` | E10 + probe.so | 0 ❌（证明 probe 有害） |
 | `Image.m2s2` | M2 + argtrace（**行为未见异常**） | 0 |
 | `Image.m2pr` | M2 + probe.so | 结果作废 |
+
+---
+
+## ★ 2026-10-28 18:35 第五层：排除"只是慢"，但暴露运行不稳定
+
+### 实验：延长到 300 秒再抓帧
+**Image：`Image.m2long`（M2 混合 + 仅 argtrace），SECONDS_MAX=420，300 秒时抓帧**
+
+### 结果
+```
+帧采样非零 = 0                          ← 不是"慢"，300 秒仍无画面
+但本次运行串口只有 11,712 B、模块 14 个、无任何 ARGTRACE / appFwBoot 记录
+尾部是内核 Oops：
+  do_exit → do_group_exit → __wake_up_parent → sys_exit_group
+  Code: e1a01000 e59f000c eb0003f8 e3a03000 (e5833000)
+  共 6 处 exception/panic/Oops 标记
+```
+
+### ★★ 关键观察：同一镜像行为不一致
+| 运行 | 串口 | 到达阶段 | 结果 |
+|---|---|---|---|
+| `Image.m2s2`（更早） | 23,935 B | `Application_Start` ENTER | 帧 0 |
+| `Image.m2long`（本次，同内容） | 11,712 B | 内核 Oops，未到应用层 | 帧 0 |
+
+**⇒ 两次同样是 M2 混合 + argtrace，一次到应用层、一次内核崩。**
+**⇒ **运行间不稳定**，可能是：**
+1. **残留 QEMU 实例 / 并发编译干扰**
+2. **内核 initramfs 大小接近某个界限（M2 树比 E10 大 ~12 MB）**
+3. **QEMU 机型对 initramfs 大小/内存布局敏感**
+
+**⇒ 这解释了为什么之前 m2arg2 那次也"卡在内核初始化"。**
+
+### 已排除
+| 假设 | 状态 |
+|---|---|
+| M2 只是渲染更慢 | ❌ 排除（300 秒仍 0） |
+
+### 下一轮起点（做好稳定性再看功能）
+1. **先解决可复现性**：每次跑前确认 `pgrep -x qemu-system-arm` 为空；
+   跑一次基线 E10 确认仍 3879 帧，再跑 M2
+2. **检查内核 Oops 的具体位置**（`Code:` 行 + 调用栈），判断是否与 initramfs 大小/内存有关
+3. **若不稳定与 initramfs 大小相关**：尝试精简 M2 树（去掉 screenreader 等无关大文件）缩小 cpio
+4. 稳定后再回到功能定位
+
+### 镜像
+| 镜像 | 结果 |
+|---|---|
+| `Image.e10ctl` | 3879 帧 ✅（基准） |
+| `Image.m2s2` | Application_Start ENTER，帧 0（**最能说明问题的一版**） |
+| `Image.m2long` | 内核 Oops，未到应用层（同内容，不稳定证据） |
