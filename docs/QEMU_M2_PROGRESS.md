@@ -6741,3 +6741,36 @@ M2SND qid=01010227 / 016c8477 / 007d0149  libObj  off 0x20d11c
 用 `__builtin_return_address(1)`（或 `lr` 的 caller）记录"注册调用的调用者"，
 把最后几次注册的**上一层调用栈**打出来 ⇒ 就能知道是谁在调用这些注册、
 以及它返回后应该继续做什么（从而定位"应该发生而没发生"的下一步）。
+
+## 84. 2026-10-29 失败记录：按真实 init 加载全部 32 个模块 → 反而退步
+
+想法：真实 `/sbin/init` 加载 32 个模块，我们只加载 15+5 个；缺的模块可能提供
+"MWF/Obj 的 sync 队列应答方"，所以直接照真实清单全加载。
+
+做法：把 `/init` 的模块段替换为真实 init 的 32 个模块（含 `iris_dial/msen_drv/nfc/sata_drv` 等）。
+
+结果：
+
+```
+insmod: can't insert '/usr/kmod/iris_dial.ko': No such file or directory
+insmod: can't insert '/usr/kmod/msen_drv.ko': No such file or directory
+insmod: can't insert '/usr/kmod/nfc.ko': No such file or directory
+insmod: can't insert '/usr/kmod/sata_drv.ko': No such file or directory
+注册事件 = 1（原来 115~134）
+帧 distinct = 1（全黑）
+```
+
+⇒ **不但没推进，注册事件从 ~124 掉到 1** ⇒ 某个模块加载失败/顺序变化打断了早期初始化。
+（v9 树里 `iris_dial/msen_drv/nfc/sata_drv` 这 4 个 .ko 不存在，其余应能加载。）
+
+### 处置
+
+已把 `/init` 恢复为"已知可用"版本（m2qemu 原始 init + 我加的 5 个输入链模块 +
+`LD_PRELOAD=/usr/lib/libm2probe.so`），并重编 Image 复原。
+已知可用 init 存档：`tools/guest/m2-init-known-good.sh`。
+
+### 教训
+
+**"照真实清单补模块"不能一次全上**：必须一次只加 1~2 个，
+且每个都校验"注册事件数仍在 ~120 以上"（否则就是引入了新变量）。
+这与 §82 的教训完全相同 —— 本轮又犯了一次。

@@ -136,7 +136,23 @@ void m2_h_ret_snd(unsigned *r, int ret)
     int i = snd_idx(r[0]);
     if (i >= 0) sq_r[i]++;
 }
-void m2_h_res_snd(unsigned *r) { if (!n_snd) { n_snd = dlsym(RTLD_NEXT, "osal_snd_sync_msg");
+#define NSQ2 40
+static unsigned snd_seen[NSQ2], snd_n;
+void m2_h_res_snd(unsigned *r)
+{
+    int newq = 1;
+    for (unsigned i = 0; i < snd_n && i < NSQ2; i++) if (snd_seen[i] == r[0]) { newq = 0; break; }
+    if (newq && snd_n < NSQ2) {
+        snd_seen[snd_n++] = r[0];
+        Dl_info di; unsigned long lr = (unsigned long)r[5] & ~1UL;
+        if (dladdr((void *)lr, &di) && di.dli_fname) {
+            char b[220]; int n = snprintf(b, sizeof b,
+                "M2SND qid=%08x lib=%s off=%08lx\n", r[0], di.dli_fname,
+                lr - (unsigned long)di.dli_fbase);
+            out(b, n);
+        }
+    }
+    if (!n_snd) { n_snd = dlsym(RTLD_NEXT, "osal_snd_sync_msg");
     if (!n_snd) { void *h = dlopen("/usr/lib/libosal_uipc.so", RTLD_LAZY); n_snd = h ? dlsym(h, "osal_snd_sync_msg") : 0; } } }
 
 static void gi_fire(void)
