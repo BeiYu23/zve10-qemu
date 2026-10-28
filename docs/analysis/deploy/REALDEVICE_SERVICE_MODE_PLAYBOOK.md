@@ -405,3 +405,36 @@ echo test > /setting/_wtest && cat /setting/_wtest && rm /setting/_wtest
 | ✗ | `/log` | 可能晚于 bootin 启动 | 静默失败，最坑 |
 
 **⇒ `/setting` 更优的关键理由：持久分区 ⇒ 容错窗口更大**（即使重启也能回头读输出）。
+
+### 12.9 ⚠️ 写 env.txt 必须用 `\n`，绝不能带 `\r`
+
+`parse_and_set_env` 是**按行 `putenv(整行)`**，行尾的 `\r` 会变成值的一部分：
+
+```
+LD_DEBUG=libs\r     ⇒ 值变成 "libs\r" ⇒ 未知选项 ⇒ 直接失效
+```
+
+**⇒ 必须用 `printf`（或确认是 LF-only），不要用会加 CRLF 的工具：**
+
+```sh
+printf 'LD_DEBUG=libs\nLD_DEBUG_OUTPUT=/setting/ldd\n' > /setting/env.txt
+```
+
+### 12.10 启动循环时 `ldd.<pid>` 会累积 —— 别删
+
+若启动循环（camfs.log 曾见 3 轮），每轮若干进程各生成一份 `ldd.<pid>`：
+
+```
+3 轮 × 每轮若干进程 × <100 KB ≈ 1–2 MB    ⇒ /setting 的 12.7 MB 仍够
+```
+
+**⇒ 累积的多轮文件正好能对比"哪一轮走得更远"，不要清理。**
+
+### 12.11 ★ 一句话判读法（省时关键）
+
+```
+ls /setting/ldd.* 有文件  → LD_DEBUG 生效 → 读内容分析 appFw 加载
+一个文件都没有        → env.txt 没生效（根本不是 LD_DEBUG 的问题）
+                        ⇒ 立刻转去查 env.txt：是否被 init 覆盖 / 路径是否真实 / 是否带 \r
+                        ⇒ 不要在 LD_DEBUG 上继续花时间
+```
