@@ -6526,3 +6526,44 @@ printf 'LD_DEBUG=libs\nLD_DEBUG_OUTPUT=/setting/ldd\n' > /setting/env.txt
 ⇒ 今晚大部分时间不是在分析问题，是在发现"观测数据本身有问题"
 ⇒ 这 5 次作废换来的是一套"以后不再踩"的机制，不是损失
 ```
+
+## 78. 2026-10-29 ★ 探针修复验证通过 + dladdr 成功：M2 注册来源按库统计
+
+### ① 仪器自检通过（关键）
+
+修 `lr` 取值（`r[4]`→`r[5]`）后重跑 M2：
+
+```
+注册事件 124 条
+lr 奇偶： odd=124  even=0     ← 全为奇数（Thumb 位），字段取对了 ✅
+真实 lr 量级：0x9825 / 0xa31f（小，来自 im.elf/bootin）
+             0x40d5bb7 / 0x415b1d5（中，某个库）
+             0xcd34e81（大，另一个库）
+⇒ lr 是**真实 VA**（跨模块变化），此前的"是偏移/是 VA"之争至此自动解答：
+  记录值是 VA；要跨代比较必须先 dladdr 归一化。
+```
+
+### ② dladdr 解析成功：M2 的注册来源（按库）
+
+```
+53  /usr/lib/libObj.so
+14  /usr/lib/libMWF.so
+10  /usr/lib/libInfraBluetoothCore.so
+ 6  /usr/lib/libInfraNetConnectionManagerEther.so
+ 4  /usr/lib/libWlanResource.so
+ 4  /usr/lib/libUsbControl.so
+ 4  /usr/lib/libRsrcHotshoe.so
+ 3  /usr/lib/libInfraAirplaneMode.so
+ 3  /usr/bin/im.elf
+ 2  /usr/lib/libsencore.so
+ …（完整表见 docs/m2-reg-libs.txt）
+```
+
+**⇒ 这是第一份"跨代可比的真实数据"**：`(库名, 库内偏移)` 的坐标系两代一致，
+不再受 VA/动态 qid 影响。
+
+### 下一步（下一轮）
+
+用**同一份修好的探针**跑 E10，得到 E10 的 `(库名, 数量)` 分布，
+与上面逐条对比 ⇒ 找出"M2 里**完全没有注册**的库"（那些库的 init 从未执行）。
+那份差集就是真正可执行的断点清单。
