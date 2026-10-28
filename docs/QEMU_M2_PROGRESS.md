@@ -5643,3 +5643,63 @@ if (dladdr((void *)lr, &di) && di.dli_fname) {
   ⇒ 任何"X 缺失"的结论，先确认"X 的观测手段是否能覆盖 X 的创建方式"；
 * **E10 对照必须尽早做**：我 §54 就测到"M2 只 1 个 rcv、E10 有 4 个"，
   却没意识到"rcv 等待"≠"reg 注册"，白追 5 轮。
+
+---
+
+# ★★★★★ 2026-10-30 05:00 第七十层：缺口收敛到 **libObj 0x21xxxx~0x25xxxx 区域**（ObjMic/ObjMixer/ObjRenderer）
+
+## QEMU 线的关键方法：按**注册点 lr** 分组（不受动态分配影响）
+```
+E10: lr ∈ [0x220000, 0x250000] 的注册 = 19 条
+     族分布：0x30(12) / 0x3e(5) / 0x92(1) / 0x97(1)
+M2 : 同 lr 区间的注册 = **0 条**
+⇒ **缺口不是"很多服务各自缺失"，而是"同一段初始化代码整个没跑"**
+⇒ 同时解释了 0x30 族 46 条、0x31 族 24 条、0x3e 族（backup 同族）全缺
+```
+
+## ★ 我查了那段 VA 归属
+```
+E10 libObj .text: vaddr 0x10fee0, size 0xd3b028 ⇒ 跨度 0x10fee0 ~ 0xe4af08（13.8 MB）
+⇒ 0x220000 / 0x230000 / 0x240000 / 0x250000 **全在 libObj 的 .text 内** ✅
+
+符号反查（最近前置函数）：
+  VA 0x220000 → 0x216552  **ObjMic_UnregisterCommand**
+  VA 0x230000 → 0x216552  **ObjMic_UnregisterCommand**
+  VA 0x240000 → 0x231bc2  **ObjMixer_Destroy**
+  VA 0x250000 → 0x24f298  **ObjRenderer_UnregisterCommand**
+⇒ 该区域是 libObj 的**音频/媒体对象**区：ObjMic（麦克风）/ ObjMixer（混音器）/ ObjRenderer（渲染器）
+```
+
+## ⚠️ 与既有结论的矛盾（已向 QEMU 线指出）
+```
+我早前扫过：E10 libObj 对 osal_reg_* 的**直接 BL 调用 = 0 处**
+（正对照通过：osal_snd_msg 190 处 / osal_rcv_msg_tmo 123 处）
+⇒ 若注册确实发生在 libObj 0x22xxxx，则必是**间接调用**（GOT / blx rN）
+⇒ 与"0 处直接调用 ≠ 没调用"的既有判断一致
+```
+
+## ★ 提出验证方法
+**探针里对每条注册做：**
+```c
+Dl_info di;
+if (dladdr((void*)(lr & ~1), &di) && di.dli_fname)
+    out("REG qid=%08x lib=%s off=0x%lx\n", qid, di.dli_fname,
+        (lr & ~1) - (unsigned long)di.dli_fbase);
+```
+**一次同时回答：① 库名 ② 库内偏移（off 是否≈0x22xxxx）③ 可直接 objdump 定位函数**
+
+**⚠️ 已请 QEMU 线提供那 19 条的**具体 lr 值**（非区间），以便逐个定位函数。**
+
+## 关键待判明
+**⚠️ 若确认是音频/媒体子系统，可能推翻"UI 初始化没跑"的直觉，
+变成"**媒体子系统初始化没跑**"。
+⚠️ 但 `ObjRenderer`（渲染器）**可能就是 UI 渲染链的一部分**
+⇒ 需区分：19 条里哪些在 ObjMic 区（音频，可能无关 UI）、
+   哪些在 ObjRenderer 区（渲染，直接相关 UI）。**
+
+## 方法论（第 78 条）★★★
+**按"**注册点代码位置（lr）**"分组，比按"注册出来的 id"分组可靠得多：
+id 是运行时值（动态分配、跨 boot 不可比），而**代码位置是固定的**。
+⇒ 当发现"某族 id 整族缺失"时，下一步应立刻问：**这些 id 是谁注册的（lr）？
+   它们的 lr 是否集中？** 如果集中，缺口就是一个**代码模块**而不是多个服务。
+⇒ 本次正是靠 lr 分组，把"很多服务各自缺失"收敛成"一段初始化代码没跑"。**
