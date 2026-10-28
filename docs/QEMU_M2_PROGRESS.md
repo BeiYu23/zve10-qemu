@@ -343,3 +343,38 @@ $ qemu-system-arm -M zve10 -smp 8  → Invalid SMP CPUs 8.  The max CPUs support
 | `Image.m2s2` | M2 + 入口探针 | 0 |
 | `Image.m2im` | 同上 + M2 版 im.elf | 0 |
 | `Image.m2smp` | 同上但 E10 im.elf，准备测 -smp（未跑成） | — |
+
+### ★ 2026-10-28 17:50 排除 CPU 亲和性
+**反汇编确认 `Application_System_Init` 尾段：**
+```asm
+1344: blx osal_create_waitable_thread
+1348: movs r1, #15
+134a: blx osal_set_cpu          ; 调用
+134e: add.w r7, r7, #64         ; 直接恢复栈
+1352: mov sp, r7
+1354: ldmia.w sp!, {r4,r5,r6,r7,r8,pc}   ; 返回，无 cmp/bne
+```
+**⇒ `osal_set_cpu` 的返回值**未被检查，亲和性失败被忽略。
+⇒ **CPU 拓扑（4 核 vs 期望的 CPU15）不是 futex 阻塞的原因。**
+（上一节把它列为"可能改变判断"的怀疑，现已排除。）
+
+### 下一轮起点（明确）
+**M2 的 `Application_Start` 进入后，35 个线程阻塞在 `futex_wait_queue_me`。
+需要定位它等的具体锁/资源。**
+
+**建议手段（按代价排序）：**
+1. **interpose `pthread_cond_wait` / `pthread_mutex_lock` / `osal_wai_sem_tmo`，
+   打印调用者返回地址（`__builtin_return_address(0)`）**，与固件符号表对照定位
+2. **interpose `GraphicsEngine::drawFramebuffer`（同名导出符号，LD_PRELOAD 可拦截）**，
+   确认是否被调用过
+3. **对比 E10 基线里同位置的行为**（E10 走 libObj 的 Application_System_Init，路径不同）
+4. **检查 `/dev/dmpgles2`、`/dev/dmm` 是否可打开**（M2 的引擎更依赖 GPU）
+
+### 已排除的假设（累计）
+| 假设 | 状态 |
+|---|---|
+| appFw.so 加载失败 | ✅ 已修（libNetCommon→M2 版） |
+| im.elf 版本不对 | ❌ 已排除（M2 版结果相同） |
+| CPU 亲和性 CPU15 | ❌ 已排除（返回值未检查） |
+| harness 依赖插桩 | ❌ 已排除（E10 无插桩也能出画 3879） |
+| 参数加载错 UI | ❌ 已排除（"AppConfig.so" 是正常配置） |
