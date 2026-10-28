@@ -4090,3 +4090,61 @@ input.ko 导入的内核 API：
 ③ 目标由**另一个执行域**创建（本例曾怀疑内核态，已排除）
 ⇒ 在断言"没发生"之前，先从**导入符号表**确认"目标可能走的所有入口都被 hook 了"。
 ```
+
+---
+
+# ★★★★★ 2026-10-29 20:20 第五十五层：InfraInput 用户态自建确认；`SetOsalId` 无直接调用者
+
+## ❌「QEMU 缺键盘硬件 ⇒ M2 永远不出菜单」——**作废**（第 52 层推论撤回）
+```
+M2  libObj.so:  InfraInput 导出 **16 个**
+   GetInstance / SetOsalId / RmCallback / SetKeyRepeat / GetKeyInh / SendEventInitData
+   SetEventKeyList(1968B) / SetEventKeyListAll / GetEventStatus / GetPhyKeyStatus ...
+E10 libObj.so:  InfraInput 导出 31 个（同名同族）
+M2  libObj.so 里 '/dev/input'、'input(kbd)'、'kbd_init' 字符串 = **0**
+⇒ M2 保留完整用户态 InfraInput，输入队列应由用户态建立
+⇒ 与内核 kbd 驱动无关 ⇒ "QEMU 缺硬件"不能作为 v9b 失败先验
+```
+
+## ★ `SetOsalId` 在 libObj 里**没有任何直接 BL 调用者**
+```
+M2 libObj 对 InfraInput::SetOsalId(0x208549) 的 BL/BLX：.text 0 处，.plt 0 处
+⇒ 与用户仓库 E10 历史记录一致：
+  "InfraInput::SetOsalId(0x8c27b8) 在 libObj 里没有任何直接 BL 调用者（扫描全 .text）"
+⇒ **它通过函数指针/虚表调用** ⇒ 初始化走虚函数表
+⇒ **构造函数没跑完 ⇒ 虚表槽位空 ⇒ SetOsalId 永不调用**（解释"代码在但队列没注册"）
+```
+
+## ★ 三处外部引用 `GetInstance`（不是 SetOsalId）
+```
+AdjChkConfig.so        UND GetInstance ×1
+appFw.so               UND GetInstance ×1   ← ★ 新菜单 UI 会主动拿实例
+libUsbChargingApp.so   UND GetInstance ×1
+```
+
+## `SetOsalId` 签名
+```
+_ZN10InfraInput9SetOsalIdEPii  →  InfraInput::SetOsalId(int*, int)   size=108
+⇒ 收 int* 数组 + 个数 ⇒ **一次性设置多个队列 id**
+```
+
+## ★★★ 一个"诊断可能直接变修复"的假设（QEMU 线将验证）
+**若 `GetInstance` 是**惰性单例**（首次调用才构造），
+则**调用它就会触发构造**，构造过程可能**顺带注册 0x7a0020**。**
+**⇒ 实验：调 GetInstance → 立刻再读 reg 表 → 再读帧循环入口。**
+
+**四种结果判读：**
+| 现象 | 含义 |
+|---|---|
+| 返回非空 + reg 出现 0x7a0020 | ✅ 惰性构造触发注册 = 缺失的那一步 |
+| 返回非空 + reg 仍无 | 实例存在但注册逻辑没走（虚表/参数） |
+| 返回**空** | 单例从未构造 ⇒ 断点更早 |
+| 调用崩溃 | 前置初始化未完成 ⇒ 也是有效信息 |
+
+## 方法论（第 63 条）★★
+**凡是"因为环境缺 X 所以不可能"的判断，**必须标注为待验证假说**，
+并先找"该环境的软件是否仍保留了 X 的替代实现"的反证。**
+**⇒ 本次只用一条 `grep libObj` 就否掉了"QEMU 缺键盘硬件 ⇒ 永远不出菜单"。
+⇒ 更严重的是：它差点被用来给真机 v9b **判死刑**（"QEMU 都不行，真机肯定不行"）——
+   而真机上 v9b 的成败与 QEMU 是否缺键盘**毫无关系**。**
+**⇒ 教训：环境性结论不能跨环境外推，尤其是用来做"放弃"决策时。**
