@@ -4562,3 +4562,57 @@ printf 'LD_DEBUG=libs\nLD_DEBUG_OUTPUT=/setting/ldd\n' > /setting/env.txt
 终点：LD_DEBUG 可用性离线证实 + 发现 LD_BIND_NOW 不支持
 ⇒ 明日实验：**写一个文件 + 重启 + 看结果**；失败成本 = 写一个文件（不碰 /usr、不刷分区、删掉即恢复）
 ```
+
+## 64. 2026-10-29 按真实 init 顺序补 5 个输入链模块：全部加载成功，但 `kbd:` 与 `0x7a0020` 仍为 0
+
+按协作方从**真实 `/sbin/init`** 读出的模块清单（32 个，我们 harness 只有 15 个），
+补入输入链模块并按真实顺序加载：
+
+```
+load /kmod/i2c.ko
+load /kmod/indctr.ko
+load /kmod/udate.ko
+load /kmod/mcmn_drv.ko
+load /kmod/input.ko key_tbl=0 Input_debug=1
+```
+
+实测：
+
+```
+MODULE_END /kmod/i2c.ko        status=0
+MODULE_END /kmod/indctr.ko     status=0
+MODULE_END /kmod/udate.ko      status=0
+MODULE_END /kmod/mcmn_drv.ko   status=0
+MODULE_END /kmod/input.ko      status=0     ← 全部加载成功
+serial 27,178 → 31,296（模块确实跑起来了）
+
+但：  grep 'kbd:'    = 0
+      grep 007a0020  = 0
+```
+
+### 判读
+
+**即使补齐真实 init 的全部输入链前置模块 + `Input_debug=1`，`input.ko` 仍然不打印 `kbd: init`。**
+⇒ 与之前结论一致：**它的 probe 依赖 `udif_driver` 匹配到的设备节点，而 QEMU 的 zve10 机型
+不提供该设备** ⇒ `0x7a0020` 不可能由内核模块创建。
+
+⇒ **"缺内核输入模块"这条假设彻底排除。**
+
+### M2 侧最终结论（四条假设已三条排除）
+
+| 假设 | 状态 | 证据 |
+|---|---|---|
+| 缺内核模块（input.ko 等） | ❌ 排除 | 补 5 个模块 + 调试参数，`kbd:` 仍 0 |
+| `0x7a0020` 由内核注册 | ❌ 排除 | 同上 |
+| QEMU 缺硬件导致原理性不可行 | ❌ 排除 | M2 libObj 保留 16 个 InfraInput、不引用 /dev/input |
+| **InfraInput 构造路径未完成** | ⭕ 唯一剩余 | im.elf 注册 122 条队列却无 0x7a0020；`GetInstance` 是惰性单例且构造路径含无限等信号量 |
+
+### 为什么无法继续推进（技术限制，非结论）
+
+* 在 im.elf 内部**无法启动新线程**（三种触发方式全部无效），
+  所以"调 `GetInstance` 观察是否构造/死锁"这个实验做不了；
+* 唯一可行替代是"把调用挂到注册桩的第 N 次回调上"，但那发生在初始化期，
+  若被信号量卡住会把初始化挂死——属于**破坏性实验**，需要单独一轮专门做并准备好回滚。
+
+⇒ **建议把这条留给真机验证**：如果 v9b 在真机上能起 UI，就证明"输入队列由硬件驱动创建、
+QEMU 无法复现"；如果真机也不起，则回到"InfraInput 构造"继续查。
