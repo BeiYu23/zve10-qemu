@@ -326,3 +326,28 @@ t4_afterENTER 6f2d7602ca7e75c2 distinct=225  （注入 0x1ac 后）
 * `DMP_2D_Initialize : 0` 之后我这边继续走：
   `ResourceBluetooth_init → grm_init(返回 0xffffffff 但继续) → UI_LOAD libgpe.so → DDSUserInit → uxengine_init → infra_indctr_init`。
   ⇒ 他们停在 DMP 之后，断点在"下一个服务"，不在 DMP 本身。
+
+## 194. 2026-10-28 ★★★ 键码扫描出现真实光标移动（TODO: 单键复现）
+
+对 `0x007a0020` 批量投 `key=1..64`（每条 status 1 再 0），每 8 条抓一帧：
+
+```
+base  768e398ed7a77ad2 distinct=225   高亮在第 1 行（ファイル形式）
+c1    435e445a7eada33d distinct=250   ★ 高亮移到**最后一行**（パノラマ: 撮影方向）
+c9    41633658e69bd13a distinct=179
+c17   69c8297f88744ed3 distinct=148
+c25   9a90a0a3d59d5a92 distinct=195
+c33   c3d350e9acbf8dec distinct=190
+（之后 QEMU 退出，NO_QEMU —— 可能是某个键码触发了关机/致命路径）
+```
+
+**`menu-c1.png` 里橙色高亮明显从第 1 行移到最后一行**，这是原厂 App 自己绘制的
+光标位置变化 —— 与"淡入动画"完全不同（动画不会把高亮跨行移动）。
+
+证据图已存入 `docs/images/inject-sweep/`。
+
+### 下一步（必须做单键复现，否则不能算数）
+
+1. 一次只投**一个**键码（1..64 逐个），每次前后抓帧，找出**确切**哪个码让高亮移动；
+2. 确认是"按下/抬起"两帧都需要，还是只要 status=1；
+3. 记录哪个码导致 QEMU 退出（避免误用）。
