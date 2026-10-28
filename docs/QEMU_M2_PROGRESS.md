@@ -643,3 +643,49 @@ qemu.log: qemu-system-arm: terminating on signal 15 from pid 1088925 (pkill)
 ### ⚠️ 方法论教训（第 11 条）
 **当同一输入产生不同输出时，先检查"外部干扰"，再怀疑被测对象。**
 **我之前直接跳到"内存不足"的解释，是因为没有先检查进程是否被外部终止。**
+
+---
+
+## ★★ 2026-10-28 19:15 第八层：那不是崩溃，是 WARNING；指向副 CPU 启不来
+
+### 精确识别
+```
+<4>WARNING: at .../kernel/sched.c:8107 build_sched_domains+0x6c0/0x818()
+[<6015e24c>] (warn_slowpath_null+0x0/0x2c) from [<6015ae60>] (build_sched_domains+0x6c0/0x818)
+```
+**⇒ 这是 `WARN_ON`（`<4>` 级别 + `warn_slowpath_null`），**不是 panic、不是 Oops 致命错误**。
+**⇒ 内核会继续跑，之前的 `do_exit` 栈只是进程正常退出时的 dump，被我误读成崩溃。**
+
+### 与已知线索串起来
+```
+日志开头:  CPU1: failed to boot: -38
+           CPU2: failed to boot: -38
+           CPU3: failed to boot: -38        ← 三个副核全部启不来
+之后:      build_sched_domains 在 sched.c:8107 触发 WARN
+```
+**⇒ `build_sched_domains` 的这条 WARN 通常与**CPU 拓扑/cpumask 不完整**相关。
+**⇒ 副核全失败 ⇒ 调度域只覆盖 CPU0 ⇒ WARN。**
+
+### ★★★ 新的最强假设（机理清楚）
+**OSAL/RTOS 层（`libosal_utm` / `libosal_uipc`）与 M2 的 `appFwBoot` 建线程机制，
+可能依赖**多核调度**（`osal_create_waitable_thread` + `osal_set_cpu(15)`）。
+**⇒ 仿真环境里副核启不来 ⇒ 调度域不全 ⇒ 那些线程建了但不被调度/同步异常
+⇒ M2 应用起来但**永远不渲染**；E10 的线程模型容错，所以能出画。**
+
+**⚠️ 这与"CPU 亲和性返回值未检查"不矛盾：返回值没检查不代表调度本身正常。**
+
+### 待验证（下一轮）
+1. **确认副核为什么 -38**（`-38 = ENOSYS`；可能 QEMU 机型没实现副核启动路径，或需要特定 boot 协议）
+2. **看 `build_sched_domains` 之后内核是否继续**（serial 停在 11,712 B，说明后续卡住 —— 但可能在等别的东西）
+3. **检查 `m2s2` 与 `m2long` 的差异**（s2 曾到 Application_Start，long 没有）：
+   ```
+   Image.m2s2    255,481,220 B   ui.cpio.s2    251,843,072 B
+   Image.m2long  255,485,828 B   ui.cpio.long  251,847,680 B
+   ⇒ 差 4,608 B，内容几乎相同，**行为却不同**
+   ⇒ 更可能是"跑的时候环境不同"，而非镜像差异
+   ```
+
+### ⚠️ 方法论（第 12 条）
+**看到调用栈 + `do_exit` 不要直接判定"崩溃"。
+先看日志级别（`<0>` panic / `<3>` err / `<4>` warning）和是否有 `end trace`。
+我把 `<4>WARNING` 误读成崩溃，白走了两轮。**
