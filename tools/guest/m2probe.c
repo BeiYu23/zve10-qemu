@@ -24,10 +24,24 @@ static int reg_logged;
 static unsigned long libobj_base(void);
 static void read_singleton(void);
 
+
+static void log_lib(const char *tag, unsigned qid, unsigned *r)
+{
+    Dl_info di;
+    unsigned long lr = (unsigned long)r[5] & ~1UL;
+    if (dladdr((void *)lr, &di) && di.dli_fname) {
+        char b[220];
+        int n = snprintf(b, sizeof b, "M2LIB %s qid=%08x lib=%s off=%08lx\n",
+                         tag, qid, di.dli_fname, lr - (unsigned long)di.dli_fbase);
+        out(b, n);
+    }
+}
+
 int m2_h_reg(unsigned *r)          /* r[0]=qid r[1]=cb r[4]=r4 r[5]=lr */
 {
     static int nreg;
     if (++nreg == 40) read_singleton();
+    if (nreg == 100) m2_dump_stuck();
     if (!n_reg) {                   /* lazy, early-safe */
         n_reg = dlsym(RTLD_NEXT, "osal_reg_msg_queue_cb");
         if (!n_reg) n_reg = dlopen("/usr/lib/libosal_uipc.so", RTLD_LAZY)
@@ -41,6 +55,7 @@ int m2_h_reg(unsigned *r)          /* r[0]=qid r[1]=cb r[4]=r4 r[5]=lr */
         }
         return 0;                   /* benign: reg returns 0 = success */
     }
+    log_lib("REG", r[0], r);
     {
         char b[120]; int n = snprintf(b, sizeof b,
             "M2REG pid=%d qid=%08x lr=%08x r4=%08x\n", (int)getpid(), r[0], r[5], r[4]);
@@ -65,6 +80,7 @@ int m2_h_regs(unsigned *r)
         }
         return 0;
     }
+    log_lib("REGSY", r[0], r);
     {
         char b[120]; int n = snprintf(b, sizeof b,
             "M2REGSY pid=%d qid=%08x lr=%08x r4=%08x\n", (int)getpid(), r[0], r[5], r[4]);
@@ -91,6 +107,35 @@ static void gi_fire(void);
 void m2_h_res_rcv(unsigned *r) { static int calls; if (!n_rcv) { n_rcv = dlsym(RTLD_NEXT, "osal_rcv_msg_tmo");
     if (!n_rcv) { void *h = dlopen("/usr/lib/libosal_uipc.so", RTLD_LAZY); n_rcv = h ? dlsym(h, "osal_rcv_msg_tmo") : 0; } }
     if (++calls == 400) gi_fire(); }
+#define NSQ 32
+static volatile unsigned sq_q[NSQ], sq_e[NSQ], sq_r[NSQ], sq_c;
+void m2_dump_stuck(void)
+{
+    char b[160];
+    for (unsigned i = 0; i < sq_c && i < NSQ; i++) {
+        int n = snprintf(b, sizeof b, "M2STUCK qid=%08x enter=%u ret=%u pending=%d\n",
+                         sq_q[i], sq_e[i], sq_r[i], (int)(sq_e[i] - sq_r[i]));
+        out(b, n);
+    }
+}
+static int snd_idx(unsigned q)
+{
+    for (unsigned i = 0; i < sq_c && i < NSQ; i++) if (sq_q[i] == q) return (int)i;
+    if (sq_c < NSQ) { unsigned i = sq_c++; sq_q[i] = q; return (int)i; }
+    return -1;
+}
+void m2_h_res_snd2(unsigned *r)
+{
+    if (!n_snd) { n_snd = dlsym(RTLD_NEXT, "osal_snd_sync_msg");
+        if (!n_snd) { void *h = dlopen("/usr/lib/libosal_uipc.so", RTLD_LAZY); n_snd = h ? dlsym(h, "osal_snd_sync_msg") : 0; } }
+    int i = snd_idx(r[0]);
+    if (i >= 0) sq_e[i]++;
+}
+void m2_h_ret_snd(unsigned *r, int ret)
+{
+    int i = snd_idx(r[0]);
+    if (i >= 0) sq_r[i]++;
+}
 void m2_h_res_snd(unsigned *r) { if (!n_snd) { n_snd = dlsym(RTLD_NEXT, "osal_snd_sync_msg");
     if (!n_snd) { void *h = dlopen("/usr/lib/libosal_uipc.so", RTLD_LAZY); n_snd = h ? dlsym(h, "osal_snd_sync_msg") : 0; } } }
 
@@ -120,77 +165,6 @@ __attribute__((naked)) int osal_snd_sync_msg(void)
     __asm__ volatile("push {r0,r1,r2,r3,r4,lr}\n mov r0,sp\n bl m2_h_res_snd\n"
                      "pop {r0,r1,r2,r3,r4,lr}\n ldr ip,=n_snd\n ldr ip,[ip]\n"
                      "cmp ip,#0\n bxne ip\n mvn r0,#0\n bx lr\n");
-}
-
-static void read_singleton(void)
-{
-    unsigned long b = libobj_base();
-    char buf[160]; int n;
-    if (!b) { out("M2SINGLE nobase\n", 16); return; }
-    unsigned long *g = (unsigned long *)(b + 0x3d7214UL);
-    unsigned long v = *g;
-    n = snprintf(buf, sizeof buf, "M2SINGLE base=%08x addr=%08x val=%08x\n",
-                 (unsigned)b, (unsigned)(b + 0x3d7214UL), (unsigned)v);
-    out(buf, n);
-}
-
-static unsigned long libobj_base(void)
-{
-    static unsigned long b;
-    if (b) return b;
-    struct { unsigned long v; } out = {0};
-    int cb(struct dl_phdr_info *i, size_t sz, void *d) {
-        (void)sz; (void)d;
-        const char *n = i->dlpi_name ? i->dlpi_name : "";
-        if (strstr(n, "libObj")) { out.v = i->dlpi_addr; return 1; }
-        return 0;
-    }
-    dl_iterate_phdr(cb, 0);
-    b = out.v;
-    return b;
-}
-static void *call_gi(void *a)
-{
-    (void)a;
-    unsigned long b = libobj_base();
-    char buf[128]; int n = snprintf(buf, sizeof buf, "M2GI base=%08x\n", (unsigned)b);
-    out(buf, n);
-    if (!b) return 0;
-    void *(*gi)(void) = (void *(*)(void))(b + 0x208005 + 1);
-    void *r = gi();
-    n = snprintf(buf, sizeof buf, "M2GI ret=%08x\n", (unsigned)(unsigned long)r);
-    out(buf, n);
-    return 0;
-}
-static void *gi_worker(void *a)
-{
-    (void)a;
-    sleep(15);
-    unsigned long b = libobj_base();
-    char buf[128]; int n = snprintf(buf, sizeof buf, "M2GI call base=%08x\n", (unsigned)b);
-    out(buf, n);
-    if (!b) return 0;
-    void *(*gi)(void) = (void *(*)(void))(b + 0x208005 + 1);
-    void *r = gi();
-    n = snprintf(buf, sizeof buf, "M2GI ret=%08x\n", (unsigned)(unsigned long)r);
-    out(buf, n);
-    return 0;
-}
-
-static void *reader2(void *a)
-{
-    (void)a;
-    int fd = open("/dev/ttyAM1", O_RDONLY | O_NONBLOCK);
-    if (fd < 0) return 0;
-    for (;;) {
-        char b[128]; int n;
-        while ((n = read(fd, b, sizeof b - 1)) > 0) {
-            b[n] = 0;
-            if (strstr(b, "#GI")) { pthread_t t; pthread_create(&t, 0, call_gi, 0); }
-        }
-        usleep(100000);
-    }
-    return 0;
 }
 
 __attribute__((constructor)) static void init(void)

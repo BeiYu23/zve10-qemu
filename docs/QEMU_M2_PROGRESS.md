@@ -6688,3 +6688,19 @@ E10 在 #134 之后继续（#135~ 都是 libObj 的注册），说明**该函数
    就能知道"返回后回到谁" ⇒ 下一个该查的函数；
 2. **直接看 M2 的 snd_sync 计数**：如果某条 qid 的 sync 发送一直不返回，
    就是"等一个不会来的应答"（probe 已有 `osal_snd_sync_msg` 计数，只需补 enter/ret 时间戳对比）。
+
+## 82. 2026-10-29 失败记录：给 snd_sync 加 enter/ret 计数导致探针失效（已回滚）
+
+尝试：把 `osal_snd_sync_msg` 桩从"尾调用 native"改为"C helper 调用 native 并计数返回"，
+以便输出 `M2STUCK qid=.. enter=.. ret=..` 表（判"哪条 sync 永远不返回"）。
+
+结果：**探针完全无输出**（`M2REG/REGSY/M2LIB` 全为 0，`M2INIT` 仅 1 条，serial 24 KB）。
+
+⇒ 说明改动破坏了 im.elf 里的早期执行（很可能 snd_sync 的 ABI 或调用时机与桩不兼容，
+  早期一次 snd_sync 走桩即挂）。
+
+**处置：已回滚到已知可用版本**（`osal_snd_sync_msg` 恢复"尾调用 native"、不带 ret 计数），
+源码与 .so 已同步到 `tools/guest/`。
+
+**教训（与 §77 一致）**：每次只改一个变量，且改完必须先看"事件数是否仍在 124 左右"，
+再谈新数据 —— 本次直接看新输出，浪费了一轮。
