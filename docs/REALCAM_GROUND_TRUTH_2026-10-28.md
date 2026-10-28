@@ -802,3 +802,31 @@ KEYINJECT hk prologue mismatch
 2. 在 libObj 里找 `notifyDraw` 之外的、UI 线程 tick（如 `TimerEvent` 派发）做 hook；
 3. 放弃 hook，改 **GPIO 硬件模型**（在 QEMU 侧让 App 自己的 keyscan 读到按键）——
    最贴近真机，但要逆向 `/dev/gpio` 的寄存器语义。
+
+## 176. 2026-10-28 固件里没有 keyscan 服务进程，但找到了 GPIO 相关的可执行文件
+
+`work/usr/bin` 下发现：
+
+```
+GPIO2SDIO.elf   SDIO2GPIO.elf   SetPort.elf   ...
+```
+
+⇒ 相机的按键很可能是通过 **SDIO↔GPIO 桥**（AP/CP 之间的 GPIO 扩展）读的，
+不是本地 GPIO 寄存器——这也解释了为什么 InfraInput 要向"服务"同步查询状态。
+
+同时：`drawFramebuffer`(0x6196b8) **没有任何直接 BL 调用者**（扫描全 .text），
+说明它是通过函数指针/vtable 被调用的 → 想"hook 调用者"也不现实。
+
+### 现状总结（27 轮）
+
+| 项 | 状态 |
+|---|---|
+| 菜单显示 / 抓帧 / 网页控制台 | ✅ 可用 |
+| SD 卡（/usr /system）+ 完整系统启动 | ⚠️ SD 可用；厂商 init 静默 |
+| 按键注入 | ❌ 三条路都撞墙：代码 hook（地址被占）、信号（线程屏蔽）、OSAL 服务（注册被拒 -1024） |
+
+### 建议的剩余路线（按可行性）
+
+1. **在 viewUnified2 里找每帧函数 hook**（该库完全没被对方占用，且它就在 UI 线程上绘制）；
+2. 透明拦截 `osal_rcv_msg_tmo`（PLT 层、非代码补丁），借 UI 线程的消息泵执行我们的请求；
+3. SDIO↔GPIO 桥的 QEMU 模型（最贴近真机，但工作量最大）。
