@@ -8501,3 +8501,30 @@ IMDB 表登记: 200 个 .so
   `BIZ_Init → ... → appFwBoot.Application_System_Init → dlopen(appFw.so)` 这条链才可能走通；
 * QEMU 侧用现在这套 harness 验证"补模块后链条是否前进"（补一个跑一次，看 events 与 M2DLSYM 是否增加）；
 * 真机侧同样适用：**若 v9b 的 /usr/lib 也缺这 125 个，那 v9b 注定黑屏**，与 libmpr 无关。
+
+## 126. 2026-10-29 ⚠️ 对 §125 的限定：IMDB 有 6 张按 target 分组的表，"缺 125 个"可能被高估
+
+`libIMDB.so` 里存在多个表选择器字符串：
+
+```
+IMDB:default / IMDB:qemu / IMDB:nfs / IMDB:set / IMDB:USBJ / IMDB:RE-SUB
+```
+
+说明**模块表是按 target/机型变体分组的**。我 §125 里的"200 个登记模块"是从整个
+`.rodata` 里正则提取的**并集**，并不等于"本次 target=qemu 启动应该加载的集合"。
+
+⚠️ 因此 **"缺 125 个"这个数字需要打折**：其中相当一部分可能属于其它变体表
+（nfs/usbj/re-sub 等），本机型根本不会去加载。
+
+### 仍需确认的两件事
+
+1. **`IMDB:qemu` 表实际包含哪些模块**（而不是并集）；
+2. 该表里**是否存在树中缺失的模块**（尤其是 `libBizInitializer.so` / `AppConfig.so`）。
+
+### 下一步（最省的静态做法）
+
+用"字符串相邻性"或"表项指针数组"把 `IMDB:qemu` 表解析出来：
+* 每个表在 .data.rel.ro 里应有一组指针（指向 name/entry/arg 字符串）；
+* 找到指向 `"IMDB:qemu"` 的引用点，其邻近的指针数组就是该表。
+
+拿到 qemu 表后再与树比对，才是可靠结论。
