@@ -7595,3 +7595,48 @@ libObj                 M2=84 E10=111  libmprctrl M2=7 E10=4
 实现方式：在 MWF 的 `RegisterCallBack` 入口下探针（按 libMWF 偏移 0x1f1d8），
 记录此时栈上的返回地址 `*(void**)(sp+…)` —— 这次要**先在一个 E10 能出画的 run 里验证
 "加了该探针仍出画"**（§85 硬规则），再用于 M2。
+
+## 109. 2026-10-29 ★★★ 参考 a7c2-re 路线：M2 的渲染层**可以**用同样办法接管（希望回升）
+
+### 关键发现：M2 与 A7C2 是同一套图形抽象
+
+```
+a7c2-re 的软件光栅化挂点: GRM_screenGetOnBitmap / GpermFillRect / GpermBitBlit（GPE 层）
+M2 的 libObj.so 导出 21 个 GRM_* 符号，包含：
+  GRM_screenGetOnBitmap   GRM_gpermFillrect   GRM_gpermRectblit
+  GRM_bitmapCreate/Release/WriteLockBits…    GRM_fbrm*（framebuffer region manager）
+```
+
+**并且 M2 的 libObj 是经 PLT 调用这些函数的**（可被 LD_PRELOAD 拦截）：
+
+```
+3 × <GRM_gpermFillrect@plt>
+6 × <GRM_gpermRectblit@plt>
+```
+
+### 工作量重估：不需要从零写
+
+```
+a7c2-re 的软件渲染部分（可直接移植参考）：
+  gpe-raster.c    90 行
+  gpe-sprite.c   113 行
+  gpe-copy.h      12 行
+  headless-osd.c 326 行      ← 多帧捕获/导出
+  合计约 541 行（此前我按 E10 的 ui-observe 估成 700+，偏悲观）
+```
+
+### 由此修正上一轮的结论
+
+* **"渲染必然做不到" ⇒ 改为"渲染有现成路线"**：只要拦截 `GRM_gpermFillrect` /
+  `GRM_gpermRectblit`（+ 可选 `GRM_screenGetOnBitmap`），用软件实现填 RGBA4444，
+  就能把画面写到我们的抓帧缓冲（`0x22c48000`，格式一致）。
+* **真正的剩余障碍仍是"应用初始化只完成 18/122 次 MWF 注册"**——
+  没有绘制调用，拦截也无从生效。
+* a7c2-re 还有一条可能绕过初始化的思路：**`MENU_OPEN_SET`（直接强制打开某个菜单画面集）**，
+  即不等正常启动流程完成，主动驱动菜单系统 ⇒ 值得在 M2 上找对应入口。
+
+### 下一步（已排好）
+
+1. 本轮已开始：记录 im.elf 所有 `osal_rcv_msg_tmo` 等待队列（qid + 调用库），
+   判断那 104 个未启动组件是否依赖硬件服务（grm/stream/media）；
+2. 若依赖硬件 ⇒ QEMU 停；若不依赖 ⇒ 修通初始化后立即套用 GRM 拦截方案出画。
