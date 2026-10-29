@@ -196,6 +196,15 @@ void m2_h_res_sd(unsigned *r)
         char b[96]; int n = snprintf(b, sizeof b, "M2SD qid=%08x\n", r[0]);
         out(b, n);
     }
+    if (r[0] == 0x90013d) {
+        static unsigned cnt;
+        if (++cnt <= 8) {
+            unsigned char *m = (unsigned char *)r[1];
+            char b[128]; int n = snprintf(b, sizeof b, "M2DOPS n=%u b16=%02x%02x b18=%02x%02x b20=%02x b21=%02x\n",
+                                          cnt, m?m[17]:0, m?m[16]:0, m?m[19]:0, m?m[18]:0, m?m[20]:0, m?m[21]:0);
+            out(b, n);
+        }
+    }
     if (!n_sd) { n_sd = dlsym(RTLD_NEXT, "osal_snd_sync_direct");
         if (!n_sd) { void *h = dlopen("/usr/lib/libosal_uipc.so", RTLD_LAZY); n_sd = h ? dlsym(h, "osal_snd_sync_direct") : 0; } }
 }
