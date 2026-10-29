@@ -1,18 +1,12 @@
-/* Date service probe: 48-byte message, dump full, try write with date fields. */
+/* Scan 0x900100..0x9001ff for services that answer op=2 (read), then try write. */
 #include <stdio.h>
 #include <string.h>
 #include <unistd.h>
 extern int osal_snd_sync_direct(unsigned int, void *);
 struct msg { unsigned char b[48]; };
-static unsigned qid = 0x90013d;
-static void dump(const char *t, unsigned char *p)
+static int call(unsigned qid, struct msg *m, unsigned op)
 {
-    printf("%s", t);
-    for (int i = 0; i < 48; i++) printf("%02x", p[i]);
-    printf("\n");
-}
-static int call(struct msg *m, unsigned op)
-{
+    memset(m, 0, sizeof *m);
     m->b[0] = 48;
     m->b[16] = op; m->b[17] = 0;
     m->b[18] = 0xff; m->b[19] = 0x7f;
@@ -21,21 +15,11 @@ static int call(struct msg *m, unsigned op)
 int main(void)
 {
     struct msg m;
-    memset(&m, 0, sizeof m);
-    int r = call(&m, 2);
-    char t[40]; snprintf(t, sizeof t, "DC read2 r=%d:", r); dump(t, m.b);
-    /* try write: date 2020-01-01 00:00:00 at +20, state=1 at +32, init=4 at +44 */
-    memset(&m, 0, sizeof m);
-    unsigned char *p = m.b + 20;
-    p[0] = 0xe4; p[1] = 0x07;           /* year 2020 */
-    p[2] = 1; p[3] = 1; p[4] = 0; p[5] = 0; p[6] = 0;
-    p[12] = 0;
-    m.b[32] = 1;
-    m.b[44] = 4;
-    r = call(&m, 0);
-    snprintf(t, sizeof t, "DC write0 r=%d:", r); dump(t, m.b);
-    memset(&m, 0, sizeof m);
-    r = call(&m, 2);
-    snprintf(t, sizeof t, "DC reread r=%d:", r); dump(t, m.b);
+    for (unsigned q = 0x900100; q <= 0x9001ff; q++) {
+        int r = call(q, &m, 2);
+        int st = (short)(m.b[18] | (m.b[19] << 8));
+        if (r == 0 && st == 0)
+            printf("DCQ qid=%06x read_ok b20=%02x b32=%02x b46=%02x\n", q, m.b[20], m.b[32], m.b[46]);
+    }
     return 0;
 }
