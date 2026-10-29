@@ -9579,3 +9579,39 @@ Application_Start VA = 0x54d581（Thumb，已反汇编确认）
 ```
 **⇒ 推论：探针本身是系统的一部分。加探针会改变被观测系统的行为，
    所以"我的运行显示 X"必须附带"在我的探针配置下"。**
+
+## 143. 2026-10-29 参考 a7c2-re：`notify_model_system_error` 是"模型/硬件条件不满足"，不是模型码不匹配
+
+### a7c2-re 的记录（`BOOT-TROUBLESHOOTING.md` §16 与 `menu-observe.c`）
+
+```
+· rep_shooting_controller::init 检查 "model17dd"（= boot 控制器是否 init），
+  未满足时请求 rep_boot ⇒ 不会进 shooting
+· 正常路径：scr0039_boot_controller::process_power_on(0x209dd68)
+            → boot_start_seq(0x2731660) → 原请求链 → model::create_sequence…
+· "(no lens power) which maps to model error 0x151"
+  ⇒ ★ 模型错误来自**硬件条件不满足**（无镜头供电 ⇒ model error 0x151）
+· 他们不是"绕过断言"，而是**补上缺失的硬件服务**：
+  dmm-service.c / capid-service.c / hdmi-format-service.c /
+  file-media-config.c / seed-date-clock.c（自有实现，喂原厂服务）
+```
+
+### ⇒ 对本项目的含义
+
+**`lib::assert::notify_model_system_error()` 是"model 层检测到系统错误"的统一出口，
+不是"机型码校验失败"。** 触发条件大概率是某硬件/服务条件不满足
+（无镜头、无 CMOS、无供电状态、某服务未应答），与模型码关系不大。
+
+**⇒ 正确做法不是 hook 断言拿 lr（那只告诉我们"哪段代码报告错误"），
+而是补齐"模型期望的硬件服务应答"——a7c2 就是这么把新菜单跑起来的。**
+
+**⇒ M2 侧可复用的清单（对应 a7c2 的五个 service shim）：**
+| a7c2 的 shim | 作用 | M2 对应 |
+|---|---|---|
+| `capid-service.c` | 相机 ID/型号应答 | 待确认 |
+| `dmm-service.c` | DMM（显示内存管理） | M2 有 dmm.ko |
+| `hdmi-format-service.c` | HDMI 格式 | — |
+| `file-media-config.c` | 媒体配置 | — |
+| `seed-date-clock.c` | 时钟（§99 已证本机型只读，不适用） | ❌ |
+
+**⇒ 下一步应查：a7c2 的五个 shim 分别应答哪个 qid，M2 上同一 qid 是否也需要应答。**
