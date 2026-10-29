@@ -8682,3 +8682,46 @@ if (fn) fn(arg)
 ### 实施注意（§85 硬规则）
 
 改完必须先验 `events ≈ 124`，再谈新数据；若退化立即回滚。
+
+## 130. 2026-10-29 ★★★★ 决定性结果：`libBizInitializer.so` / `appFw.so` **从未被 dlopen 过**
+
+给 dlopen 桩加上"对含 `BizInitializer`/`appFw`/`AdjChk` 的名字记录**返回值与 dlerror**"：
+
+```
+events = 124（基线正常）
+M2DLH 记录 = **0 条**     ← ★ 这三个库一次都没被 dlopen 过
+```
+
+**⇒ 我上一轮 §127 的"桩被 dlopen 了（68→70）"是误读——那个 +2 与桩无关。
+`libBizInitializer.so` 从来没有被 im.elf 的加载循环碰到。**
+
+### 最后被 dlopen 的模块（70 个的末尾）
+
+```
+libDpro_EVF.so / libInfraUpmPro.so / libfan.so / libEMG.so /
+libInfraEthernetService.so / **libNetService.so**
+```
+
+**⇒ 加载循环停在这附近（`libNetService.so` 是最后一个）。**
+IMDB 表里排在它后面的 `libBizInitializer.so`、`appFwBoot.so`（**但它在 maps 里，见下**）、
+`appFw.so` 都不会被处理。
+
+⚠️ 矛盾点：`appFwBoot.so` **在 im.elf 的 maps 里**却从未被 dlopen 过
+⇒ 说明它是**作为某个库的 DT_NEEDED 依赖**被加载的，不是 IMDB 加载的。
+（这也解释了为什么它的入口从未被调用：**IMDB 从没把它当作模块处理**。）
+
+### ⇒ 结论
+
+**问题不是"dlsym 失败"、也不是"表数据错"，而是：im.elf 的模块加载循环在
+`libNetService.so` 之后就停止了。**
+
+### 下一轮（唯一任务）
+
+找出循环停止的原因（三种）：
+1. 紧接着的下一条 IMDB 表项让循环 `return`（例如某个模块 `dlopen` 失败 ⇒ 循环 break）；
+2. 某个模块的 `fn(arg)` 阻塞，循环卡在调用里（此时"最后 dlopen 的是 NetService"合理：
+   它的入口被调用后没返回）；
+3. `IMDB_find_target_bit` 过滤（target 不匹配 ⇒ 后面的项被跳过）。
+
+**判据**：若循环是 break，后续还会不会有其它 dlopen（比如运行时的）？现在没有 ⇒ 更像 ②（卡在某个 fn）。
+⇒ 下一步：对 `libNetService.so` 的入口函数下桩（看它是否被调用、是否返回）。
