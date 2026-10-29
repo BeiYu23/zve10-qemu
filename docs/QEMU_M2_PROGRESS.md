@@ -9986,3 +9986,50 @@ BLE 断言：已消除（InfraBluetoothLowEnergy_init → bx lr）
 ③ 若要定位"正常路径下 Application_Start 卡在哪"：
    逐个 patch call#1/#2/#3 为 nop（一次一个），看哪个能让后续 INITSEQ 变化
 ```
+
+---
+
+# ★★★ 2026-10-31 第九十四层：回滚完成 + 帧循环首个 helper `0x54EF74` 结构
+
+## ① 补丁回滚完成（基线已干净）
+```
+0x54d590 → d8 f3 04 e8  (blx 0x92559c)  ✅
+0x54d59a → ff f7 db fd  (bl 0x54d154)   ✅
+0x54d5a6 → ff f7 83 fe  (bl 0x54d2b0)   ✅
+⇒ Application_Start 恢复正常（4 个调用齐全）
+```
+
+## ② 帧循环首 helper `0x54ef74`（帧循环 wrapper 的第一个调用）
+```asm
+54ef74: push {r4,r5,r6,r7,lr}
+54ef76: sub sp, #12
+54ef78: mov r4, r0                  ; 上下文
+54ef7a: add.w r6, r4, #1704         ; r6 = ctx+0x6A8
+54ef80: ldr r0, [r0, #16]           ; ctx->field16
+54ef86: ldr r3, [r0, #0]            ; vtable
+54ef8a: ldr r3, [r3, #0]            ; vtable[0]
+54ef8c: blx r3                      ; ★ 虚调用（可能阻塞/崩溃点）
+54ef8e-54ef9c: blx 0x925fb0 / 0x923900 / 0x9246b8
+54efa0: ldr r0, [r4,#16]; blx 0x9240d4
+54efa6: bl 0x723aac                 ; ★ 普通调用
+54efaa-54efbc: blx 0x925b48 / 0x924b48 / 0x924b04; bl 0x558a00
+54efc0-54efcc: blx 0x9243e4 / 0x925468 / 0x9249c4; bl 0x558cbc
+```
+**⇒ 帧循环入口是一串 ~15 个初始化调用；其中任一阻塞都会让循环永不迭代。**
+**⇒ 关键候选：`blx r3`（虚调用，依赖 ctx->field16 的 vtable）与 `bl 0x723aac`。"
+
+## ③ 下轮计划（基线已干净）
+```
+① 重建（回滚后必须重建 cpio + Image）
+② 用精确 PID 跑一次，确认回滚后行为恢复到"断言 0 + 4 条 INITSEQ"
+③ 然后逐个 patch 帧循环 helper 里的调用（0x723aac / 虚调用）看哪个阻塞
+④ 或直接 patch Application_Start 的 call#2/#3 之一为 nop，观察 INITSEQ 变化以定位阻塞点
+```
+
+## 方法论（第 99 条）★★
+**实验性补丁必须有**明确的回滚字节清单**，且回滚后要重建验证：
+```
+本轮：上轮"跳过初始化"的 3 个 nop 已按记录精确还原
+⇒ 基线恢复干净，后续实验才有意义
+⇒ **判据：任何 patch 进镜像前，先把原始字节写进账本。**
+```
