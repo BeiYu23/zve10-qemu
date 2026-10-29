@@ -8725,3 +8725,31 @@ IMDB 表里排在它后面的 `libBizInitializer.so`、`appFwBoot.so`（**但它
 
 **判据**：若循环是 break，后续还会不会有其它 dlopen（比如运行时的）？现在没有 ⇒ 更像 ②（卡在某个 fn）。
 ⇒ 下一步：对 `libNetService.so` 的入口函数下桩（看它是否被调用、是否返回）。
+
+## 131. 2026-10-29 定位"循环停止点"的模块入口：`libNetService.so → netservice_init`
+
+从 `libIMDB.so` 的字符串序列解析出 `libNetService.so` 所在表项的入口符号：
+
+```
+libNetService.so  → netservice_init / netservice_sus / netservice_res      （@0x4dae 附近）
+libInfraIPsec.so  → InfraIPsec_init / InfraIPsec_exit / InfraIPsec_sus   （紧随其后）
+```
+
+`libNetService.so`（678,984 B）确实导出 `netservice_init`（`0x4efd4`）。
+
+**⇒ 高度疑似：`netservice_init(...)` 被 im.elf 调用后**阻塞**，
+导致 IMDB 的串行加载循环卡在这里 ⇒ 后面的 `libBizInitializer.so` / `appFwBoot.so` / `appFw.so`
+永远不会被加载。**
+
+### 与已有观测的吻合
+
+* im.elf 主线程（tid=139）wchan = `osal_rcv_msg_tmo` ⇒ **在等消息**，
+  与 `netservice_init` 内部等待网络/服务就绪的形态一致；
+* 注册事件冻结在 122~134 附近 ⇒ 后续模块的注册也全部没发生。
+
+### 下一轮（两种做法）
+
+1. **确认 `netservice_init` 是否真的不返回**：在预加载库里拦 `osal_rcv_msg_tmo` /
+   `osal_rcv_msg`，记录调用者 lr 是否落在 `libNetService.so` 内（若落在，即证明卡在它里面）；
+2. **若确认**：反汇编 `netservice_init` 找它等的具体事件；判断该事件是否依赖 QEMU 缺失的
+   硬件/网络服务 ⇒ 若是，则 **QEMU 侧此路终止**，但真机上该服务存在 ⇒ v9b 可能自行走通。
