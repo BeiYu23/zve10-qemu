@@ -7337,3 +7337,53 @@ im.elf 线程（fork 子进程零扰动采样，t=50s）：
 1. 连跑 5~10 分钟确认 im.elf 稳定、事件是否继续增长；
 2. 对比 E10 的线程等待集合，看 M2 少等了/多等了哪条队列；
 3. 检查渲染路径是否被调用（不拦截渲染函数，只统计"是否有人 blit 到帧缓冲"）。
+
+## 102. 2026-10-29 修复后稳定在 181 条注册（比旧值 116~134 大幅前推），帧仍黑
+
+6 分钟采样（每 60s）：
+
+```
+t=1m ev=181  distinct=1
+t=2m ev=181  distinct=1
+… t=6m ev=181 distinct=1
+```
+
+⇒ **稳定在 181，不再增长；帧恒黑。** 但相比修复前的 116~134，已经**多跑了约 50 条注册**。
+
+### 库分布对比（修复后）
+
+```
+74 libObj     18 libMWF     10 libInfraBluetoothCore
+ 6 libNetService   6 libInfraNetConnectionManagerEther
+ 4 libupdaterufp   4 libmprctrl   4 libWlanResource …
+```
+
+**`libNetService` / `libupdaterufp` / `libmprctrl` 从 0 变成有注册** —— 这三个之前完全没跑，
+印证 §101 的 mpr 修复确实解开了整段初始化。
+
+### 停住的精确位置
+
+M2 最后三条事件：
+
+```
+M2LIB REG   qid=012f0335  libdig_level.so off=0x1d90
+M2LIB REGSY qid=00a00349  libdig_level.so off=0x1dc6
+M2LIB REGSY qid=00920169  /usr/bin/im.elf  off=0x2426     ← 最后一条
+```
+
+E10 在**同一位置**（其第 186 条事件）是：
+
+```
+M2LIB REGSY qid=00a00349  libdig_level.so off=0x1dbe   ← 同一条注册（同 qid！）
+M2LIB REGSY qid=00800228  libObj.so off=0x6fd49a       ← E10 接着往下走
+M2LIB REG     qid=00904142  libObj.so off=0x419766
+```
+
+**⇒ M2 在"注册 dig_level 之后、libObj 的下一批注册之前"停住。**
+
+### 下一轮
+
+1. 反汇编 `libObj.so` 在 `off≈0x6fd49a / 0x419766` 附近的代码（E10 的下一条动作），
+   看它在 M2 里为什么没执行（缺依赖/等应答/条件不满足）；
+2. 同时用 fork 采样对比 E10 与 M2 的线程等待集合（M2 现在线程都在 `osal_rcv_msg_tmo`、
+   `__k_4u_wait_cb`、`poll_schedule_timeout`）。
