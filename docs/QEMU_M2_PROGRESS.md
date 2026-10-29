@@ -7102,3 +7102,32 @@ DCQ qid=90013d read_ok b20=00 b32=00 b46=00     ← 唯一应答
 ### 现状
 
 M2 仍黑屏（events≈116，`distinct=1`）；date-seeding 与卡死的因果关系**尚未证实**。
+
+## 95. 2026-10-29 日期协议溯源：客户端不在 libutil_date.so，仍指向 libObj
+
+### 排查
+
+```
+libutil_date.so (5,824 B) 里 0x0090013d 出现 0 次
+  ⇒ 它只提供纯计算函数（date_time_add_seconds / get_days_of_month /
+    diff_datetime / add_subseconds），不碰 UIPC 队列
+libObj.so 里 0x0090013d 出现 10 次，位置在 .rodata/literal pool
+  （VA 0xd1f30 / 0x1b89a8 / 0x1d2a98 …），但**用常规 `ldr rt,[pc,#imm]` 扫描找不到加载点**
+  ⇒ 说明常量是通过 `movw/movt` 或表结构访问的，静态定位成本较高
+```
+
+### 结论（本轮）
+
+* 日期服务的**客户端在 libObj 内部**，但它的调用点无法用简单扫描定位；
+* 已验证的事实不变：`0x90013d` 是唯一应答的日期队列，**只有 op=2（读）被接受**，
+  op=0/1/3..7 全部返回 `-1024`；
+* **写入协议未解** ⇒ a7c2 的 `seed-date-clock` 流程**无法逐字照搬到本机型**。
+
+### 建议的下一步（按性价比排序）
+
+1. **对比 a7c2 与本次的响应体**：把 a7c2 固件里 `0x90013d` 的读响应 dump 出来
+   （他们仓库有 `DATE_CLOCK_CALL` 日志），逐字节和我们 `DC read2` 的响应比对，
+   差异处就是"字段布局不同"的具体位置；
+2. 若时间成本过高：**承认 date-seeding 不是本次卡点**，回到 §90 的
+   `flag[obj+0x98] + cond_wait`，用零扰动方式（一次性 ptrace 采样 r4/fp）确认对象；
+3. 真机 v9b 结果优先（若真机能起，则 QEMU 侧就是缺硬件/服务，不必再挖）。
