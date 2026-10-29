@@ -11,6 +11,8 @@
 #include <string.h>
 #include <unistd.h>
 #include <link.h>
+#include <dirent.h>
+#include <sys/types.h>
 #include <pthread.h>
 #include <pthread.h>
 
@@ -215,6 +217,36 @@ __attribute__((naked)) int osal_snd_sync_direct(void)
                      "cmp ip,#0\n bxne ip\n mvn r0,#0\n bx lr\n");
 }
 
+static void dump_threads(void)
+{
+    char path[96], buf[256];
+    pid_t pp = getppid();
+    snprintf(path, sizeof path, "/proc/%d/task", (int)pp);
+    DIR *d = opendir(path);
+    if (!d) { out("M2T nodir\n", 10); return; }
+    struct dirent *e;
+    while ((e = readdir(d))) {
+        if (e->d_name[0] < '0' || e->d_name[0] > '9') continue;
+        char p2[128]; int fd;
+        snprintf(p2, sizeof p2, "/proc/%d/task/%s/wchan", (int)pp, e->d_name);
+        fd = open(p2, O_RDONLY); int n = fd >= 0 ? read(fd, buf, sizeof buf - 1) : -1;
+        if (fd >= 0) close(fd);
+        if (n > 0) buf[n] = 0; else buf[0] = 0;
+        for (int i = 0; buf[i]; i++) if (buf[i] == '\n') buf[i] = 0;
+        snprintf(p2, sizeof p2, "/proc/%d/task/%s/stat", (int)pp, e->d_name);
+        char st[512]; fd = open(p2, O_RDONLY); int n2 = fd >= 0 ? read(fd, st, sizeof st - 1) : -1;
+        if (fd >= 0) close(fd);
+        char state = n2 > 0 ? st[n2] = 0, st[n2 > 0 ? (n2/1) : 0] : '?';
+        char stt[2] = {'?', 0};
+        if (n2 > 0) { char *q = strrchr(st, ')'); if (q && q[1] == ' ') stt[0] = q[2]; else stt[0] = '?'; }
+        (void)state;
+        char o[280]; int m = snprintf(o, sizeof o, "M2T tid=%s st=%c wchan=%s\n", e->d_name, stt[0], buf);
+        out(o, m);
+    }
+    closedir(d);
+}
+static void *thread_dumper(void *a) { (void)a; sleep(50); dump_threads(); return 0; }
+
 __attribute__((constructor)) static void init(void)
 {
     char cmd[256] = {0};
@@ -225,5 +257,6 @@ __attribute__((constructor)) static void init(void)
     n = snprintf(b, sizeof b, "M2INIT pid=%d cmd=%.48s\n", (int)getpid(), cmd);
     out(b, n);
     if (strstr(cmd, "im.elf")) {
+        { pid_t c = fork(); if (c == 0) { thread_dumper(0); _exit(0); } }
     }
 }
