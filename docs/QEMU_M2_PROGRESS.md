@@ -8353,3 +8353,92 @@ M2DLERR（appFw/AdjChk 的 dlopen） = 0 条  ← ★ appFw 与 AdjChkConfig 都
 
 这与 §121 一致：libIMDB 用 `{模块名, 入口符号}` 表驱动，40~61 个模块被 dlopen 了，
 但**入口调用必须先满足某个前置条件**，而该条件在 QEMU 里未满足。
+
+---
+
+# ★★★★★ 2026-10-30 17:30 第八十三层：bootin 的 preload 完整逻辑（代码级）+ 崩溃态调试通道结论
+
+## ① 用户问题：「全部崩溃时能否 USB shell 调试」→ 结论：**不需要**
+**真机线实测：**
+```
+Pico 走 bootrom 阶段，不依赖 Linux/内核/文件系统
+  接 USB 线 D+/D-（GP28/GP27 经 470Ω），模拟 bootrom 串口协议 ⇒ **不需要 UART**
+  实测：10-28 相机 3 秒重启循环时注入成功；刷 v9b 后刷回原厂
+⇒ **崩溃态已有保险**
+
+gadget（v9b3 内置）：/lib/mprshim.so + bootin.elf 脚本
+  ⇒ 只需内核活着 ⇒ **半死态可用**
+  ⚠️ v9b 在真机上**不是 boot loop**（是"没 UI"，内核活着）⇒ gadget 方案成立
+```
+
+## ② 两条"免费 shell"路线均已排除
+```
+× launch_shell.elf：init 里**无条件调用**（0x9f9a），是 PID 1 正常移交，不是维护模式
+   launch_shell() = signal(SIGCHLD,IGN) + execl("/usr/bin/launch_shell.elf", argv0, buf1,buf2,NULL)
+   buf1/buf2 = 两个全局决定的单字符 "0"/"1"
+× gdb --args：机制存在（bootin flags bit4 ⇒ 命令前插 "gdb --args "），
+   但全镜像**没有 gdb/gdbserver 二进制**（v9b /bin /sbin /tool /lib /local + rootfs 都没有）
+   ⇒ 且 gdb 是交互式的，无 tty/网络 ⇒ 即使触发也只会"im.elf 不再启动" ⇒ 更糟
+```
+
+## ③ ★★★★★ bootin 的 `/setting/mode/preload` 处理（代码级完整解出）
+```asm
+9990: tst.w r3, #64 (0x40)     ; ★★★ **bit6 = preload 路径总开关**
+9994: beq   0x9a1c             ; bit6==0 ⇒ **完全不读该文件**
+9996: ldr   r1, =0xa6dc        ; "LD_PRELOAD="（11 字符）
+999e: strncpy(buf, "LD_PRELOAD=", 512)   ; ★ buf 预清零
+99a4: open("/setting/mode/preload", O_RDONLY)
+99b4: add.w r1, r7, #11        ; ★ 读入位置 = **buf + 11**（"LD_PRELOAD=" 之后）
+99b8: read(fd, buf+11, 498)
+      ; ── 白名单：strncmp(buf+11, whitelist[i], strlen(whitelist[i])) 前缀匹配 ──
+9b24: tst.w r3, #64            ; ★ putenv 也受同一 bit6 门控
+9b2c: blx  putenv
+```
+**⇒ 三个确认：**
+```
+① 文件内容必须是**纯路径**（"LD_PRELOAD=" 由 bootin 自己加）
+② **不需要换行符**（strncpy 预清零 ⇒ 自动 NUL 结尾）
+③ 白名单是**前缀匹配** ⇒ "/usr/tool/LeakTracer.so:/usr/lib/libmpr.so" 开头命中即整条通过
+```
+
+## ④ ★★★ bootin 会**清空环境**，但保留 LD_PRELOAD / MALLOC_OPTIONS
+```
+rodata:
+  0x275c  'Bb system()'
+  0x2768  'Bb clearing env'    ← 清空
+          'LD_PRELOAD'          ← 不带等号 = **保留名单**
+          'MALLOC_OPTIONS'
+⇒ **清空时 LD_PRELOAD 被保留** ⇒ 可传给 im.elf
+```
+
+## ⑤ 给真机线的两条关键建议
+```
+⚠️ 风险：preload 文件路径受 bit6 门控；若 bit6 未置位，文件写得再对也不读
+   ⇒ 这可能是"environ 里始终为空"的**真因**（不是双前缀格式错）
+
+✅ 更稳做法：**bootin.elf 脚本里直接 `export LD_PRELOAD=...`**
+   不依赖 bit6（env 清空是另一段代码，保留名单会保住 LD_PRELOAD）
+
+✅ 建议两条都放（互为保险，内容相同时无害）：
+   export LD_PRELOAD=<同内容>
+   printf '<纯路径>' > /setting/mode/preload
+   exec /usr/bin/bootin.real "$@"
+```
+
+## ⑥ 其他 bootin 参数（rodata 已解出）
+```
+支持：gdbs/GDBS/gdb/GDB、nolt/NOLT、nowfree/NOWFREE、killall、help/-h、-v
+      dmode=/d=、amode=/a=、file=/f=、target=、sim
+      target=resub / target=qemu
+命令行片段：'s g r u ' / 's g r u l ' / 's g r u l i a '（三变体，dmode 决定）
+           'debug ' 'cho ' 'cipa ' 'dummy_susres ' 'lazy-global ' '& '
+命令拼接：若 flags&0x10 ⇒ 前缀 "gdb --args "
+         基串 "/usr/bin/im.elf " + 字母变体 + 上述标志 + "& "
+```
+**⚠️ bootin 必须用 `objdump -M force-thumb` 反汇编，否则全是假指令（真机线踩过）。**
+
+## 方法论（第 89 条）★★
+**"配置文件格式对了"不等于"配置会被读取"：
+本次 bootin 的 preload 路径由 `flags & 0x40` 门控 —— 位没开时**文件根本不会被 open**。
+⇒ 排查"配置不生效"时，先查**读取是否有前置开关**（门控位/环境/前置文件），
+   再查格式对不对。否则会反复修格式而问题始终不变。**
