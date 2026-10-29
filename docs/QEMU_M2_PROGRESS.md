@@ -7387,3 +7387,42 @@ M2LIB REG     qid=00904142  libObj.so off=0x419766
    看它在 M2 里为什么没执行（缺依赖/等应答/条件不满足）；
 2. 同时用 fork 采样对比 E10 与 M2 的线程等待集合（M2 现在线程都在 `osal_rcv_msg_tmo`、
    `__k_4u_wait_cb`、`poll_schedule_timeout`）。
+
+## 103. 2026-10-29 系统性 ABI 扫描：运行时已无致命符号错误，剩余停滞是**行为性**的
+
+对 `root/lib` 下全部 `.so` 做两轮符号解析扫描：
+
+```
+第一轮（含 libc/libstdc++ 符号）: 143 个库"有未解析符号" —— 大部分是 libc/libstdc++，噪声
+第二轮（只保留 App 级 C++ 符号，且排除 @VERSION 与 libstdc++/operator new/delete）:
+  6 个库存在真正未解析的 App 符号
+    libObj.so          35 例（多为 std::string 等，疑似 libstdc++ 未纳入比对）
+    libmprctrl.so      16 例（如 MprIf::DeleteMMgr(unsigned long)）
+    libInfraRemote.so   6 例
+    libmpr.so           2 例
+    appFw.so            2 例
+    AdjChkConfig.so     1 例
+```
+
+⚠️ 注意：**这是 `root/lib`（v9 原始混搭树）的结果**；运行时实际用的是
+`initramfs-ui/usr/lib`（已把 `libmpr.so` 换为 E10 版）。
+
+### 关键判据：运行时已经**没有** `symbol lookup error`
+
+修复后连续两次运行：
+
+```
+grep -c 'symbol lookup error'  = 0
+事件数 = 181（稳定）
+```
+
+**⇒ 至少"致命的"ABI 不匹配已消除；M2 停在 181 条注册是**行为性**停滞
+（应用正常运行、线程在 osal_rcv_msg_tmo / __k_4u_wait_cb / poll_schedule_timeout 上等待），
+而不是加载/符号失败。**
+
+### 下一轮
+
+1. 补齐扫描脚本的 libstdc++/libc 符号表（把版本号剥掉再比对），确认 libObj 那 35 例是否真缺；
+2. 若确认无缺 ⇒ 专注行为：对比 E10 在同一注册点之后的**调用差异**
+   （E10 接着做 `libObj off=0x6fd49a` 的注册，M2 没做）；
+3. 用 fork 采样同时抓 E10/M2 的线程等待集合，找出"M2 少等了哪条队列"。
