@@ -8621,3 +8621,34 @@ appFw 尝试 = 0
 桩内第一次被调用时用 `dlopen("libc.so.6")+dlvsym` 取原生地址（构造期完成），
 记录 `(handle, sym, result)` 后转发；若取不到则记 NULL 并记录调用者 lr。
 看"最后一条 dlsym 是什么符号、返回什么"。
+
+## 128. 2026-10-29 静态验证 IMDB 表项：入口字段**确实非空**（排除"表数据缺失"假设）
+
+在 `libIMDB.so` 里定位到指向各字符串的**指针表项**：
+
+```
+libBizInitializer.so      → 表项 @0x8934
+BIZ_Init                  → 指针 @0x8938   （紧跟其后 ⇒ 同一表项的 entry 字段）
+appFwBoot.so              → 表项 @0x898c
+Application_System_Init   → 指针 @0x8990   （紧跟 ⇒ entry 字段有效）
+AppConfig.so              → 指针 @0x89a4 / 0x89d0（arg 字段）
+```
+
+**⇒ 表项结构确实是 `{模块名, 入口符号名, 参数…}`，且入口字段**指向真实字符串**，
+不存在"entry 为空导致直接跳过"的情况。**
+
+### 因此 §127 的两种可能中，② 被排除
+
+* ✅ 表数据正确（entry 非空、参数正确）
+* ❌ 那就只剩 ①：**`dlsym(handle, entry)` 返回 NULL** 或 **调用环节根本没执行**
+
+### 下一轮（唯一手段）
+
+修好 dlsym 钩子 v2（只记录、不转发；构造期预取原生地址，避免递归），
+观察：
+```
+是否请求 "Application_System_Init"？返回 NULL 还是地址？
+是否请求 "BIZ_Init"？
+最后一条 dlsym 是什么？
+```
+这能一次区分"dlsym 失败"和"根本没调到 dlsym"。
