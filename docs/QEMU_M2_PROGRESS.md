@@ -7640,3 +7640,34 @@ a7c2-re 的软件渲染部分（可直接移植参考）：
 1. 本轮已开始：记录 im.elf 所有 `osal_rcv_msg_tmo` 等待队列（qid + 调用库），
    判断那 104 个未启动组件是否依赖硬件服务（grm/stream/media）；
 2. 若依赖硬件 ⇒ QEMU 停；若不依赖 ⇒ 修通初始化后立即套用 GRM 拦截方案出画。
+
+## 110. 2026-10-29 强制打开菜单（a7c2 MENU_OPEN_SET）路线调研
+
+### a7c2-re 的机制（已读源码）
+
+```
+1. 捕获 UI manager 对象（create_screen 返回后、UI 线程内）
+2. 校验 vtable：== appfw_base + 0x5b0c480，且 vtable[3] == appfw_base + 0x1e77dd8
+3. 调 vtable 槽 3：
+   open_screen(manager, &owner, &screen, &previous, 1, 0)
+   （注释写明：manager slot3 是"入队"，不同步渲染）
+4. MENU_OPEN_SET=owner,screen[,previous]，id 上限 0x4b7
+```
+
+⇒ 本质是**直接调用 UI manager 的 open-screen 虚函数**，绕过正常按键流程。
+
+### M2 的现状（本轮核对）
+
+* M2 用的是 **UXEngine（`ux::`）** 框架（libObj 导出 `ux::core` / `ux::gfxeng` / `ux::resmgr`），
+  **与 A7C2 的 `appFw` 结构不同** ⇒ 偏移/vtable 不能照搬；
+* libObj 里**没有**导出任何 "open screen / scene / page / transit" 类入口
+  （只有 `GraphicsEngine::setScreenRotate` 这类图形设置）；
+* 图形原语是 `GRM_gpermFillrect` / `GRM_gpermRectblit`（PLT 可拦截，§109 已确认）。
+
+### 下一轮（M2 版的强制开菜单）
+
+1. **先找出 M2 的 UI 管理对象在哪**：谁创建 `ux::gfxeng::GraphicsEngine`、
+   以及哪个二进制/库持有菜单 controller（用字符串 `LayoutMaster_Menu` / `.uxc` 反查加载者）；
+2. 找到后 dump 其 vtable，按 a7c2 的模式定位 "open screen" 槽（参数形如
+   `(manager, &owner, &screen, &prev, bool, bool)`）；
+3. 一旦能强制入队，配合 GRM 拦截（§109）即可产生画面。
