@@ -9419,3 +9419,83 @@ b95a: adds r5,#1; adds r4,#0x2c; b b95e            ; 下一项
    （大概率在某个"服务就绪"回调里，或 main 的不同阶段）；
 2. 若是某事件驱动 ⇒ 该事件在 QEMU 里未发生（硬件/服务依赖）⇒ QEMU 侧确认为边界；
 3. 若能直接调用 ⇒ 在探针里主动调 `load_stage(4)`（但需要正确的 r8/sl/r9 参数）。
+
+---
+
+# ★★★★ 2026-10-30 21:00 第八十八层：断言点静态定位撞墙 + 决定性动态方案
+
+## ① 静态找到的（精确位置）
+```
+appFw.so (.rodata):
+  0x2fda83b  "lib_assert.cpp"                              ← file 参数
+  0x2fda84a  "void lib::assert::notify_model_system_error()" ← function 参数
+  0x2ebd241  "false"                                       ← assertion 参数（全文唯一）
+```
+**这些字符串是一大张按源文件分组的函数名表（`lib_assert.cpp` → `lib_backup.cpp` …）。**
+
+## ② ⚠️ 但静态追不下去
+```
+这三个地址在整个 64MB 文件里**没有任何绝对引用**：
+  · .text 里无字面量（0 处）
+  · .rel.dyn 里无（appFw 有 5.36MB 重定位，670K 条）
+  · .data.rel.ro 里无
+⇒ **appFw 用「基址寄存器 + 偏移」寻址**，不是 movw/movt 也不是字面量池
+⇒ 在 64MB stripped 二进制里静态追这个，代价极高
+
+补充：appFw 已 stripped（无 .symtab），导入 __assert_fail@GLIBC_2.4，PLT @0x52a35c
+```
+
+## ③ ★★★★ 决定性方案：**hook `__assert_fail`**
+**glibc 签名：**
+```c
+void __assert_fail(const char *assertion, const char *file,
+                   unsigned int line, const char *function);
+```
+**AAPCS：r0=assertion, r1=file, r2=line, r3=function, **lr=调用点返回地址****
+
+**探针写法（关键：不要 dlsym 解析，直接定义同名符号覆盖）：**
+```c
+void __assert_fail(const char *a, const char *f, unsigned int l, const char *fn) {
+    log("ASSERT a=%s f=%s l=%u fn=%s lr=0x%08x\n",
+        a, f, l, fn, (unsigned)__builtin_return_address(0));
+    _exit(1);
+}
+```
+
+**⭐⭐ 一次运行即得：**
+```
+ASSERT a=false f=lib_assert.cpp l=30
+       fn=void lib::assert::notify_model_system_error()
+       lr=0x????????
+⇒ lr = appFw 里调用断言的那条指令
+⇒ objdump lr±0x400 ⇒ 就能看到比较逻辑
+```
+
+**为什么这个钩子比之前所有探针都好：**
+```
+✅ __assert_fail 只在出问题时调用 ⇒ 零干扰正常路径
+✅ 自己不调 __assert_fail ⇒ 不会像 dlsym 钩子那样递归自杀
+✅ 只调一次（断言后进程就死）⇒ 无日志上限问题
+✅ **直接给出 lr** ⇒ 静态定位变成"看一个地址周围的代码"
+```
+
+## ④ 模型码对比（附带结论）
+```
+ZV-E10    0x01030010   ← nflasha1 里是这个（平台字段 030010）
+ZV-1F     0x11020010   （平台字段 020010）
+ZV-1M2    0x21020010   （平台字段 020010）← 与 ZV-1F 相同
+ZV-E10M2  0x30030002   （平台字段 030002）
+⇒ **ZV-1F 与 ZV-1M2 共享平台字段，ZV-E10 不同** ⇒ 支持"平台字段不匹配"假设
+⚠️ 但库文件里的"模型码命中"此前全是 .text 假阳性，只有 nflasha1 那处是干净数据
+```
+
+## 方法论（第 94 条）★★★
+**当静态分析遇到"无处可追"时，换用**在故障点上装一个只触发一次的钩子**：
+```
+本次：64MB stripped 二进制、字符串地址无绝对引用 ⇒ 静态追不下去
+⇒ 但 `__assert_fail` 是**动态导入**的 ⇒ 可以被 preload 覆盖
+⇒ 它**只在故障时触发一次** ⇒ 零干扰、零日志上限、直接给出 lr
+⇒ 静态分析最贵的问题（"哪条指令调用了它"），动态一个钩子就答了
+```
+**⇒ 判据：找"故障路径上唯一的、动态导入的、只触发一次的函数"做钩子，
+   它的 lr 就是你要的地址。**
