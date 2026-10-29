@@ -7979,3 +7979,39 @@ initramfs: initramfs-ui，libmpr.so = **M2 版**(3,038,540 B)
 **外部 ptrace 注入**：从另一个进程 attach 到 im.elf，在目标线程里执行
 `dlopen(libmpr, RTLD_GLOBAL)` → `dlopen(appFw)` → `dlsym(Application_Start)` → 创建线程调用。
 优点：完全不改变目标进程的启动时序；缺点：guest 里需要 ptrace 工具（QEMU 的 zve10 机型支持，但需自带二进制）。
+
+## 119. 2026-10-29 ★★★ 解析 appFwBoot 的两个 dlopen 目标：`appFw.so` vs `AdjChkConfig.so`
+
+用 PIC 公式解析 `Application_System_Init` 里的字面量，得到确切字符串：
+
+```
+lit@0x1374 (0x41e) + pc 0x1300  →  0x171e = "appFw.so"          ← 分支 A（0x12fe）
+lit@0x137c (0x427) + pc 0x1312  →  0x1739 = "AdjChkConfig.so"   ← 分支 B（0x1310）
+lit@0x1380 (0x42f) + pc 0x131a  →  0x1749 = "_ZN13app_adjchk_ui9main_loopEv"
+lit@0x1384 (0x442) + pc 0x1326  →  0x1768 = "AppFw"（线程名）
+```
+
+控制流（0x12e4 起）：
+
+```
+if (r8 == 0)                     → dlopen("appFw.so")      ← 分支 A
+else if (strcmp(target, X) == 0)  → dlopen("appFw.so")      ← 分支 A
+else                              → dlopen("AdjChkConfig.so") ← 分支 B
+然后 dlsym(handle, "_ZN13app_adjchk_ui9main_loopEv")  …（B 分支的入口）
+并用 osal_create_waitable_thread 以 "AppFw" 为名启动
+```
+
+### 含义
+
+1. **正常（产品）路径应该走分支 A：dlopen `appFw.so`（真正的 UI 应用）**；
+2. 若 `target` 字符串不匹配，则走分支 B，加载 `AdjChkConfig.so` 并跑它的 `main_loop`
+   —— **那是一个"调整检查 UI"，不是主菜单**；
+3. **我们的 40 次 dlopen 记录里 A、B 两个目标都没有** ⇒
+   **`Application_System_Init` 这段代码根本没有执行到**（不是在分支选择上出错）。
+
+### ⇒ 下一步（非常明确）
+
+**问题从"appFw 加载失败"变成"`Application_System_Init` 为什么没执行"。**
+appFwBoot.so 已加载（在 maps 里），说明动态链接完成；它的初始化函数没跑，
+要么是调用者（im.elf）还没调用它，要么它被更早的等待挡住了。
+**⇒ 查 im.elf 的启动顺序里，谁负责调用 appFwBoot 的 `Application_System_Init`。**
