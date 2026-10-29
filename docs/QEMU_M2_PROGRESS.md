@@ -8015,3 +8015,34 @@ else                              → dlopen("AdjChkConfig.so") ← 分支 B
 appFwBoot.so 已加载（在 maps 里），说明动态链接完成；它的初始化函数没跑，
 要么是调用者（im.elf）还没调用它，要么它被更早的等待挡住了。
 **⇒ 查 im.elf 的启动顺序里，谁负责调用 appFwBoot 的 `Application_System_Init`。**
+
+## 120. 2026-10-29 定位 `Application_System_Init` 的调用方：**libIMDB.so**
+
+全树符号/字符串扫描：
+
+```
+定义 Application_System_Init : 仅 lib/appFwBoot.so
+引用（任何 lib/bin 的 UND 或字符串）: 无其他库直接引用
+含字符串 "Application_System_Init" 和 "appFwBoot" : 仅 lib/libIMDB.so
+```
+
+**⇒ 模块加载与启动由 `libIMDB.so`（IMDB 模块注册表）统一驱动：
+im.elf 通过 libIMDB 加载 `appFwBoot.so`，并由 libIMDB 按其模块表调用
+`Application_System_Init` 入口。**
+
+### 现状链条
+
+```
+✅ appFwBoot.so 已加载（在 im.elf 的 maps 里）
+❌ 其 Application_System_Init 从未执行（否则会 dlopen appFw.so 或 AdjChkConfig.so，
+   而 40 次 dlopen 记录里两者都没有）
+❌ 因而 appFw.so（UI 应用）永远不加载 ⇒ 黑屏
+```
+
+### 下一轮（唯一任务）
+
+**在 libIMDB.so 里定位"调用模块入口"的代码**：
+1. 找引用字符串 `Application_System_Init` 的代码点（PIC 取址）；
+2. 看它的前置条件（例如前一个模块是否报告 ready、某个队列是否有应答）；
+3. 若条件依赖某模块的应答，而该模块在 QEMU 里根本起不来 ⇒ 判定 QEMU 侧不可复现，
+   把结论交给真机（真机上该模块正常，链条会继续）。
