@@ -7848,3 +7848,41 @@ events = 10        ← 严重退化（基线 181）
    每一步都 out()，以确定卡在哪一步；
 3. **确认 `osal_create_waitable_thread` 的解析来源**（libosal_utm / libosal_uipc），
    避免在 dlsym 环节失败。
+
+## 115. 2026-10-29 信号触发方案未生效：M2SIG 零输出，events 退化到 124
+
+按 §114 计划实现：构造期注册 SIGUSR1 处理器（SA_SIGINFO）+
+fork 子进程 sleep(150) 后 `kill(parent, SIGUSR1)`。
+
+实测：
+
+```
+events = 124（基线 181）        ← 退化
+M2SIG 输出 = 0                  ← 处理器从未被调用
+最后事件仍是 libMWF off=0x1f200 的注册（与 181 那次类似位置，但总数少）
+```
+
+**⇒ 两个可能：**
+1. 子进程的 `kill` 没送达（父进程 pid 记录时机/子进程被 init 收养等）；
+2. `sigaction` 在这个静态链接风格的 im.elf 里未生效（app 自己可能改过信号处置）。
+
+### 当前配置的净效果
+
+* 通配探针（M2LIB/M2RCV/M2MAPS/SND/SD）+ 强制加载代码**同时存在**时，
+  基线从 181 掉到 124 ⇒ **按 §85 硬规则必须回滚强制加载代码**；
+* 但 §113 的结论仍然有效且重要：
+  **appFw.so 需要 libmpr 全局可见才能加载**（缺 `sidb::referer::s_count`）。
+
+### 交接状态（诚实）
+
+```
+✅ 已证实：appFw.so 可加载（dlopen libmpr(RTLD_GLOBAL) → dlopen appFw → dlsym Application_Start）
+✅ 已证实：Application_Start 是 UI 主循环（同步调用会阻塞）
+❌ 未解决：如何在不干扰主启动流程的前提下，把它在独立线程里拉起来
+```
+
+三条候选路径（留给下一轮）：
+1. 用 `osal_create_waitable_thread`（参数块布局已在 §113 记录），但触发时机要晚于 181 条注册且
+   不能让大 dlopen 落在关键路径上；
+2. 用 `ptrace` 从外部注入（完全不影响目标进程内部状态，但需要 guest 里有 ptrace 工具）；
+3. 接受 QEMU 侧到此，转真机验证（真机上 appFw 走正常路径，可能根本不需要这些）。

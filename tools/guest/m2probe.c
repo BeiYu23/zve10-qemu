@@ -13,6 +13,7 @@
 #include <link.h>
 #include <dirent.h>
 #include <sys/types.h>
+#include <signal.h>
 #include <pthread.h>
 #include <pthread.h>
 
@@ -219,34 +220,6 @@ void m2_h_res_sd(unsigned *r)
             out(b, n);
         }
     }
-    { static int fc; static int done;
-      if (!done && ++fc == 15) {
-          done = 1;
-          void *mprh = dlopen("/usr/lib/libmpr.so", RTLD_LAZY | RTLD_GLOBAL);
-          { char b[160]; int n = snprintf(b, sizeof b, "M2PRE libmpr=%p err=%s\n", mprh, mprh ? "none" : dlerror()); out(b, n); }
-          void *h = dlopen("/usr/lib/appFw.so", RTLD_LAZY | RTLD_GLOBAL);
-          char b[220];
-          const char *err = h ? 0 : dlerror();
-          int n = snprintf(b, sizeof b, "M2FORCE appFw_handle=%p err=%s\n", h, err ? err : "none");
-          out(b, n);
-          if (h) {
-              void *ap = dlsym(h, "Application_Start");
-              n = snprintf(b, sizeof b, "M2FORCE Application_Start=%p\n", ap);
-              out(b, n);
-              if (ap) {
-                  struct { const char *name; int prio; int stack; void *fn;
-                           unsigned short flags; short pad; int a; int b; int c; } tp;
-                  memset(&tp, 0, sizeof tp);
-                  tp.name = "AppFw"; tp.prio = 4; tp.stack = 0x20000;
-                  tp.fn = ap; tp.flags = 0x1cf; tp.a = 1;
-                  int (*cw)(void *) = (int (*)(void *))dlsym(RTLD_DEFAULT, "osal_create_waitable_thread");
-                  if (!cw) cw = (int (*)(void *))dlsym(dlopen("/usr/lib/libosal_utm.so", RTLD_LAZY), "osal_create_waitable_thread");
-                  int rc = cw ? cw(&tp) : -999;
-                  n = snprintf(b, sizeof b, "M2THREAD create rc=%d fn=%p\n", rc, ap);
-                  out(b, n);
-              }
-          }
-      } }
     if (!n_sd) { n_sd = dlsym(RTLD_NEXT, "osal_snd_sync_direct");
         if (!n_sd) { void *h = dlopen("/usr/lib/libosal_uipc.so", RTLD_LAZY); n_sd = h ? dlsym(h, "osal_snd_sync_direct") : 0; } }
 }
@@ -258,6 +231,48 @@ __attribute__((naked)) int osal_snd_sync_direct(void)
 }
 
 static volatile pid_t dump_pid;
+static void force_ui(void)
+{
+    char b[200];
+    out("M2SIG enter\n", 13);
+    void *mpr = dlopen("/usr/lib/libmpr.so", RTLD_LAZY | RTLD_GLOBAL);
+    int n = snprintf(b, sizeof b, "M2SIG mpr=%p err=%s\n", mpr, mpr ? "none" : (dlerror() ? dlerror() : "?"));
+    out(b, n);
+    void *h = dlopen("/usr/lib/appFw.so", RTLD_LAZY | RTLD_GLOBAL);
+    n = snprintf(b, sizeof b, "M2SIG appFw=%p err=%s\n", h, h ? "none" : (dlerror() ? dlerror() : "?"));
+    out(b, n);
+    if (!h) return;
+    void *ap = dlsym(h, "Application_Start");
+    n = snprintf(b, sizeof b, "M2SIG Application_Start=%p\n", ap);
+    out(b, n);
+    void *cw = dlsym(RTLD_DEFAULT, "osal_create_waitable_thread");
+    if (!cw) { void *u = dlopen("/usr/lib/libosal_utm.so", RTLD_LAZY | RTLD_GLOBAL); cw = u ? dlsym(u, "osal_create_waitable_thread") : 0; }
+    n = snprintf(b, sizeof b, "M2SIG create_waitable=%p\n", cw);
+    out(b, n);
+    if (!ap || !cw) return;
+    struct { const char *name; int prio; int stack; void *fn; unsigned short flags; short pad; int a; int b; int c; } tp;
+    memset(&tp, 0, sizeof tp);
+    tp.name = "AppFw"; tp.prio = 4; tp.stack = 0x20000; tp.fn = ap; tp.flags = 0x1cf; tp.a = 1;
+    int rc = ((int (*)(void *))cw)(&tp);
+    n = snprintf(b, sizeof b, "M2SIG create rc=%d\n", rc);
+    out(b, n);
+}
+static void sig_handler(int sig, siginfo_t *si, void *uc)
+{
+    (void)sig; (void)si; (void)uc;
+    static volatile int done;
+    if (done) return;
+    done = 1;
+    force_ui();
+}
+static void *sig_waiter(void *a)
+{
+    (void)a;
+    sleep(150);
+    kill(dump_pid, SIGUSR1);
+    return 0;
+}
+
 static void dump_maps(void)
 {
     char path[96], buf[4096];
@@ -357,7 +372,12 @@ __attribute__((constructor)) static void init(void)
     n = snprintf(b, sizeof b, "M2INIT pid=%d cmd=%.48s\n", (int)getpid(), cmd);
     out(b, n);
     if (strstr(cmd, "im.elf")) {
-        { dump_pid = getpid(); pid_t c = fork(); if (c == 0) { thread_dumper(0); _exit(0); } }
+        { dump_pid = getpid();
+          pid_t c = fork(); if (c == 0) { thread_dumper(0); _exit(0); }
+          struct sigaction sa; memset(&sa, 0, sizeof sa);
+          sa.sa_sigaction = sig_handler; sa.sa_flags = SA_SIGINFO;
+          sigaction(SIGUSR1, &sa, 0);
+          pid_t c2 = fork(); if (c2 == 0) { sig_waiter(0); _exit(0); } }
     }
 }
 
