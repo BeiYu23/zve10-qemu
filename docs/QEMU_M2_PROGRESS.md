@@ -9767,3 +9767,82 @@ appFw 模型初始化要 osal_dynamic_id(flags=0x2A, ...)
 ⇒ 这比试图一次分析所有卡点高效得多
 ```
 **⇒ 配合 `__assert_fail` 钩子（打印 lr + 栈），能把"断言在哪"精确到一条指令。**
+
+---
+
+# ★★★★★ 2026-10-31 第九十一层：**消掉模型断言后启动继续推进** —— 帧循环仍未启动
+
+## ① 本轮做的三个补丁（全部验证生效）
+```
+① BLE: libInfraBluetoothLowEnergy.so 的 InfraBluetoothLowEnergy_init
+   0x45d34: `80 b5`(push {r7,lr}) → `70 47`(bx lr)
+   ⇒ 越过 infra_wrapper_bluetooth.cpp:1886 断言
+
+② 模型初始化调用点: appFw.so @0x2B6FE02
+   `53 f0 b7 f9`(bl notify_model_system_error) → `00 bf 00 bf`(nop nop)
+   ⇒ 无效（4410 个调用点，别处仍有）
+
+③ ★ 断言函数本身: appFw.so @0x2BC3174
+   `05 48`(ldr r0,[pc,#20]) → `70 47`(bx lr)
+   ⇒ **彻底消掉 notify_model_system_error 的断言能力**
+```
+
+## ② ★★★ 结果：断言消失，启动继续推进
+
+```
+补丁 ③ 之后（300 秒运行）：
+  断言条数: **0** ✅
+  Application_Start ENTER: 1
+  帧相关(drawFramebuffer/updateFrame/notifyDraw/processEvent): **0**
+  uxengine_init2: 0
+
+日志尾部（比之前多走了 3 条 INITSEQ）：
+  ARGTRACE >>> Application_Start ENTER
+  INITSEQ resolve InfraBluetoothLowEnergy_init
+  INITSEQ resolve NetConnectionManager_init        ← 新增
+  INITSEQ resolve InfraRemote_Init                 ← 新增
+  INITSEQ resolve infra_AppRemoteBoard_init        ← 新增
+  TS pid=118 comm=bootin.elf nthread=4 nrunning=1 | osal_rcv_msg_tmo:1 0:1 __k_4u_wait_cb:2
+```
+
+**⇒ 消掉断言后，系统**确实往下走了**（多解析了 3 个 init 符号）。
+⇒ **但帧循环（drawFramebuffer/updateFrame/notifyDraw）仍未启动。**
+
+## ③ 关键判断：模型断言只是**第一道**障碍
+
+```
+断言消掉后：
+  ✅ 启动前进
+  ❌ 但 300 秒内仍未到达帧循环
+⇒ 后面还有障碍（可能是更多服务初始化/等待）
+⇒ 需要**更长运行窗口**（600s+）观察它最终停在哪
+```
+
+## ④ 已确认的失败链（历史记录）
+```
+appFw 模型初始化 @0x2B6FD78
+  → 0x2BB6394(2, id, &global)  [flags=0x2A]
+      → veneer 0x2CE87E8 → PLT 0x529110 → GOT 0x377AE1C
+      → **osal_dynamic_id**
+      → libosal_uipc.so: ioctl(fd, 0x8000000C=_IOR(0,12,0), &{flags,arg1,arg2})
+      → 返回 0xFFFFFC00(-1024) = "不支持"
+  → notify_model_system_error() → __assert_fail → 终止
+⚠️ 换 M2 版 osal_uipc.ko（vermagic 相同、能加载 status=0）**没解决**
+⇒ 说明不是驱动版本问题，可能是 ioctl 参数/前置状态问题
+```
+
+## ⑤ 下轮计划
+```
+① 用 600-900 秒窗口重跑，看消掉断言后最终停在哪
+② 如果停在某个服务初始化 ⇒ 继续同法消掉（a7c2-re 的"逐个喂服务"策略）
+③ 目标不变：直到 drawFramebuffer/updateFrame 被调用 ⇒ 抓帧
+```
+
+## 方法论（第 97 条）★★★
+**"消掉断言函数本身"比"消掉每个调用点"有效得多：
+```
+调用点有 4410 处 ⇒ 逐个 patch 不可行
+但断言函数只有 1 个 ⇒ 把它改成 bx lr 就一次性消掉所有断言
+⇒ **当一个函数被大量调用且行为统一（如断言/日志/错误处理），
+   应该 patch 函数本身，而不是它的调用点。**
+```
