@@ -9198,3 +9198,49 @@ dlopen 前 15 个 -> 表下标：0,1,2,3,4,5,6,7,8,9,10,11,12,13,14
 2. 若文件不存在（很可能，因为之前的"缺失模块"里就有它）⇒ **`dlopen` 失败 ⇒ 循环在此中断**
    ⇒ 断点确定 = `[108] libAdjustUIProxy.so` 缺失导致；
 3. 那就回到"补模块"或"跳过该条目"两条路（后者可以改我们的 preload 让 dlopen 返回假句柄）。
+
+## 140. 2026-10-29 ★★★★ 表内缺失统计：191 项里 **116 项在树里不存在**（含图形/UI 库）
+
+```
+表项 191，树里存在 74，缺失 116
+其中"缺失但表里有入口符号（可造桩）" = 114 个
+```
+
+**缺失的早期关键条目（前 20）：**
+```
+[  3] libInfraInterchipDatatrans.so -> interchip_transfer_user_init
+[  4] libNVM.so                     -> NVM_Initialize
+[  6] libSaveLoadSettings.so        -> infra_saveLoadSettings_init
+[ 13] libi2cuipc.so                 -> i2c_user_init
+[ 15] libInfraInput.so              -> infra_input_init     ← 输入
+[ 23] libgrm.so                     -> grm_init            ← ★ 图形渲染管理
+[ 24] libgpe.so                     -> GpeInit             ← ★ GPE 图形引擎
+[ 25] libDDS.so                     -> DDSUserInit         ← ★ DDS
+[ 26] libuxengine.so                -> uxengine_init       ← ★ UXEngine（新菜单 UI 框架）
+[ 27] libInfraIndctr.so             -> infra_indctr_init
+[ 28] libInfraTp.so                 -> infra_tp_init
+[ 30] libInfraHotshoe.so            -> infra_hotshoe_init
+[ 31] libInfraSircs.so              -> infra_sircs_init
+```
+
+### 两个确定的结论
+
+1. **缺失模块不会中断加载循环**：`[3] [4] [6] [13] [15] [23]~[26]` 等大批缺失，
+   但运行时的 dlopen 尝试一直持续到 `[107]` ⇒ **`dlopen` 失败后循环继续**。
+   ⇒ 因此**"循环停在 [108]"不是缺模块造成的**。
+2. **真正的停止机制另有所在**：`[108]+` 全部未被尝试，且尾部尝试顺序还出现非单调
+   （88→107→91→92→93→94）⇒ 说明**加载分阶段/有条件**，
+   第二阶段（含 `appFwBoot[119]`、`appFw.so`）被某个条件挡住。
+
+### ⇒ 目标已部分达成
+
+* ✅ **断点边界确定**：最后一个被尝试的是 `[107] libEMG.so (emg_init)`；
+  其后 `[108] libAdjustUIProxy.so (AdjustUIProxy_init)` 起全部未尝试。
+* ⚠️ 但**"为什么停"仍未确定**，且不是"文件缺失"这种简单原因。
+
+### 下一轮
+
+1. **反汇编 `emg_init`**（最后一个被调用的入口）——看它是否阻塞/是否设置某个"阶段完成"标志；
+2. 或者：**给 `[108] libAdjustUIProxy.so` 造桩**，看循环是否因此继续到 `[109]+`
+   ⇒ 若继续 ⇒ 说明 108 的失败确实阻断了后续（与结论 1 矛盾，需复核）；
+   ⇒ 若不继续 ⇒ 停止机制与 108 无关，需找阶段条件。
