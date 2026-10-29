@@ -7809,3 +7809,42 @@ M2CALL before   （之后没有 after，且注册事件掉到 10 ⇒ 调用线�
 按上述布局构造参数块，用 `osal_create_waitable_thread` 在**独立线程**里启动
 `Application_Start`（而不是同步调用），观察是否出现 UI 绘制与帧变化。
 ⚠️ 若线程创建失败，退回"用固件自己的 appFwBoot 流程"——但它卡在更早的等待。
+
+## 114. 2026-10-29 线程化启动 attempt：appFw 加载成功但线程创建未执行，boot 退化到 events=10
+
+按固件参数块布局（从 appFwBoot 反汇编解出）在探针里构造：
+
+```
+struct { const char *name;  // +0  "AppFw"
+         int prio;          // +4  4
+         int stack;         // +8  （固件从库数据取值，未知；试 0x20000）
+         void *fn;          // +12 Application_Start
+         unsigned short flags; // +16 0x1cf
+         short pad; int a;  // +20 1
+         int b; int c; }    // +28 0
+→ osal_create_waitable_thread(&tp)
+```
+
+实测：
+
+```
+M2PRE   libmpr=0x31518 err=none
+M2FORCE appFw_handle=0x66688 err=none
+M2FORCE Application_Start=0xc4b9581
+（没有 M2THREAD 输出）
+events = 10        ← 严重退化（基线 181）
+最后事件停在第 ~10 条（早期注册）
+```
+
+**⇒ 在 `snd_sync_direct` 第 15 次回调处做 64 MB 的 dlopen 太早，直接把启动掐断；
+线程创建代码也未被记录到。**
+
+### 下一轮（明确的三点）
+
+1. **把触发点推后**：不在第 15 次 sync 调用触发，改为"等启动完全稳定后再做"
+   —— 用一个 fork 子进程 sleep(120) 然后 `kill(getppid(), SIGUSR1)` 触发父进程信号处理器
+   （信号处理器不需要线程，§89 已验证可行）；
+2. **分步日志**：M2PRE → appFw 句柄 → Application_Start 指针 → cw 指针 → rc，
+   每一步都 out()，以确定卡在哪一步；
+3. **确认 `osal_create_waitable_thread` 的解析来源**（libosal_utm / libosal_uipc），
+   避免在 dlsym 环节失败。

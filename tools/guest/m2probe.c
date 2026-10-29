@@ -234,9 +234,16 @@ void m2_h_res_sd(unsigned *r)
               n = snprintf(b, sizeof b, "M2FORCE Application_Start=%p\n", ap);
               out(b, n);
               if (ap) {
-                  out("M2CALL before\n", 15);
-                  ((void (*)(void))ap)();
-                  out("M2CALL after\n", 14);
+                  struct { const char *name; int prio; int stack; void *fn;
+                           unsigned short flags; short pad; int a; int b; int c; } tp;
+                  memset(&tp, 0, sizeof tp);
+                  tp.name = "AppFw"; tp.prio = 4; tp.stack = 0x20000;
+                  tp.fn = ap; tp.flags = 0x1cf; tp.a = 1;
+                  int (*cw)(void *) = (int (*)(void *))dlsym(RTLD_DEFAULT, "osal_create_waitable_thread");
+                  if (!cw) cw = (int (*)(void *))dlsym(dlopen("/usr/lib/libosal_utm.so", RTLD_LAZY), "osal_create_waitable_thread");
+                  int rc = cw ? cw(&tp) : -999;
+                  n = snprintf(b, sizeof b, "M2THREAD create rc=%d fn=%p\n", rc, ap);
+                  out(b, n);
               }
           }
       } }
