@@ -8236,3 +8236,95 @@ Main: uxengine_init2 → initializeArena → setCwd("/usr/share/app/")
    （决定走 appFw 还是 AdjChkConfig 分支）；
 3. 修复点：**让 libmpr.so 在 appFwBoot 之前进入全局作用域**
    （我们已验证：先 dlopen libmpr(RTLD_GLOBAL) 再 dlopen appFw 就能成功）。
+
+---
+
+# ★★★★★ 2026-10-30 18:00 第八十二层：libmpr **确实在运行**；缺口可能是"作用域"而非"未加载"
+
+## ① ⚠️ 关键反驳：我早前采样数据证明 libmpr 在运行
+```
+out/s3b   : libmpr 样本=6 / 总374   （appFw=357, libObj=11）
+out/btsamp: libmpr 样本=5 / 总10    （50%！）
+out/s3    : 0 / 58
+抽样: S3 pid=124 mod=libmpr.so base=0x20a38000 off=0xaede0
+⇒ pid=124 = im.elf；samp3 用 dladdr(pc) 反查模块名 ⇒ 模块归属可靠
+⇒ **libmpr 确实被加载并执行代码**
+```
+**⚠️ 因此"正常启动路径从不加载 libmpr"这个结论**可能是日志上限截断造成的假象**
+（QEMU 线自己发现探针 `#define NQ5 40` 正好打满）。**
+
+## ② ★★★ 新假设：加载了但**不在全局作用域**（或**时序在后**）
+**`sidb::referer::s_count` 是**数据符号**（size=4），数据符号在 RTLD_LAZY 下也必须立即解析。
+⇒ appFw 的 dlopen 能否解析它，取决于 libmpr 符号是否在**全局作用域**：**
+```
+dlopen("libmpr.so", RTLD_LAZY)              → 局部作用域 ⇒ appFw 解析不到
+dlopen("libmpr.so", RTLD_LAZY|RTLD_GLOBAL)  → 全局       ⇒ appFw 能解析 ✓
+LD_PRELOAD=/usr/lib/libmpr.so               → 全局       ⇒ 同上 ✓
+DT_NEEDED libmpr.so（在 appFw 上）          → 依赖加载   ⇒ 符号可见 ✓
+```
+**⇒ 两个待区分的可能：**
+```
+假设A：libmpr 被以 RTLD_LOCAL 加载 ⇒ 符号不全局
+假设B：libmpr 在 appFw 的 dlopen **之后**才加载 ⇒ 时序问题
+```
+**两者修法相同（提前/全局加载），但验证方法不同。**
+
+## ③ `sidb::referer::s_count` 唯一定义处
+```
+搜索 M2 + E10 全部 .so：
+  ✅ 只有 libmpr.so 定义 _ZN4sidb7referer7s_countE (size=4)
+⇒ appFw.so 的依赖是**真实存在**的，只是没被声明
+```
+
+## ④ `libmprdummy.so` 线索：**M2 没有**
+```
+E10: ✅ 存在 (5,748 B, md5 43eacdb0)
+M2 : ❌ 不存在
+v9b: ❌ 不存在
+⚠️ 但 M2 的 libIMDB **表里列了 libmprdummy.so** ⇒ 又一个**幽灵注册**
+   （与 libgpe.so 同类现象：注册表里有，文件不存在，原厂如此）
+⇒ **"配置错位"假设减弱**：M2 原厂也没有 dummy，说明它不该出现
+```
+
+## ⑤ 工具就绪：patchelf 0.18.0
+```
+apt-get install patchelf ✅ 成功
+appFw.so    : .dynamic 43 槽 / 39 项 ⇒ **4 空槽**
+appFwBoot.so: .dynamic 35 槽 / 31 项 ⇒ **4 空槽**
+⇒ 两个都可安全 --add-needed（无需移位）
+⚠️ 但 patchelf 会重写 .dynstr ⇒ 文件布局变化 ⇒ **必须先在 QEMU 验证改后的 .so 能加载**
+```
+
+## ⑥ 方案排序（基于"作用域/时序"假设）
+```
+① LD_PRELOAD=/usr/lib/libmpr.so        ← 最简、零 ELF 修改、真机可用 env.txt、完全可逆
+② patchelf --add-needed libmpr.so appFw.so   ← 正道（依赖本就存在，只是未声明）
+③ patchelf --add-needed libmpr.so appFwBoot.so ← 可行但作用域取决于 IMDB 的 dlopen flags
+④ 运行时注入                            ← 已证干扰时序，排除
+```
+
+## ⑦ libIMDB 表里的关键排布
+```
+libInfraMediaMount.so → InfraMediaMount_Init
+libInfraMediaDetect.so → InfraMediaDetect_Init/_Suspend/_Resume
+libmprdummy.so                              ← 幽灵（M2 无此文件）
+libdiablo.so / libclema.so
+**libmpr.so**                               ← ★ **它后面没有 init 符号**（不像 libmprctrl）
+libmprctrl.so → InfraMprCtrl_Init
+libMprSeq.so → MprSequencerIf_Init
+⇒ libmpr 可能**不是作为服务加载**，而是作为某个服务的**依赖**
+```
+
+## 验证顺序（都很便宜）
+```
+1) 试 LD_PRELOAD=libmpr（真机用 env.txt / QEMU 用 preload）验证"作用域假设"
+2) 若成立且要最小化 → patchelf --add-needed libmpr.so appFw.so
+3) 若 1) 无效 ⇒ 转向"时序假设"（libmpr 加载在 appFw 之后）
+```
+
+## 方法论（第 88 条）★★
+**"日志里没有 X"再次不等于"X 没发生"：
+QEMU 线的 dlopen 记录有 `NQ5=40` 上限，正好打满 ⇒ appFw/libmpr 的加载尝试被吞。
+⇒ **凡有数量上限的日志/计数器，必须检查"是否打满"**（打满 = 后面的全部丢失）。
+⇒ **判据：在日志里记录"已丢弃 N 条"或"limit reached"标记，
+   让"截断"本身成为可见信号。**
