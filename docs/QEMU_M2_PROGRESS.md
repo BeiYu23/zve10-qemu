@@ -7284,3 +7284,56 @@ M2T tid=1 st=S wchan=do_wait        ← 只列出 1 个线程
 
 ⚠️ 若确认为"im.elf 退出"，则整个排查方向要改：从"谁该 signal"变成
 **"im.elf 为什么退出/崩溃"**（可再查 exit code、core、以及退出前最后一条注册）。
+
+## 101. 2026-10-29 ★★★★ 两个致命崩溃全部定位并修复：事件数 116 → 181，im.elf 不再退出
+
+### 崩溃 1：探针库未定义符号（我们自己造成的）
+
+```
+/usr/bin/im.elf: symbol lookup error: /usr/lib/libm2probe.so: undefined symbol: read_singleton
+```
+
+早期一次失败的撤销把 `read_singleton` 的**定义**删了、**调用**留下 ⇒ 动态链接在首次解析时失败
+⇒ **im.elf 直接退出**。后续所有"冻结在 116~134 条注册"的观测**很大程度是这个 bug 造成的**。
+
+已修复（删除残留调用；同时补齐 `libobj_base`/`gi_fire`）。
+
+### 崩溃 2：libmprctrl 与 libmpr 的 ABI 不匹配（栈本身的问题）
+
+```
+/usr/bin/im.elf: symbol lookup error: /usr/lib/libmprctrl.so:
+undefined symbol: _ZN5MprIf34SetCreateParam_SupportContentTypesm
+```
+
+精确比对：
+
+```
+libmprctrl.so 需要   …SupportContentTypes**m** (unsigned long)
+E10 libmpr.so 提供   …SupportContentTypes**m**   ✅
+M2  libmpr.so 提供   …SupportContentTypes**j**   ✗
+且 libmprctrl.so 在两棵树里 md5 完全相同（1350def23c）
+⇒ v9 树里是「E10 的 libmprctrl + M2 的 libmpr」混搭
+```
+
+处置：把 **E10 的 libmpr.so**（13,021,036 B）放进 v9 树 ⇒ 崩溃消失。
+
+### 结果
+
+```
+events        : 116~143  →  **181**
+symbol errors : 1        →  **0**
+帧            : distinct=1（仍黑，未亮屏）
+im.elf 线程（fork 子进程零扰动采样，t=50s）：
+  tid=139 osal_rcv_msg_tmo      ← 主线程在等消息
+  tid=141/142/143 __k_4u_wait_cb
+  tid=144 poll_schedule_timeout
+  tid=145 osal_rcv_msg_tmo
+```
+
+**⇒ im.elf 不再退出，而是**正常运行并在等消息**——这才是"应用起来了但还没出画"的形态。**
+
+### 下一轮
+
+1. 连跑 5~10 分钟确认 im.elf 稳定、事件是否继续增长；
+2. 对比 E10 的线程等待集合，看 M2 少等了/多等了哪条队列；
+3. 检查渲染路径是否被调用（不拦截渲染函数，只统计"是否有人 blit 到帧缓冲"）。
