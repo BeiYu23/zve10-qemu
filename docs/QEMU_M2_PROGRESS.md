@@ -6990,3 +6990,48 @@ M2 冻结在这里 ⇒ **标志位 `[对象+0x98]` 从未被置位，或 signal 
    这不会像拦截那样改变时序，且只做一次）；
 2. **接受现状收口**：M2 在 QEMU 内的阻塞点已定位到"等一个不会来的标志"，
    把结论交给真机验证（真机上该标志可能由硬件/服务置位）。
+
+## 92. 2026-10-29 ★★★ 找到并打通相机日期/时钟服务：`osal_snd_sync_direct(0x90013d, …)` 返回 0
+
+### 线索来源：a7c2-re 的启动前置条件
+
+`report/2026-10-17-qemu-native-camera/runtime/analysis/seed-date-clock.c` + `qemu-menu-probe.py`：
+
+```
+if insmod /usr/kmod/udate.ko && /simulation/seed-date-clock; then touch /tmp/date-clock.ready; fi
+...
+prefix = 'test -f /tmp/date-clock.ready && ' + prefix     # 后续启动以此为前提
+```
+
+协议（a7c2 实测）：
+```
+struct { unsigned short w[12]; }        // 24 字节
+w[8]  = operation   (2=读当前, 3=读初始/默认, 0=写)
+w[9]  = 0x7fff      (handler 必须回填 status)
+osal_snd_sync_direct(0x90013d, &m)
+```
+
+### 我方实测（M2 v9 树，init 在 bootin 之前跑 seeder）
+
+```
+SEED qid=90013d ret=0     st=0000      ← ★ 服务存在且应答成功
+SEED qid=90013e ret=-1020 st=7fff
+SEED qid=900141 ret=-1020 st=7fff
+SEED qid=9001b9 ret=-1020 st=7fff
+SEED qid=900140 ret=-1020 st=7fff
+SEED qid=900142 ret=-1020 st=7fff
+```
+
+**⇒ `0x90013d` 就是本机型的日期/时钟服务队列，且当前是"活动"的（ret=0）；**
+其余候选 qid 返回 -1020（无该服务）。
+
+### 尚未完成
+
+本轮只做了 **op=2（读）**，没有写（a7c2 的完整流程是：读当前 → 无效则读默认(op3) → 写(op0) → 回读校验）。
+所以**还没验证"喂时钟能否让 M2 越过冻结"**。
+
+### 下一轮
+
+1. 按 a7c2 `seed_date_clock()` 的完整流程实现：读 op2 → 判有效期 → 读 op3 取默认 → 写 op0 → 回读校验；
+2. 校验通过后 `touch /tmp/date-clock.ready`（或直接继续），再启动 bootin；
+3. 观察注册事件是否突破 121~134、帧是否 `distinct>3`。
