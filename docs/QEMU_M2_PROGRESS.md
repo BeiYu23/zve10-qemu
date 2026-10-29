@@ -7949,3 +7949,33 @@ initramfs: initramfs-ui，libmpr.so = **M2 版**(3,038,540 B)
 1. 复核 112 vs 124 是否为噪声（连跑两次取稳定值）；
 2. 用低干扰方式拉起 appFw（§115 三条路径）；
 3. 若 UI 起来后仍黑屏 ⇒ 套用 §109 的 GRM 拦截（`GRM_gpermFillrect`/`gpermRectblit`，已确认 PLT 可拦）。
+
+## 118. 2026-10-29 基线复核：124 是稳定值，112 属噪声
+
+同一配置（M2 版 libmpr + M2SHIM 垫片）连跑两次：
+
+```
+第 1 次: events = 112
+第 2 次: events = 124（M2SHIM typesM called = 1）
+帧两次均 distinct = 1
+```
+
+**⇒ 基线稳定为 `events = 124`，112 是启动时序抖动，不是回归。垫片保留。**
+
+### 当前已确认的完整事实链（供接手者快速理解）
+
+```
+1. 应用栈能起来：im.elf 存活、无线程崩溃、无 symbol lookup error
+2. 但 UI 应用 appFw.so 从未被加载（40 个 dlopen 目标里没有它）
+3. 原因：appFw.so 依赖 sidb::referer::s_count，该符号只在 M2 版 libmpr.so 里
+4. 而正常启动路径不加载 libmpr ⇒ appFw 必然加载失败
+5. 我们手动 dlopen(libmpr, RTLD_GLOBAL) → dlopen(appFw) 成功、拿到 Application_Start ✅
+6. Application_Start 是 UI 主循环（同步调用会阻塞）
+7. 拉起它的两次尝试（早期回调触发 / 信号触发）都因干扰主启动流程而失败
+```
+
+### 下一步唯一未试的路径
+
+**外部 ptrace 注入**：从另一个进程 attach 到 im.elf，在目标线程里执行
+`dlopen(libmpr, RTLD_GLOBAL)` → `dlopen(appFw)` → `dlsym(Application_Start)` → 创建线程调用。
+优点：完全不改变目标进程的启动时序；缺点：guest 里需要 ptrace 工具（QEMU 的 zve10 机型支持，但需自带二进制）。
