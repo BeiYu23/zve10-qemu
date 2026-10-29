@@ -8652,3 +8652,33 @@ AppConfig.so              → 指针 @0x89a4 / 0x89d0（arg 字段）
 最后一条 dlsym 是什么？
 ```
 这能一次区分"dlsym 失败"和"根本没调到 dlsym"。
+
+## 129. 2026-10-29 下一实验设计：用 **`dlclose` 钩子**代替 `dlsym` 钩子（避开递归雷区）
+
+### 为什么放弃 dlsym 钩子
+
+`dlsym` 桩内必须解析"原生 dlsym"，所有常规手段都会**再进我们的桩**：
+`dlsym(RTLD_NEXT,…)`（直接递归）、`dlopen("libdl.so.2")+dlsym`（dlopen 也不必经过我们的桩）、
+`dlvsym(RTLD_DEFAULT,…)`（会搜到我们自己的桩）。
+⇒ 上一版因此 `events=0`（§124）。
+
+### 替代方案：钩 `dlclose`
+
+im.elf 的 `load_module()` 在 **dlsym 失败**路径上会调用 `dlclose(handle)`：
+
+```asm
+dlsym(handle, entry) → fn
+if (dlerror()) { dlclose(handle); return -1; }     ← ★ 只有失败才走这里
+if (fn) fn(arg)
+```
+
+**⇒ 只要统计 `dlclose` 调用次数与句柄**：
+* **有 dlclose 调用** ⇒ 证明"dlsym 失败并回滚"确实发生（可能是符号名对不上/作用域问题）；
+* **没有 dlclose 调用** ⇒ 说明根本没走到 dlsym 之后，或者 dlsym 全部成功但 `fn(arg)` 没执行
+  （⇒ 需要另找观测点）。
+
+`dlclose` 桩无递归风险（我们自己的库不调用 dlclose），实现与现有 `dlopen` 桩同构。
+
+### 实施注意（§85 硬规则）
+
+改完必须先验 `events ≈ 124`，再谈新数据；若退化立即回滚。
