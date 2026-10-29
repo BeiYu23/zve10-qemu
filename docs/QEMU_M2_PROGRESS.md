@@ -8072,3 +8072,129 @@ im.elf → libIMDB（模块描述表）→ 逐个 dlopen 模块(40 个) → 按�
 **⇒ 最后一个未知：libIMDB 调用入口的前置条件（很可能依赖某个模块 ready/应答）。**
 若该条件依赖 QEMU 缺失的硬件服务 ⇒ QEMU 路线在此自然终止；
 真机上只要那些服务正常，链条就会走到 `dlopen("appFw.so")`。
+
+---
+
+# ★★★★★★ 2026-10-30 17:00 第八十一层：`appFwBoot` 完整反汇编 —— **根因闭合：dlopen 失败被静默吞掉**
+
+## ① `appFwBoot.so`（8,312 B）完全拆解
+
+### `Application_System_Init`（284 B）
+```asm
+12e4: cmp  r8, #0                ; r8 = 传入的字符串参数
+12e8: beq  12f6                  ; arg==NULL → 分支A
+12ea: strcmp(arg, "AppConfig.so")
+12f4: cbnz r0, 1308              ; 不等 → 分支B
+      ; ── 分支 A（正常 UI）──
+12f6: dlopen("appFw.so", 0x101)          ; ★ RTLD_LAZY|RTLD_GLOBAL
+1302: dlsym(handle, "Application_Start")  ; ★
+1306: b 1318
+      ; ── 分支 B（调整检查 UI）──
+1308: dlopen("AdjChkConfig.so", 0x101)
+1314: dlsym(handle, "_ZN13app_adjchk_ui9main_loopEv")
+      ; ── 汇合 ──
+1318: dlsym(...)
+133e: str  r0, [r7, #44]         ; fn 存进线程参数
+1344: osal_create_waitable_thread(Main, ...)
+134a: osal_set_cpu(thread, 15)
+```
+
+### 解出的字符串常量（rodata）
+```
+0x1711  AppConfig.so          ← strcmp 目标
+0x171e  appFw.so              ← ★ dlopen A
+0x1727  Application_Start     ← ★ dlsym A
+0x1739  AdjChkConfig.so       ← ★ dlopen B
+0x1749  _ZN13app_adjchk_ui9main_loopEv   ← dlsym B
+0x1768  AppFw
+0x176e  /usr/share/app/
+0x17b9  global.xdb
+```
+
+### `Main`（120 B）
+```asm
+14de: uxengine_init2()                       ; ★ 引擎初始化（走到 DMP_2D_Initialize）
+14e2: initializeArena()
+14ea: sys_setCurrentDirectory("/usr/share/app/")
+150c-1520: GraphicsEngine 字体/布局属性
+152a: setDatabase("global.xdb")
+1534: sys_setFontNameWithNamespace(51)
+1538: cbz  r4, 153c        ; ★★★ **if (fn == NULL) 跳过**
+153a: blx  r4              ; fn() —— 这里才进 Application_Start
+```
+
+## ② ★★★ 根因：**dlopen 失败且返回值未检查**
+```
+dlopen("appFw.so") 返回值**完全没有检查**
+⇒ dlopen 失败 ⇒ handle=NULL
+⇒ dlsym(NULL,"Application_Start") ⇒ fn=NULL
+⇒ Main 里 `cbz r4` ⇒ **跳过 fn() 调用**
+⇒ uxengine_init2 跑完、DMP_2D_Initialize 返回 0，然后什么都没发生
+```
+
+**⭐⭐⭐⭐⭐ 与真机 `/log/im_manual.log` **只有两行**完全吻合：**
+```
+!!! GLES Vecgen disabled.
+===== DMP_2D_Initialize : 0
+```
+**⇒ 不是"崩在 appFw"，而是**根本没调用到 AppStart**。**
+
+## ③ 为什么 dlopen 会失败
+**appFw.so 缺 `_ZN4sidb7referer7s_countE`（数据符号），
+它**只在 M2 版 libmpr.so 里定义**；而正常启动路径里在 appFwBoot 之前**没有人加载 libmpr**。**
+⇒ **手动先 `dlopen("libmpr.so", RTLD_GLOBAL)` 再 `dlopen("appFw.so")` 即可成功**（QEMU 线已实测）。
+
+**⇒ 真正缺口 = "谁应该在 appFwBoot 之前加载 libmpr"。**
+**⚠️ libIMDB 里提到 libmpr 3 次 ⇒ 大概率是 IMDB 的某服务负责加载它
+⇒ 这与"服务初始化没跑到的那一步（0x30/0x31 族 / 19 条注册）"是同一件事。**
+
+## ④ 新假设（待验证）：`im.elf` 传入的 arg 决定加载哪个 UI
+```
+arg == NULL 或 == "AppConfig.so"  ⇒ dlopen("appFw.so")        → Application_Start（正常）
+否则                              ⇒ dlopen("AdjChkConfig.so") → app_adjchk_ui::main_loop（调整模式）
+⇒ **若 im.elf 传的 arg 不是 "AppConfig.so"，就会走分支B ⇒ 黑屏！**
+⇒ 立即查 argtrace 里 Application_System_Init 的参数。
+```
+
+## ⑤ 静态分析的另外两条结论
+### appFw.so 画像
+```
+64,273,528 B / .text 41.8 MB / .bss 76 MB
+仅 3 个导出（Application_Start 72 B + 两个零长）
+754 导入 / 15 DT_NEEDED:
+  libNetCommon / libGOConnectionManager / **AdjChkConfig** / libopus /
+  libSoundTouch / libqrencode / libInfraSKD + 标准库
+⚠️ **不直接 DT_NEEDED libmpr** ⇒ mpr 符号靠运行时已加载的全局符号解析
+导入 56 个 mpr* 符号：**54 个真实实现 / 1 个桩（PublishPublicKey）/ 1 个在 dataflowInfraFramework**
+⇒ **appFw 用的 mpr 接口是完整的**（此前担心的"74% 是桩"不影响它）
+```
+### libmpr.so 两代完全不同
+```
+M2 : 3,038,540 B / 6,092 导出 / 642 个 MprIf 中 **480 个(74%)是 ≤8B 空桩**
+    内容：XAVC 元数据 / sidb record / execqueue / LibMediaProfileIf
+E10: 13,021,036 B / 3,234 导出
+    内容：MXF 格式 / clip 管理 / 配音(dubbing) / still player / 录制
+⇒ **仅 193 个符号相同 ⇒ 是两套架构，不是版本差异**
+⇒ 但 appFw 实际调用的 54 个 mpr:: 函数在 M2 版里**都是真实实现**
+```
+
+## ⑥ ABI 混搭（QEMU 线确诊）
+```
+libmprctrl.so 需要  MprIf::SetCreateParam_SupportContentTypes(**unsigned long**)  ← 'm'
+M2  libmpr.so 提供  …SupportContentTypes(**unsigned int**)                        ← 'j'
+E10 libmpr.so 提供  …SupportContentTypes(**unsigned long**)                        ← 'm'
+libmprctrl.so 两棵树 md5 完全相同
+⇒ **v9b = 「E10 的 libmprctrl + M2 的 libmpr」混搭**
+⚠️ 但换 E10 版 libmpr 是**死路**：appFw 反而加载不了（缺 sidb::referer::s_count）
+⇒ **判断配置对错的标准应是"UI 应用能否加载"，不是"符号是否全部解析"**
+```
+
+## 方法论（第 87 条）★★★
+**"没看到 X"的三种可能必须分清：**
+```
+① 从没尝试 X
+② 尝试了但失败了（且失败未打日志）      ← 本例
+③ 尝试成功但结果被忽略
+⇒ **判据：查"尝试点"的返回值与错误信息（dlerror），而不是只看"结果是否出现"。**
+**⇒ 本例中 "maps 里没有 appFw.so" 被误读为"没尝试 dlopen"，
+   实际是"dlopen 失败" —— 两者修法完全不同。**
