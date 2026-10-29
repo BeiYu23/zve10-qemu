@@ -9927,3 +9927,62 @@ BLE 断言：已消除（InfraBluetoothLowEnergy_init → bx lr）
    · 如果目标只依赖全局状态 ⇒ 跳过可行
    · 如果目标依赖调用方准备的结构体/栈帧 ⇒ 跳过会失败
 ```
+
+---
+
+# ★★★★ 2026-10-31 第九十三层：帧循环 wrapper `0x54f664` 入口结构
+
+## 反汇编（前 0x8A 字节）
+```asm
+54f664: stmdb sp!, {r4,r5,r6,r7,r8,r9,sl,fp,lr}
+54f668: sub.w sp, sp, #2048
+54f66c: sub sp, #28
+54f66e: ldr r5, [pc, #904]
+54f670: add r7, sp, #8
+54f672: mov r4, r0                ; ★ r4 = 传入的上下文指针
+54f674: bl 0x54ef74               ; ★★★ **第一个调用**（可能阻塞点）
+54f678: ldr r3, [pc, #896]
+54f67c: add.w r0, r7, #2016
+54f68a: bl 0x54833c
+54f694: blx 0x925fb0
+54f6a6: blx 0x9256a8
+54f6b0: blx 0x9246b8
+54f6be: blx memset
+54f6ce: blx 0x9240f8
+54f6e2: bl 0x54e8f0
+54f6ea: movw r0, #0x62f5          ; ★ **0x62F5 = 消息/事件 ID**
+54f6ee: movs r1, #0
+```
+
+## 关键观察
+```
+① 帧循环入口 **立即用 r0（上下文）** ⇒ 上一轮跳过初始化的测试必然崩溃
+   ⇒ 解释了"ENTER 之后完全静默"
+② 第一个调用是 0x54ef74 —— 可能是真正的阻塞点（未验证）
+③ 0x62F5 是它构造的消息 ID —— 可能是"帧请求"协议的一部分
+```
+
+## ★ 累计补丁清单（当前 initramfs 里的 appFw.so 状态）
+```
+① notify_model_system_error @0x2BC3174: `05 48` → `70 47` (bx lr)     ✅ 消断言
+② Application_Start call#1/#2/#3 @0x54d590/0x54d59a/0x54d5a6 → nop nop  ⚠️ 上一轮实验，**应回滚**
+③ libInfraBluetoothLowEnergy.so: InfraBluetoothLowEnergy_init @0x45d34 → `70 47`  ✅ 越过 BLE 断言
+④ osal_uipc.ko: 换成了 M2 版（无效，可保留）
+```
+
+## ⚠️ 下轮第一件事：回滚补丁 ②
+**补丁 ② 是失败的实验（跳过初始化），必须回滚，否则后续实验基线不干净。**
+**回滚方法：把 0x54d590/0x54d59a/0x54d5a6 三处 `00 bf 00 bf` 还原成原字节：**
+```
+0x54d590: d8 f3 04 e8  (blx 0x92559c)
+0x54d59a: ff f7 db fd  (bl 0x54d154)
+0x54d5a6: ff f7 83 fe  (bl 0x54d2b0)
+```
+
+## 下轮计划
+```
+① 回滚补丁 ②（恢复干净的 Application_Start）
+② 反汇编 0x54ef74（帧循环第一个调用）—— 看它是否阻塞
+③ 若要定位"正常路径下 Application_Start 卡在哪"：
+   逐个 patch call#1/#2/#3 为 nop（一次一个），看哪个能让后续 INITSEQ 变化
+```
