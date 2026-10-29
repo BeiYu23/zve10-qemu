@@ -8442,3 +8442,30 @@ rodata:
 本次 bootin 的 preload 路径由 `flags & 0x40` 门控 —— 位没开时**文件根本不会被 open**。
 ⇒ 排查"配置不生效"时，先查**读取是否有前置开关**（门控位/环境/前置文件），
    再查格式对不对。否则会反复修格式而问题始终不变。**
+
+## 124. 2026-10-29 钩 `dlsym` 失败（递归自杀）；已回滚；给出正确做法
+
+按协作方建议实现 `dlsym` 透明桩（打印符号名 + 返回值），结果：
+
+```
+events = 0     dlsym 记录 = 0
+```
+
+**⇒ 探针库自爆。** 原因：`m2_call_dlsym` 内部用 `dlsym(RTLD_NEXT,"dlsym")` 解析原生函数，
+而**这个调用又会被我们自己的 `dlsym` 桩拦截** ⇒ 无限递归 ⇒ 启动即死。
+
+### 正确做法（下一轮）
+
+1. 不要把 `m2_call_dlsym` 写成会调用 `dlsym` 的普通函数；
+2. 用 `dlvsym(RTLD_NEXT, "dlsym", "GLIBC_2.4")` 或在 `__attribute__((constructor))`
+   里预先用 `dlopen("libdl.so.2")+dlsym` 拿到原生 `dlsym`（构造期不经过我们的桩）；
+3. 或者改成"只记录、不代理"：桩内先取原生地址（静态缓存），再 `bx` 过去。
+
+### 另一个已排除的方向
+
+本轮还测了 `bootin` 的 `target` 参数（`target=qemu` → `target=product`）：
+
+```
+events = 124，dl = 68，appFw 尝试 = 0
+⇒ **target 参数不影响是否加载 appFw**（结果与 target=qemu 一致）
+```
