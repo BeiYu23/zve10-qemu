@@ -292,7 +292,7 @@ static void dump_threads(void)
 }
 static void *thread_dumper(void *a) { (void)a; sleep(50); dump_maps(); dump_threads(); return 0; }
 
-#define NQ5 40
+#define NQ5 120
 static unsigned char dl_logged[NQ5]; static char dl_names[NQ5][64]; static unsigned dl_n;
 static int dl_guard;
 void m2_h_dl(unsigned *r)
@@ -312,11 +312,21 @@ void m2_h_dl(unsigned *r)
     if (!n_dl) { n_dl = dlsym(RTLD_NEXT, "dlopen");
         if (!n_dl) { void *h = dlopen("/lib/libdl.so.2", RTLD_LAZY); n_dl = h ? dlsym(h, "dlopen") : 0; } }
 }
+void *m2_call_dlopen(const char *f, int fl)
+{
+    if (!n_dl) { n_dl = dlsym(RTLD_NEXT, "dlopen"); }
+    void *h = n_dl ? ((void *(*)(const char *, int))n_dl)(f, fl) : 0;
+    if (f && (strstr(f, "appFw") || strstr(f, "AdjChk"))) {
+        char b[240]; const char *e = h ? "none" : (dlerror() ? dlerror() : "?");
+        int n = snprintf(b, sizeof b, "M2DLERR name=%s h=%p err=%s\n", f, h, e);
+        out(b, n);
+    }
+    return h;
+}
 __attribute__((naked)) void *dlopen(const char *f, int fl)
 {
     __asm__ volatile("push {r0,r1,r2,r3,r4,lr}\n mov r0,sp\n bl m2_h_dl\n"
-                     "pop {r0,r1,r2,r3,r4,lr}\n ldr ip,=n_dl\n ldr ip,[ip]\n"
-                     "cmp ip,#0\n bxne ip\n mov r0,#0\n bx lr\n");
+                     "pop {r0,r1,r2,r3,r4,lr}\n b m2_call_dlopen\n");
 }
 
 __attribute__((constructor)) static void init(void)
@@ -342,3 +352,7 @@ int _ZN5MprIf34SetCreateParam_SupportContentTypesEm(unsigned long v)
     if (!once) { once = 1; out("M2SHIM typesM called\n", 22); }
     return _ZN5MprIf34SetCreateParam_SupportContentTypesEj((unsigned int)v);
 }
+
+/* Provide the data symbol that appFw.so imports from libmpr (which the normal
+   boot path never loads). Plain global => visible in the global scope. */
+int _ZN4sidb7referer7s_countE;

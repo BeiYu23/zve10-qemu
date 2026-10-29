@@ -8328,3 +8328,28 @@ QEMU 线的 dlopen 记录有 `NQ5=40` 上限，正好打满 ⇒ appFw/libmpr 的
 ⇒ **凡有数量上限的日志/计数器，必须检查"是否打满"**（打满 = 后面的全部丢失）。
 ⇒ **判据：在日志里记录"已丢弃 N 条"或"limit reached"标记，
    让"截断"本身成为可见信号。**
+
+## 123. 2026-10-29 提高 dlopen 上限到 120 + 记录失败原因：**libmpr 确实被加载了 3 次，但 appFw 仍从未被尝试**
+
+改动：`NQ5 40 → 120`；对名字含 `appFw`/`AdjChk` 的 dlopen 打印句柄与 `dlerror()`。
+
+实测：
+
+```
+events = 111
+dl（记录到的不同 dlopen 目标）= 61        ← 说明旧上限 40 确实截断了
+含 libmpr 的 dlopen = 3 次               ← ★ libmpr 被加载过（协作方的采样是对的）
+M2DLERR（appFw/AdjChk 的 dlopen） = 0 条  ← ★ appFw 与 AdjChkConfig 都没被尝试加载
+```
+
+### 结论（修正上一轮）
+
+1. **"正常路径从不加载 libmpr"是错的** —— 它被 dlopen 了 3 次（很可能 RTLD_LOCAL，
+   所以 `s_count` 对 appFw 不可见；§122 的作用域假设成立）；
+2. **但 appFw.so 仍然一次都没被 dlopen** ⇒ **`Application_System_Init` 至今没有被调用**；
+3. `libmprdummy.so` 在 v9 树里**不存在**（只有 libmpr.so / libmprctrl.so）⇒ "配置错位"假设无法验证。
+
+### ⇒ 真正的阻塞点仍是：libIMDB 没有走到"调用 appFwBoot 的入口符号"这一步
+
+这与 §121 一致：libIMDB 用 `{模块名, 入口符号}` 表驱动，40~61 个模块被 dlopen 了，
+但**入口调用必须先满足某个前置条件**，而该条件在 QEMU 里未满足。
