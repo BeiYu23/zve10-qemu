@@ -8753,3 +8753,39 @@ libInfraIPsec.so  → InfraIPsec_init / InfraIPsec_exit / InfraIPsec_sus   （�
    `osal_rcv_msg`，记录调用者 lr 是否落在 `libNetService.so` 内（若落在，即证明卡在它里面）；
 2. **若确认**：反汇编 `netservice_init` 找它等的具体事件；判断该事件是否依赖 QEMU 缺失的
    硬件/网络服务 ⇒ 若是，则 **QEMU 侧此路终止**，但真机上该服务存在 ⇒ v9b 可能自行走通。
+
+## 132. 2026-10-29 两个"接收"钩子都零命中 ⇒ 等待不在 rcv 上
+
+对 `osal_rcv_msg`（无超时版）也加了透明桩（记录 qid + 调用库）：
+
+```
+events = 124（基线正常）
+M2RCV2（osal_rcv_msg）命中 = 0
+M2RCV （osal_rcv_msg_tmo）命中 = 0（此前已测）
+```
+
+**⇒ im.elf 进程既不通过 `osal_rcv_msg`、也不通过 `osal_rcv_msg_tmo` 等待
+（至少不经过这两个导出符号的 PLT 调用）。**
+
+### 那 wchan 里的 `osal_rcv_msg_tmo` 是怎么来的？
+
+`wchan` 显示的是**内核记录的睡眠点符号**，它可以在**任何进过该函数后睡着的路径**上出现
+（包括 libosal 内部包装函数在调用它之后的长睡眠），**不能反推调用者**。
+
+### 下一个应该钩的信号量等待
+
+协作方此前用他们的探针抓到过：
+
+```
+osal_wai_sem_tmo id=0x9401c3 tmo=-1     ← 无限等信号量
+```
+
+**⇒ 真正让主线程停住的，很可能是一个**信号量**等待，而不是消息接收。**
+
+### 下一轮
+
+钩 `osal_wai_sem_tmo`（记录 sem id + 调用者库/偏移），确定：
+1. 谁在等信号量；
+2. 该信号量本应由哪个模块 `osal_set_sem`；
+⇒ 如果应释放它的是"尚未加载的模块"（如 `netservice_init` 之后的模块），就形成闭锁：
+   **前一个模块等后一个模块的信号量 ⇒ 死锁**，那 QEMU 侧就无法通过，需要真机验证。
