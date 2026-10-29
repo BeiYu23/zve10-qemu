@@ -8839,3 +8839,87 @@ run B: events = 106，最后 dlopen = libInfraBluetooth.so     ← 本次
 * 100% 出现 ⇒ 稳定加载的模块；
 * 从未出现 ⇒ 候选"被挡住"的模块（如 `libBizInitializer.so` / `appFw.so` 从未出现）；
 * 结合"从未出现清单"与 IMDB 表顺序 ⇒ 定位真正的分界点。
+
+---
+
+# ★★★★★ 2026-10-30 18:30 第八十五层：**完整 IMDB 表解析（186 项）** —— 停点区间全是 USB/网络服务
+
+## ★ 完整表结构（按表内顺序）
+**表项布局（已验证）：**
+```
++0x0E u16 field14 | +0x10 ptr field16(模块名) | +0x14 ptr field20(入口符号)
++0x24 ptr field36(argA) | +0x28 ptr field40(argB)   跨度 0x2C(44B)
+表在 .data.rel.ro (vaddr 0xf00c, size 0x27b4)
+⇒ 解析出 **186 项**
+```
+
+## 关键位置
+```
+[ 66] [ 90] [155] [175]  libInfraBluetooth.*      ← 分散四处
+[ 75] [ 77] [ 78] [101]  libNetService*           ← 分散
+[105] libInfraMFi.so           → InfraMFi_init
+[106] libInfraHttpClient.so    → InfraHttpClient_Init
+[107] libInfraMediaPwrMgr.so   → InfraMediaPwrMgr_init
+[108] libInfraCameraBackground.so → CameraBackground_init
+[109] libBizInitializer.so     → BIZ_Init          ← 文件/符号都不存在，空转
+>>> [110] appFwBoot.so         → Application_System_Init  arg=**AppConfig.so**
+[111] AdjChkConfig.so          → AppConfig.so
+[112] subapp.so                → subapp_init
+[114] /usr/local/lib/libVssApp.so → vssapp_init
+[116] gui.so                   → DPro_App_UI_init
+```
+
+## ★★★ [118]–[130] 整段是 **USB 服务链**
+```
+[118] libInfraUsbHostStorage.so → UsbHostStorage_Init
+[119] libInfraMtpServer.so      → MtpServer_Init
+[120] libInfraMscServer.so      → MscServer_Init
+[121] libInfraExtCmdSvc.so      → ExtCmdSvc_Init
+[122] libusbcmd.so              → UsbCmd_ExtCmdSvcWrap_Init
+[124] libInfraJetScsiServer.so  → JetScsiServer_init
+[129] libInfraPtpExtCmd.so      → PtpExtCmd_Init
+[130] libInfraAppDlUsbCommunication.so → AppDlUsbCommunication_Init
+⇒ **若循环停在 USB 服务链 ⇒ 很可能在等 USB 硬件/枚举（QEMU 无真实 USB 设备）
+   ⇒ 解释"停点每次不同"（超时/竞态）**
+```
+
+## ⚠️ 与 QEMU 线结论的矛盾（已指出）
+**QEMU 线说"appFwBoot.so 在 maps 里但是**作为依赖**被加载的，不是 IMDB 处理的"。**
+**但实测：**
+```
+① 遍历 v9b 全部 .so + .elf：**没有任何库 DT_NEEDED appFwBoot.so**（只有自身 SONAME 自引用）
+② appFwBoot 在 IMDB [110]，表项完全有效
+⇒ (a)在maps里 + (b)没人NEEDED它 + (c)IMDB未处理[110] 三条**不能同时成立**
+   ⇒ 除非有别的东西 dlopen 了它
+```
+
+**⇒ 判别实验（已建议）：hook dlopen 记录 **lr（调用者）**：
+```
+lr 落在 im.elf 0xb53c（load_module 的 dlopen 点）⇒ IMDB 确实处理了 [110] ⇒ 断点在 dlsym/fn
+lr 在别处 ⇒ 是别的模块 dlopen 的 ⇒ 断点在更早
+```
+
+## ★ 真机 vs QEMU 的关键区别（我修正后的判断）
+```
+真机 /log/im_manual.log 有 'DMP_2D_Initialize : 0'
+⇒ Main 跑了 ⇒ **Application_System_Init 被调用过**
+⇒ dlopen("appFw.so") **一定执行过**（无条件路径，且 arg="AppConfig.so" 走分支 A）
+⇒ **真机是"尝试了但失败"，与 QEMU 的"根本没尝试"不同**
+⇒ 这个区别决定修法：真机补符号作用域，QEMU 查 IMDB 进度
+```
+
+## QEMU 线状态：**goal 已标 blocked（40 轮）**
+```
+原因（对方自述）：
+  · 三个能区分问题的钩子全失败（dlsym 递归自杀 / osal_wai_sem_tmo 未编入 / osal_rcv 零命中）
+  · 每次改探针 30~50% 概率把基线从 124 打到 <110，需回滚
+  · **加载停点每次不同（124 条 vs 106 条）⇒ 不是确定性死锁，是竞态/时序**
+剩余选项：①多次运行取交集 ②反汇编 [95]-[130] 入口看阻塞 ③外部 ptrace
+⇒ 我建议优先②（纯静态零风险），并提出可分担一半工作
+```
+
+## 方法论（第 91 条）★★
+**"多条观测事实互斥"是一个强信号 —— 说明**观测口径**或**假设**有问题：
+本次 (a)在maps里 (b)没人NEEDED (c)IMDB没处理 三条互斥，
+⇒ 必有一条是错的，而"哪条错"本身就能定位问题（用 dlopen 记 lr 一次区分）。
+⇒ **遇到互斥事实时，不要选一条相信，而要设计能区分它们的最小实验。**
