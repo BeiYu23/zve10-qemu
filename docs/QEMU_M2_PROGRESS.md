@@ -9003,3 +9003,69 @@ M2MAPS 记录 94 条，其中 **/appFwBoot.so 出现 1 次**
 2. 同一次运行内：dlopen 日志 + maps + 一次"走得最远"的序列 ⇒ 真正定位断点；
 3. 若某次确实走到 [110]（maps 有 appFwBoot 且 dlopen 日志也有）⇒ 断点在 `if(fn) fn(arg)`，
    查 `global+0x28` 的 bit14（协作方发现它控制"是否检查 dlerror/传哪个 arg"）。
+
+---
+
+# ★★★★★ 2026-10-30 19:00 第八十六层：`dl_iterate_phdr` 可用 —— 替代 `/proc/self/maps` 的更好方案
+
+## 验证：相机 libc-2.11.2.so（984,292 B）的 dl 相关符号
+```
+dl_iterate_phdr@@GLIBC_2.4            ✅ 公开 API，可用
+__libc_dl_error_tsd@@GLIBC_PRIVATE
+__libc_dlclose@@GLIBC_PRIVATE
+__libc_dlsym@@GLIBC_PRIVATE
+__libc_dlopen_mode@@GLIBC_PRIVATE     ← 存在但是 PRIVATE，libc 内部用（NSS 等）
+```
+**⭐ 关键：im.elf 导入的是 `dlopen@GLIBC_2.4`（公开）⇒
+   QEMU 线的 `__libc_dlopen_mode` 假设撤销正确 ✓**
+
+## ★ 建议：用 `dl_iterate_phdr` 替代 `/proc/self/maps`
+**QEMU 线的 maps 采样器坏了（`M2MAPS nodir`，因为 fork 子进程读不到父进程 maps）。**
+
+**`dl_iterate_phdr` 的优势：**
+```
+✅ 不需要 fork
+✅ 不需要 /proc 挂载
+✅ 直接给 **库名 + 基址**（dli_fname / dli_addr），不用解析 maps 文本
+✅ 任意时刻可调
+✅ glibc 2.3+ 支持，2.11.2 已验证
+```
+
+**用法：**
+```c
+#include <link.h>
+static int dump_one(struct dl_phdr_info *info, size_t sz, void *data) {
+    out("OBJ name=%s base=0x%08x\n", info->dlpi_name, (unsigned)info->dlpi_addr);
+    return 0;
+}
+dl_iterate_phdr(dump_one, NULL);   /* 无需 fork、无需 /proc */
+```
+**注意：第一个回调通常是主程序（dlpi_name 为空串）；im.elf 加载 ~70 个 .so ⇒ 约 70 行**
+
+## ★★ 额外好处：能精确"选出走得最远的那次运行"
+```
+每次运行结束调 dl_iterate_phdr
+⇒ 数一下加载了多少个 .so
+⇒ **加载最多的那次 = 走得最远的那次**
+⇒ 那次的 dlopen 序列最后几项 = 真正的断点
+⚠️ 比"看 dlopen 日志长度"可靠（日志可能漏，dl_iterate_phdr 不会）
+```
+
+## 修正后的三步实验
+```
+1. 用 dl_iterate_phdr 替代 maps 解析
+2. 同一次运行内：dlopen 钩子记 (模块名, 返回值, lr) + 结束时 dl_iterate_phdr 记全部库
+3. 两相对照：
+   · 两边都有 appFwBoot ⇒ **那次走到了 [110]！** ⇒ 断点在 `if(fn) fn(arg)`
+   · 只有 dl_iterate_phdr 有 ⇒ 才是真仪器漏洞（再考虑 __libc_dlopen_mode）
+   · 两边都没有 ⇒ 停在更早（[95]-[130]）
+```
+
+## 方法论（第 92 条）★★
+**枚举"已加载对象"这类需求，优先用**标准 API**而不是解析 `/proc` 文本：
+```
+/proc/self/maps   ⇒ 需 /proc 挂载、需同进程、文本解析易错
+dl_iterate_phdr   ⇒ 标准 API、直接给结构化数据（名字+基址）、无外部依赖
+```
+**⇒ 判断标准："这个信息有没有现成的 API？" 有就用 API，
+   因为 API 的语义稳定，而文本格式会变、还依赖挂载状态。**
