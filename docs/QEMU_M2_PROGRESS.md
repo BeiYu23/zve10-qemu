@@ -10400,3 +10400,105 @@ REG 总数: **48 个队列被注册**
 ✅ 确切 PID：systemctl show -p MainPID --value <unit>
 ✅ 本实验期间：QEMU 进程数 = 1
 ```
+
+---
+
+# ★★★★★★★★ 2026-10-31 第九十九层：**0x910042 是内核 OSAL 服务队列 —— 根因链闭合**
+
+## ① ★★★ 服务注册模式：先查注册表，再注册
+**libObj @0x3e0e0 的函数（未导出符号内）完整逻辑：**
+```asm
+3e0e0: ldr r0, =**0x00910040**        ; ★ 查询"服务注册表"
+3e0e2: r1 = r7+0x60
+3e0e6: str r5, [r7, #0x60]
+3e0e8: blx osal_snd_sync_direct       ; ★ 同步查询
+3e0ee: cbnz r0, 3e0f2
+3e0f0: r5 = [r7, #0x74]               ; 读应答状态
+3e0f2: r8 = [r7, #0x78]
+3e0f6: sl = [r7, #0x80]               ; ★ **qid 来自应答数据**
+3e0fa: cmp r5, #0
+3e0fc: bne 3e17e                      ; ★★★ **查询失败 ⇒ 直接跳过注册！**
+3e0fe: ldr r2, =callback
+3e100: r0 = sl                        ; 用应答给的 qid
+3e10a: blx osal_reg_msg_queue_cb      ; 注册
+```
+**⇒ 模式：`查 0x910040 → 拿自己的 qid → 注册`。查询失败 = 不注册。**
+
+## ② ★★★★★ 0x910042 / 0x910040 是**内核侧** OSAL 队列
+```
+0x910042 出现在 **27 个内核模块**：
+  input.ko, grm_gles.ko, indctr.ko, udate.ko, cec.ko, usb_buspwr.ko, usbg_audio.ko,
+  hdmi.ko, utimer.ko, accel.ko, mag.ko, kikilog.ko, usbg_storage.ko, compass.ko,
+  i2c.ko, mcmn_drv.ko, usbg_sen.ko, usb_portMonitor.ko, mmc_drv.ko, usbg_video.ko,
+  backup.ko, sircs.ko, upm.ko, dmm.ko, usb_darwin.ko, usbg_buspower.ko, ms_drv.ko
+0x910040 出现在 7 个：indctr.ko, cec.ko, hdmi.ko, utimer.ko, upm.ko, dmm.ko, usb_darwin.ko
+内核 Image 里：0x910040 = 340 次，0x910042 = **544 次**
+```
+**⇒ 这是 **OSAL 内核服务（osal/uipc 子系统）**的消息队列，用户态与内核模块都通过它通信。**
+
+## ③ ★★★★★★ 根因链（至此完全闭合）
+```
+【第一环】主线程查询 0x910042（libObj @0x3d255，19 次）
+  ⇒ 期望内核 OSAL 服务应答
+  ⇒ **无人应答**（rcv 侧 0 次、注册侧 0 次、内核侧虽内置但未响应）
+  ⇒ 主线程永久阻塞
+
+【第二环】所有服务的注册都依赖查询 0x910040 拿自己的 qid
+  ⇒ 注册表查询同样失败
+  ⇒ **每个服务都跳过注册**（对应 REG 只观察到 48 个，而应有 122+ 个）
+
+【第三环】同一个内核 OSAL 服务的另一个接口也坏了：
+  osal_dynamic_id(flags=0x2A) → ioctl(fd, 0x8000000C=_IOR(0,12,0)) → **返回 -1024（不支持）**
+  ⇒ 模型初始化失败 → notify_model_system_error 断言（已消）
+
+⇒ **三个症状（查询阻塞、注册失败、动态 ID 不支持）指向同一个根：**
+   **内核侧 OSAL 服务在 QEMU 环境下不工作/不完整**
+```
+
+## ④ 已排除的解释
+```
+❌ 模型码不匹配（appFw 数据段里根本没有模型码常量，之前是 .text 假阳性）
+❌ udate/时钟未初始化（三组 A/B 对照，去掉 udate 也无变化）
+❌ BLE 固件/驱动（已 bx lr 绕过，无影响）
+❌ libgpe.so 缺失（与 0x910042 无关；且 IMDB 里那条本就是幽灵注册）
+❌ 帧请求协议缺失（帧循环根本没被到达）
+❌ 换 M2 版 osal_uipc.ko（vermagic 相同、加载 status=0，但无改善）
+```
+
+## ⑤ 为什么换 osal_uipc.ko 没用
+```
+内核模块里**没有** 0x910040/0x910042 常量（27 个模块里有，但 osal_uipc.ko 不在其中）
+⇒ OSAL 内核服务的 qid 表**编译在内核 Image 里**（544 次出现）
+⇒ 换模块改不了内置的 OSAL 服务实现
+⇒ 要修必须改内核源码/Image，或找到它为何不响应
+```
+
+## ⑥ 下一步（供后续会话）
+```
+① 反汇编内核 Image 里处理 0x910042 的 QID 表相关代码
+   · 找到 osal 内核服务的消息分发入口
+   · 看它对用户态 osal_snd_sync_direct(0x910042) 为什么不回应
+② 重点怀疑：
+   · QEMU 缺某个硬件中断/事件，导致 osal 服务线程不跑
+   · 或内核某驱动未加载（我们只加载 15/32 个模块）
+   · 特别是：input/i2c/indctr/sircs/nfc/compass/accel/upm/usb_extcmd 等 17 个未加载
+③ 快速验证：把 32 个模块全部加载，看 REG 数量是否从 48 上升到接近 122
+```
+
+## ⑦ 本轮环境纪律
+```
+✅ 严格单实例（run-qemu-sd.sh 三重保护）
+✅ systemd-run --collect --property=MemoryMax=4G
+✅ 确切 PID = systemctl show -p MainPID --value <unit>
+✅ 实验期间 QEMU 进程数 = 1
+```
+
+## 方法论（第 101 条）★★★
+**"多个症状指向同一根"是最强的根因信号：
+```
+本轮：查询 0x910042 阻塞 + 注册 0x910040 失败 + osal_dynamic_id 返回 -1024
+⇒ 三个看起来不同的故障，全部落在"内核 OSAL 服务"这一个点上
+⇒ **比逐个修症状快得多**
+```
+**⇒ 判据：当你发现 3 个以上不相关功能都失败时，先找它们的公共依赖，
+   而不是分别调每个功能。**
