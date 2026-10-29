@@ -8923,3 +8923,41 @@ lr 在别处 ⇒ 是别的模块 dlopen 的 ⇒ 断点在更早
 本次 (a)在maps里 (b)没人NEEDED (c)IMDB没处理 三条互斥，
 ⇒ 必有一条是错的，而"哪条错"本身就能定位问题（用 dlopen 记 lr 一次区分）。
 ⇒ **遇到互斥事实时，不要选一条相信，而要设计能区分它们的最小实验。**
+
+## 135. 2026-10-29 ★★★★ 矛盾破解线索：`appFwBoot.so` 在 maps 里，但 6 次运行的 dlopen 记录里**从未出现**
+
+对 6 份历史日志做统计：
+
+```
+dl.log    appFwBoot=0  appFw=0  total=40
+dl2.log   appFwBoot=0  appFw=0  total=61
+dh.log    appFwBoot=0  appFw=0  total=70
+r2.log    appFwBoot=0  appFw=0  total=70
+sem.log   appFwBoot=0  appFw=0  total=62
+base3.log appFwBoot=0  appFw=0  total=60
+```
+
+**⇒ `appFwBoot.so` 明明在 im.elf 的 maps 里（§111 的 M2MAPS 证据），
+却从未经过我们拦截的 `dlopen`。**
+
+### 这意味着：**我们的 `dlopen` 观测是不完整的**
+
+glibc 有内部加载入口 **`__libc_dlopen_mode`**（以及 `__libc_dlsym`），
+NSS/部分库会走它 —— **这些调用不经过 `dlopen@plt`，我们的 preload 拦不到。**
+
+**⇒ 于是有两种可能，都成立：**
+1. **IMDB 循环确实处理了 appFwBoot（[110] 项）**，但它是通过 `__libc_dlopen_mode` 或
+   某模块内部加载完成的 ⇒ 所以 maps 里有、日志里没有；
+2. 或某模块（如 `libBizInitializer` 相关路径）间接加载了它。
+
+**⇒ 我此前"appFwBoot 是作为 DT_NEEDED 依赖被加载"的推断无法成立**
+（协作方已核实：全树没有任何库 NEEDED 它）。
+**⇒ 因此"IMDB 从未处理 [110]"也是错的** —— 日志缺失是因为**观测手段漏了入口**。
+
+### 下一轮（明确）
+
+1. 额外拦截 **`__libc_dlopen_mode`** 与 **`__libc_dlsym`**（同样记录名字/符号/返回）；
+2. 复跑后确认：
+   * 若看到 `appFwBoot.so` / `Application_System_Init` ⇒ **IMDB 确实处理了它**，
+     断点在 `dlsym` 或 `fn(arg)` 这一步；
+   * 若仍看不到 ⇒ 加载来自更底层（需继续往 `_dl_open` 方向查）。
