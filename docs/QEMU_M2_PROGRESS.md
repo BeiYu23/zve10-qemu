@@ -8961,3 +8961,45 @@ NSS/部分库会走它 —— **这些调用不经过 `dlopen@plt`，我们的 p
    * 若看到 `appFwBoot.so` / `Application_System_Init` ⇒ **IMDB 确实处理了它**，
      断点在 `dlsym` 或 `fn(arg)` 这一步；
    * 若仍看不到 ⇒ 加载来自更底层（需继续往 `_dl_open` 方向查）。
+
+## 136. 2026-10-29 ★ 矛盾已解释：跨运行 + 跨仪器对比；且本次 maps 采样器失效
+
+### 同一次运行内同时采（本轮）
+
+```
+events = 124, dl = 69, 最后 dlopen = libfan.so
+maps 里 appFwBoot = 0
+dlopen 里 appFwBoot = 0          ← 两者一致
+maps 记录条数 = 1（"M2MAPS nodir"）← ★ 采样器这次失效了
+```
+
+### 旧数据（第 17 轮那次运行）
+
+```
+M2MAPS 记录 94 条，其中 **/appFwBoot.so 出现 1 次**
+但那次运行 **还没有 dlopen 钩子**（钩子是下一轮才加的）
+```
+
+### ⇒ 结论：不是仪器漏了 `__libc_dlopen_mode`（协作方已核实 im.elf 只用公开 dlopen/dlsym），
+**而是我把"第 17 轮的 maps" 与"第 18 轮之后的 dlopen 日志"拼在一起比较**——
+**跨运行、跨仪器**，这正是 §77 方法论的"坐标系不一致"（这次是**时间维度**）。
+
+**⇒ 撤销 §135 的结论**：
+* `__libc_dlopen_mode` 假设**不成立**（im.elf 无此导入）；
+* "IMDB 处理了 appFwBoot 但日志漏了"**无证据**；
+* 更可能：**有些运行走到了 [110]（所以 maps 里有），有些没走到（所以日志里没有）**——
+  与"停点每次不同"一致。
+
+### 遗留问题
+
+本轮 `dump_maps` 失效（只输出 `M2MAPS nodir`），因为 fork 子进程在 t=50s 时
+父进程可能已变化/`dump_pid` 失效。
+**⇒ 要在同一次运行里做可靠对比，必须先修好 maps 采样器**（改为在父进程内、
+用一次 `read` 全量读 `/proc/self/maps`，而不是 fork 子进程去读父进程）。
+
+### 修正后的下一轮
+
+1. 修 `dump_maps`（父进程自读 `/proc/self/maps`，输出到串口）；
+2. 同一次运行内：dlopen 日志 + maps + 一次"走得最远"的序列 ⇒ 真正定位断点；
+3. 若某次确实走到 [110]（maps 有 appFwBoot 且 dlopen 日志也有）⇒ 断点在 `if(fn) fn(arg)`，
+   查 `global+0x28` 的 bit14（协作方发现它控制"是否检查 dlerror/传哪个 arg"）。
