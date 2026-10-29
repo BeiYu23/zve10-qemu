@@ -7564,3 +7564,34 @@ E10: 352 条、63 族、122 条 MWF、能出画
 2. **反汇编 `MWF::EventWrapper::RegisterCallBack` 的调用者**，按对象区分 18 条 vs 122 条，
    找出第 19 个组件；
 3. **真机 v9b 数据**：若真机能起 UI，则 QEMU 侧差别可能来自缺失的硬件服务。
+
+## 108. 2026-10-29 追"第 19 个组件"：定位到 9 个候选库，但当前探针无法区分调用者
+
+静态查出调用 `MWF::EventWrapper::RegisterCallBack` 的库（9 个）：
+
+```
+libGOConnectionManager  libInfraFsys     libInfraIPTC     libInfraMediaDetect
+libInfraMediaMount     libInfraNetConnectionManager      libNetCommon
+libObj                 libmprctrl
+```
+
+但用"注册归属库"比较两代时发现：**这些库自己的名字在两代日志里几乎都是 0**
+（因为 dladdr 把注册归到了 `libMWF.so` 这个符号所属库，而不是调用者）。
+
+```
+libGOConnectionManager M2=0 E10=0     libInfraFsys M2=0 E10=0
+libInfraIPTC           M2=0 E10=0     libInfraMediaDetect M2=1 E10=2
+libObj                 M2=84 E10=111  libmprctrl M2=7 E10=4
+```
+
+**⇒ 需要记录"RegisterCallBack 的调用者"（二级返回地址）才能区分 18 vs 122 的来源。**
+
+### 下一轮（唯一明确动作）
+
+在探针对 `osal_reg_sync_msg_queue_cb` 记录 lr 时，**再往上取一层调用者**：
+* 现在记录的是 `MWF::EventWrapper::RegisterCallBack` 内的返回地址（off 0x1f200）；
+* 需要的是**它的调用者**（谁调了 RegisterCallBack）。
+
+实现方式：在 MWF 的 `RegisterCallBack` 入口下探针（按 libMWF 偏移 0x1f1d8），
+记录此时栈上的返回地址 `*(void**)(sp+…)` —— 这次要**先在一个 E10 能出画的 run 里验证
+"加了该探针仍出画"**（§85 硬规则），再用于 M2。
