@@ -10109,3 +10109,95 @@ isFrameDelay() = 比较 this+0（当前时间）与 this+24（下一帧截止时
 ③ 如果找到阻塞点 ⇒ 同法绕过（返回成功）
 ④ 目标：让 call#3 完成 ⇒ 帧循环拿到有效上下文 ⇒ drawFramebuffer 被调用 ⇒ 抓帧
 ```
+
+---
+
+# ★★★★★ 2026-10-31 第九十六层：**阻塞原语钩子成功** —— 发现 appFw 在"等待服务应答"
+
+## ① ★ systemd-run 单实例运行（用户要求）
+```bash
+# /mnt/build/m2qemu/run-qemu-sd.sh —— 标准启动方式
+systemd-run --unit=zve10-<name> --collect \
+  --property=MemoryMax=2G --property=MemoryAccounting=yes \
+  <qemu-system-arm 命令行>
+# 确切 PID: systemctl show -p MainPID --value <unit>
+```
+**✅ 独立 cgroup（systemd.slice/zve10-*.service），不计入 DSH 内存**
+**✅ 保证单实例（启动前 stop 同名 unit）**
+**✅ 确切 PID（goal 要求，不用 pgrep|head）**
+**⚠️ qemu 的 stdout 会被 systemd 收走 ⇒ GPE 日志要看 `journalctl -u <unit>`**
+
+**⭐ 重要环境教训：之前同时跑 5 个 QEMU（各 1GB/宿主 11GB）导致内存争抢、随机启动失败，
+   是多次假阴性/假阳性的根源。现在已彻底解决。**
+
+## ② ★★★ argtrace 扩展：阻塞原语钩子
+**在 `src/argtrace.c` 里新增 4 个 LD_PRELOAD 拦截（成功编译 13,232 B）：**
+```c
+osal_wai_sem_tmo(sem, tmo)        → log "BLK sem_tmo tmo=%d"
+osal_rcv_msg_tmo(q, m, tmo)       → log "BLK rcv_msg tmo=%d"
+osal_snd_sync_direct(qid, m)      → log "BLK snd_sync_direct qid=%#x"
+usleep(us)                         → log "BLK usleep us=%u"
+```
+
+## ③ ★★★★ 实测结果（out/blk1）
+```
+BLK sem_tmo n=1..12  tmo=**-1**        ← ★ 12 个线程在**无限等信号量**！
+BLK rcv_msg tmo=**-1**                 ← 接收线程无限等消息
+BLK snd_sync_direct n=1 qid=0x920277
+BLK snd_sync_direct n=2..7 qid=**0x910042**   ← ★ 反复向同一队列发同步消息
+BLK usleep n=1 us=1000                 ← 有轮询
+```
+**⇒ 模式非常清晰：**
+```
+appFw 反复向队列 0x910042 发**同步消息**（snd_sync_direct 会阻塞等应答）
+同时 12+ 个线程在 tmo=-1 无限等信号量
+⇒ **"发请求-等应答"但应答方没回应 ⇒ 疑似多线程互相等待（死锁）**
+```
+
+## ④ ⚠️ 0x910042 不是唯一标识
+```
+搜索 initramfs 全部 .so：0x910042 出现在 **60+ 个库**里
+  libInfraRemote 57 次 / libObj 41 次 / libmpr 37 次 / libInfraMtpServer 28 次 ...
+⇒ 这是**共享/公共队列**（类似 0x7a0020 输入汇的模式）
+⇒ 无法靠它定位具体服务
+```
+
+## ⑤ 排除法结论（本轮之前）
+```
+call#1 (0x92559c → 0x2C2ED84)：**完成**（GPE 19 包是它驱动的）
+call#2 (0x54d154)：**完成**（服务线程产生 INITSEQ）
+call#3 (0x54d2b0)：**初始化帧循环上下文；跳过它帧循环立刻崩 ⇒ 它必要，且很可能正在阻塞**
+call#4 (0x54f664 FrameLoop)：**从未被到达**
+  · 帧循环结构已完全拆清：
+    updateCurrentTime → dispatch(0x3F6) → while(processEvent()) →
+    processCommands → while(isFrameDelay() && --r5) updateFrame() →
+    notifyDraw() → drawFramebuffer() → tail-call 0x925b0c
+  · 补丁 bne→nop（事件只处理一轮）**无效** ⇒ 证明帧循环根本没被到达
+```
+
+## ⑥ 帧缓冲扫描（按 goal 要求做了）
+```
+扫描 guest RAM 1GB：
+  · 0x22c48000（旧引擎帧缓冲 640x480x2）：**全零**（SHA 34c69899504b，与历史一致）
+  · 0x20000000 保留区 128MB：只有 8 个 1MB 块有零星非零（最大 3.12%）
+  · 0x20100000 曾有 32KB 双值数据（疑似位图），但复查时已归零 ⇒ **guest 在动态改这块**
+⇒ **仍未找到任何"菜单画面"形态的帧缓冲数据**
+```
+
+## ⑦ 当前补丁清单（initramfs 内）
+```
+① notify_model_system_error @appFw 0x2BC3174 → bx lr       ✅
+② InfraBluetoothLowEnergy_init @lib 0x45d34 → bx lr        ✅
+③ isFrameDelay @libObj 0x105988 → return 1                 ⚠️ 无效（帧循环未到达）
+④ 帧循环 bne @appFw 0x54ED3E → nop                          ⚠️ 无效（同上）
+⑤ argtrace.so 增加 4 个阻塞钩子                              ✅ 有效诊断
+```
+
+## ⑧ 下轮计划
+```
+① 用 blocking 钩子确定 snd_sync_direct(0x910042) 是**哪个线程**发的
+   （在钩子里读 tid: syscall(SYS_gettid) 或 pthread_self）
+② 找出应答方应该是谁 ⇒ 定位死锁环
+③ 或者：直接给 0x910042 队列"喂"一条假应答，看 appFw 是否继续
+④ 目标不变：call#3 完成 ⇒ 帧循环到达 ⇒ drawFramebuffer 被调用 ⇒ 抓帧
+```
