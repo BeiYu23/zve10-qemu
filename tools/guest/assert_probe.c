@@ -39,6 +39,8 @@ static int find_base(struct dl_phdr_info *info, size_t sz, void *data)
     return 0;
 }
 
+__asm__(".symver __assert_fail,__assert_fail@GLIBC_2.4");
+
 void __assert_fail(const char *assertion, const char *file,
                    unsigned int line, const char *function)
 {

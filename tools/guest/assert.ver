@@ -1,0 +1,1 @@
+GLIBC_2.4 { global: __assert_fail; };
