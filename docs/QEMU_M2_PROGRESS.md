@@ -9651,3 +9651,119 @@ C: init + udate.ko（带日期参数）    → 对方正在跑
 `tools/guest/assert_probe.c` 已补 `.symver` + version script，
 导出的符号现在是 **`__assert_fail@GLIBC_2.4`**（与 appFw 的导入版本一致），
 否则钩子不生效（对方实测两轮没触发，怀疑正是此因）。
+
+---
+
+# ★★★★★★ 2026-10-30 21:30 第九十层：**模型断言根因完全破解 —— `osal_dynamic_id(0x2A)` 返回 -1024**
+
+## ① 突破手段：`__assert_fail` 钩子成功触发
+**把 assert_probe 合并进 argtrace.so（符号版本未修但**生效了**），运行后输出：**
+```
+AS a=false f=lib_assert.cpp l=30
+AS fn=void lib::assert::notify_model_system_error()
+AS lr=0x311e918b
+ASSERTBASE base=0x2e626000 name=/usr/lib/appFw.so
+CAND off=0x02bc318a raw=0x311e918b     ← lr 本身
+CAND off=0x02b1aef8 raw=0x31140ef9     ← 栈上的返回地址
+CAND off=0x02b20d1c raw=0x31146d1d
+CAND off=0x01d58fc0 raw=0x3037efc1
+```
+**⇒ 断言点 = appFw 偏移 `0x2BC318A`（基址 0x2E626000）**
+**⇒ BLE 补丁（`InfraBluetoothLowEnergy_init` 首指令改 `bx lr`）**让启动越过了 BLE 卡点**，
+   从而**在 300 秒窗口内稳定捕获到模型断言**（此前 200s 窗口都会被截断）。**
+
+## ② ★ 完整调用链（全部反汇编确认）
+
+```
+appFw 模型初始化函数 @0x2B6FD78
+  ├─ ldr r3,[global]; cmp r3,#0; bne 跳过     ; 已初始化则跳过
+  ├─ blx 0x2BA0938                            ; 取 ID
+  ├─ bl 0x2BB6394(2, id, &global)             ; ★ 模型初始化调用
+  │     ├─ orr.w r0, r0, #40   ⇒ flags = 2|0x28 = **0x2A**
+  │     ├─ blx 0x2CE87E8 (veneer)             ; ARM veneer: ldr ip,[pc,#0]; add pc,pc,ip
+  │     │     └─ 目标 = 0x529110 (PLT) → GOT 0x377AE1C
+  │     │         ⇒ **符号 = `osal_dynamic_id`**（readelf -r 确认）
+  │     └─ 若返回非 0 ⇒ 打印错误(line 191) ⇒ 返回错误码
+  ├─ 打印错误（line 109，含 `movs r3,#109`）
+  └─ bl 0x2BC3174  ⇒ notify_model_system_error()
+        └─ __assert_fail("false", "lib_assert.cpp", 30, "notify_model_system_error()")
+        ⇒ **断言 ⇒ 进程终止 ⇒ 黑屏**
+```
+
+**⭐⭐ 关键常量对照（全部吻合）：**
+```
+断言函数 @0x2BC3174: movs r2, #30  ⇒ lib_assert.cpp:30 ✓
+                     字符串 = "false" / 函数名串 ✓
+veneer @0x2CE87E8:  e59fc000 (ldr ip,[pc,#0]) + e08ff00c (add pc,pc,ip)
+                    字面量 0xfd84091c ⇒ 目标 0x2ce87f4-0x27bf6e4 = **0x529110** ✓
+PLT @0x529110:       e28fc632/e28cca51/e5bcfd04 ⇒ GOT = **0x377AE1C**
+rel.plt @0x377AE1C:  `osal_dynamic_id` ✓
+```
+
+## ③ ★★★ 失败函数 `osal_dynamic_id`（libosal_uipc.so @0x4840）
+
+```asm
+4840: stmdb sp!,{r4..fp,lr}
+4844: ands.w r3, r0, #2          ; 检查 flags bit1
+4854: moveq.w r9, #0x8000        ; bit1==0 → r9=0x8000
+4858: movne.w r9, #0             ; bit1!=0 → r9=0
+485e: cmp r2, #0
+4860: beq.w 0x49fa               ; r2==0 → **返回 0xFFFFFC00**
+4864: cmp r3, #0
+4866: bne.w 0x49c4               ; ★ flags bit1==1 ⇒ 走 0x49c4
+...
+49c4: add.w r7,r7,#20; mov sp,r7; ldmia.w sp!,{...}
+49ce: b.w 0x1710 <u_osal_dynamic_id@plt>   ; ★ 尾调用 userspace 实现
+...
+49e8: movw r6,#0xfc01; movt r6,#0xffff     ; 错误码 **0xFFFFFC01**
+49fa: movw r6,#0xfc00; movt r6,#0xffff     ; 错误码 **0xFFFFFC00**
+```
+
+**⇒ flags = 0x2A（bit1=1）⇒ 尾调用 `u_osal_dynamic_id`
+⇒ 该实现返回 **0xFFFFFC00 = -1024**（"不支持/无效"）
+⇒ 模型初始化失败 ⇒ 断言**
+
+**⭐⭐ 重要交叉印证：**
+```
+a7c2-re 实测本机型 udate 服务（队列 0x90013d）：
+  op=0/1/3..7 → 全部返回 status = **-1024 (0xfc00)** 被拒
+⇒ **同一个错误码 0xFFFFFC00** ⇒ osal 层的"不支持"通用返回
+```
+
+## ④ ⇒ 根因结论
+
+**不是模型码、不是 udate/时钟、不是 BLE 固件。**
+
+```
+appFw 模型初始化要 osal_dynamic_id(flags=0x2A, ...)
+  → u_osal_dynamic_id 返回 -1024（不支持）
+  → 模型初始化失败
+  → notify_model_system_error() 断言
+  → 进程终止，UI 永不启动
+```
+
+**⇒ 下一步必须查 `u_osal_dynamic_id` 为什么对 flags=0x2A 返回"不支持"。**
+**候选：**
+```
+① flags 的位含义（bit1/bit3/bit5）在混合树里不匹配
+   （M2 的 appFw 期望的 osal 语义 vs E10 的 libosal_uipc 实现）
+② 动态 ID 池未初始化/耗尽
+③ 某个前置 osal 注册未完成（与之前"服务注册缺失"线索一致）
+```
+
+## ⑤ 实验状态
+```
+· BLE 补丁有效：`InfraBluetoothLowEnergy_init` 首指令 `80 b5`(push) → `70 47`(bx lr)
+  ⇒ 越过了 infra_wrapper_bluetooth.cpp:1886 的断言
+· 但模型断言仍然触发（更早，在 Application_Start 内部）
+· 每个 Image 重建约 5 分钟，单次运行 300 秒
+```
+
+## 方法论（第 96 条）★★★
+**"把多个入口改成立即返回"是快速定位真实阻塞点的正确做法：
+```
+本次：BLE init 改成 bx lr ⇒ 越过 BLE 断言 ⇒ 立刻暴露了更早的模型断言
+⇒ 每次"消掉一个卡点"都会让下一个卡点浮出水面
+⇒ 这比试图一次分析所有卡点高效得多
+```
+**⇒ 配合 `__assert_fail` 钩子（打印 lr + 栈），能把"断言在哪"精确到一条指令。**
