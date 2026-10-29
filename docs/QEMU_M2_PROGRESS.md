@@ -7671,3 +7671,42 @@ a7c2-re 的软件渲染部分（可直接移植参考）：
 2. 找到后 dump 其 vtable，按 a7c2 的模式定位 "open screen" 槽（参数形如
    `(manager, &owner, &screen, &prev, bool, bool)`）；
 3. 一旦能强制入队，配合 GRM 拦截（§109）即可产生画面。
+
+## 111. 2026-10-29 ★★★ 用 /proc/pid/maps 定位根因：**UI 应用 `appFw.so` 从未被加载**
+
+给 fork 采样器加 "dump `/proc/<pid>/maps`"，运行后得到 im.elf 实际加载的 94 个库。
+
+```
+已加载（UI 相关）: /appFwBoot.so  （有）
+未加载:            /appFw.so  ← ★★ 真正的 UI 应用，从未加载
+```
+
+### 加载链（反汇编 appFwBoot.so，8,312 B）
+
+```
+导出: Application_System_Init (0x1270) / Main (0x14d8)
+字符串: AppConfig.so / appFw.so / Application_Start / AdjChkConfig.so
+        _ZN13app_adjchk_ui9main_loopEv / "AppFw" / "/usr/share/app/"
+
+代码: 0x12f0 strcmp(...) 后分支
+      0x12fe dlopen  ← AppConfig.so 或 AdjChkConfig.so（按 target 选择）
+      0x1310 dlopen  ← 另一个配置库
+      （appFw.so 的字符串在 .rodata VA=0x171e，Application_Start 在 0x1727）
+```
+
+**⇒ 设计意图：appFwBoot.so 应 dlopen `appFw.so`、dlsym `Application_Start` 并调用它。**
+**⇒ 实际：`appFw.so` 从未出现在 maps 里 ⇒ 这一步没执行（或 dlopen 失败）。**
+
+### 这是当前唯一的硬阻塞
+
+* 没有 appFw.so ⇒ 没有 UI、没有菜单、没有 controller、没有绘制调用
+  ⇒ **强制开菜单（§110）也不可能成功**（manager 对象根本不存在）；
+* 与之前所有观测自洽：MWF 注册只有 18 次、帧恒黑、线程在等消息。
+
+### 下一轮（决定性且便宜）
+
+**在探针里拦 `dlopen`**（只记录不改变行为）：打印每次 dlopen 的 `filename`、返回句柄、`dlerror()`。
+* 若看到 `dlopen("appFw.so")` 失败 + dlerror ⇒ **直接拿到失败原因**（缺依赖/路径/权限），
+  这很可能一击命中；
+* 若根本没看到该调用 ⇒ 断点在 appFwBoot 更早的分支（strcmp/target 选择），
+  下一步就查 `target=qemu` 与 `target=product` 的分支差异。

@@ -25,8 +25,8 @@ static void out(const char *s, int n)
 }
 static void *n_reg, *n_regs, *n_rcv, *n_snd, *n_sd;
 static int reg_logged;
-static unsigned long libobj_base(void);
-static void read_singleton(void);
+static unsigned long libobj_base(void) { return 0; }
+static void gi_fire(void);
 
 
 static void log_lib(const char *tag, unsigned qid, unsigned *r)
@@ -44,7 +44,6 @@ static void log_lib(const char *tag, unsigned qid, unsigned *r)
 int m2_h_reg(unsigned *r)          /* r[0]=qid r[1]=cb r[4]=r4 r[5]=lr */
 {
     static int nreg;
-    if (++nreg == 40) read_singleton();
     if (nreg == 100) m2_dump_stuck();
     if (!n_reg) {                   /* lazy, early-safe */
         n_reg = dlsym(RTLD_NEXT, "osal_reg_msg_queue_cb");
@@ -106,9 +105,22 @@ __attribute__((naked)) int osal_reg_msg_queue_cb(void)
 }
 
 /* rcv / snd: exactly as v3 (tail-call native) */
-static unsigned long libobj_base(void);
-static void gi_fire(void);
-void m2_h_res_rcv(unsigned *r) { static int calls; if (!n_rcv) { n_rcv = dlsym(RTLD_NEXT, "osal_rcv_msg_tmo");
+#define NQ4 48
+static unsigned rv_seen[NQ4], rv_n;
+void m2_h_res_rcv(unsigned *r)
+{
+    int isnew = 1;
+    for (unsigned i = 0; i < rv_n && i < NQ4; i++) if (rv_seen[i] == r[0]) { isnew = 0; break; }
+    if (isnew && rv_n < NQ4) {
+        rv_seen[rv_n++] = r[0];
+        Dl_info di; unsigned long lr = (unsigned long)r[5] & ~1UL;
+        if (dladdr((void *)lr, &di) && di.dli_fname) {
+            char b[220]; int n = snprintf(b, sizeof b, "M2RCV qid=%08x lib=%s off=%08lx\n",
+                                          r[0], di.dli_fname, lr - (unsigned long)di.dli_fbase);
+            out(b, n);
+        }
+    }
+    static int calls; if (!n_rcv) { n_rcv = dlsym(RTLD_NEXT, "osal_rcv_msg_tmo");
     if (!n_rcv) { void *h = dlopen("/usr/lib/libosal_uipc.so", RTLD_LAZY); n_rcv = h ? dlsym(h, "osal_rcv_msg_tmo") : 0; } }
     if (++calls == 400) gi_fire(); }
 #define NSQ 32
@@ -217,10 +229,43 @@ __attribute__((naked)) int osal_snd_sync_direct(void)
                      "cmp ip,#0\n bxne ip\n mvn r0,#0\n bx lr\n");
 }
 
+static volatile pid_t dump_pid;
+static void dump_maps(void)
+{
+    char path[96], buf[4096];
+    pid_t pp = dump_pid;
+    snprintf(path, sizeof path, "/proc/%d/maps", (int)pp);
+    int fd = open(path, O_RDONLY);
+    if (fd < 0) { out("M2MAPS nodir\n", 12); return; }
+    char seen[120][64]; int nseen = 0;
+    int n; char rest[2048];
+    while ((n = read(fd, buf, sizeof buf - 1)) > 0) {
+        buf[n] = 0;
+        char *save = 0, *line = strtok_r(buf, "\n", &save);
+        while (line) {
+            char *sl = strrchr(line, '/');
+            if (sl && strstr(line, ".so")) {
+                char *q = strchr(sl, '/'); (void)q;
+                int dup = 0;
+                for (int i = 0; i < nseen; i++) if (strcmp(seen[i], sl) == 0) { dup = 1; break; }
+                if (!dup && nseen < 120) {
+                    strncpy(seen[nseen++], sl, sizeof seen[0] - 1);
+                    char o[128]; int m = snprintf(o, sizeof o, "M2MAPS %s\n", sl);
+                    out(o, m);
+                }
+                (void)rest;
+            }
+            line = strtok_r(0, "\n", &save);
+        }
+    }
+    close(fd);
+}
 static void dump_threads(void)
 {
     char path[96], buf[256];
-    pid_t pp = getppid();
+    pid_t pp = dump_pid;
+    snprintf(path, sizeof path, "/proc/%d/stat", (int)pp);
+    { int t = open(path, O_RDONLY); if (t < 0) { char o[80]; int m = snprintf(o, sizeof o, "M2T parent_gone pid=%d\n", (int)pp); out(o, m); return; } close(t); }
     snprintf(path, sizeof path, "/proc/%d/task", (int)pp);
     DIR *d = opendir(path);
     if (!d) { out("M2T nodir\n", 10); return; }
@@ -245,7 +290,7 @@ static void dump_threads(void)
     }
     closedir(d);
 }
-static void *thread_dumper(void *a) { (void)a; sleep(50); dump_threads(); return 0; }
+static void *thread_dumper(void *a) { (void)a; sleep(50); dump_maps(); dump_threads(); return 0; }
 
 __attribute__((constructor)) static void init(void)
 {
@@ -257,6 +302,6 @@ __attribute__((constructor)) static void init(void)
     n = snprintf(b, sizeof b, "M2INIT pid=%d cmd=%.48s\n", (int)getpid(), cmd);
     out(b, n);
     if (strstr(cmd, "im.elf")) {
-        { pid_t c = fork(); if (c == 0) { thread_dumper(0); _exit(0); } }
+        { dump_pid = getpid(); pid_t c = fork(); if (c == 0) { thread_dumper(0); _exit(0); } }
     }
 }
