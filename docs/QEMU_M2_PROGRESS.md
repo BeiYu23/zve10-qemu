@@ -10033,3 +10033,79 @@ BLE 断言：已消除（InfraBluetoothLowEnergy_init → bx lr）
 ⇒ 基线恢复干净，后续实验才有意义
 ⇒ **判据：任何 patch 进镜像前，先把原始字节写进账本。**
 ```
+
+---
+
+# ★★★★★ 2026-10-31 第九十五层：**GPE 图形通路是通的！** + 排除法定位阻塞点
+
+## ① ★★★ QEMU 的 GPE（图形引擎）**确实工作**
+```
+qemu.log 证据：
+  ZVE10_GPE_PACKET address=2057b360 0116f000 02056db0 0117f000 00000001 0044f000 ...
+  ZVE10_GPE_INIT_FENCE irq=76 token=12345678   ← 每个包都有 fence
+  ⇒ 19 个 GPE 命令包 + 19 个 fence 中断
+内核侧证据：
+  !!! GPE HW: bar remapped 0xf1000000->0xf1000000 size 4000
+⇒ **GPU/图形通路在 QEMU 里是通的，且 guest 确实在驱动它**
+⇒ 19 个包 = 初始化阶段的命令；之后就没有了（说明初始化后停住）
+```
+
+## ② 排除法结果（逐个人工 patch Application_Start 的调用）
+```
+基线（4 调用完整）：       319 行, ENTER=1, 帧=0, GPE=19, 停在 INITSEQ×4
+跳过 call#1 (0x92559c)：  321 行, 出现 im.elf 64 线程的 TS 采样 → 有进展但仍无帧
+跳过 call#2 (0x54d154)：  323 行, 停在 ENTER 后（无 INITSEQ）→ 更早停
+跳过 call#3 (0x54d2b0)：  315 行, 停在 ENTER 后（无 INITSEQ）→ 帧循环直接崩/阻塞
+跳过全部 3 个：            完全静默
+```
+**⇒ 结论：**
+```
+· call#1 完成（GPE 19 包是它驱动的）
+· call#2 完成（它启动的服务线程产生 INITSEQ）
+· **call#3 (0x54d2b0) 初始化帧循环的上下文（r0=r7, r1=r7+0x89C）**
+  · 跳过它 ⇒ 帧循环拿到未初始化上下文 ⇒ 立刻崩/阻塞
+  · 正常路径下它**可能正在阻塞**（因为它初始化到一半就卡住）
+⇒ **call#3 是当前的唯一嫌疑点**
+```
+
+## ③ **isFrameDelay 强制为真 —— 无效**
+```
+补丁：libObj.so @0x105988 `f8 b5 00 af` → `01 20 70 47` (movs r0,#1; bx lr)
+⇒ isFrameDelay 永远返回 1
+结果：帧相关调用仍然 0
+⇒ **证明帧循环根本没被到达**（不是"等帧时机"的问题）
+```
+**⭐⭐ 重要副产物：isFrameDelay 的实现已确认：**
+```
+isFrameDelay() = 比较 this+0（当前时间）与 this+24（下一帧截止时间），
+                 当前 >= 截止 返回 1
+时间源 = clock_gettime(CLOCK_MONOTONIC)（正常可用）
+```
+
+## ④ ★★★ 重要环境发现：**多实例内存争抢导致假阴性**
+```
+本轮发现同时跑了 5 个 QEMU 实例（每个 1GB，宿主 11GB）
+⇒ 内存争抢 → 随机启动失败（内核都没跑到 /init）
+⇒ **之前多次"随机失败"和"跳过 call#3 后 213 行退化"很可能是这个原因**
+⇒ 清理到单实例后行为稳定可复现
+**⭐ 教训：每次实验前必须确认只有 1 个 QEMU 实例**
+```
+
+## ⑤ 当前补丁清单（initramfs 内）
+```
+① notify_model_system_error @appFw 0x2BC3174 → bx lr        ✅ 消模型断言
+② InfraBluetoothLowEnergy_init @lib 0x45d34 → bx lr         ✅ 消 BLE 断言
+③ isFrameDelay @libObj 0x105988 → return 1                  ⚠️ 当前无效（帧循环未到达）
+④ Application_Start call#3 @appFw 0x54d5a6 → nop             ⚠️ **本轮实验，需回滚**
+   回滚字节: ff f7 83 fe
+```
+
+## ⑥ 下轮计划
+```
+① **回滚补丁 ④**（恢复 call#3）
+② 拆 call#3 (0x54d2b0) 的各个子调用：
+   0x54d094 / 0x54d0b0 / 0x54d0cc / 0x54d0e8 / 0x54d120 / 0x54d27c / 0x79df64
+   逐个判断哪个可能阻塞（尤其 0x79df64 是最后一个，可能是"等待/同步"）
+③ 如果找到阻塞点 ⇒ 同法绕过（返回成功）
+④ 目标：让 call#3 完成 ⇒ 帧循环拿到有效上下文 ⇒ drawFramebuffer 被调用 ⇒ 抓帧
+```
