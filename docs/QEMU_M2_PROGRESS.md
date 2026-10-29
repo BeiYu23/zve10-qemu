@@ -9368,3 +9368,54 @@ nflasha1 文件偏移 0x678200，当前内容：
 而我们前几十轮花了大量精力在"加载是否成功""符号是否解析"这些**间接指标**上。
 ⇒ **排查黑屏/挂死类问题时，第一步就该全文搜 `assert` / `Assertion` / `panic` / `segfault`，
    而不是先看"走到哪一步"。断言会直接告诉你"为什么停"。**
+
+## 142. 2026-10-29 ★★★★ 决定性静态发现：IMDB 加载是**分阶段**的，`appFwBoot` 属于 **stage 4**
+
+### 循环反汇编（im.elf @ 0xb900 起）
+
+```asm
+b916: blx  IMDB_get_entries        ; r0 = 表基址
+b91a: movs r4, #44                 ; 步长 0x2c
+b91c: mla  r4, r4, r5, r0          ; r4 = &entries[i]
+b95e: ldr  r3, [r4, #0]            ; ★ 表项 +0x00 = "stage/type" 字段
+b960: cmp  r3, r8                  ; 与传入的 stage 比较
+b962: beq  b968                    ; 相等 ⇒ **本阶段结束，返回**
+b964: cmp  r3, #40 (0x28)          ; 终止标记
+b966: bne  b922
+b922: cmp  sl, #0 / beq skip
+b928: ldr  r2,[r6,#40]; tst r2,[r4,#8]; beq skip   ; ★ 掩码过滤 1
+b930: ldr  r3,[r4,#4]; tst r9,r3;      beq skip    ; ★ 掩码过滤 2
+b938: ... 处理该条目（加载/调用入口）
+b95a: adds r5,#1; adds r4,#0x2c; b b95e            ; 下一项
+```
+
+**⇒ 该函数是 `load_stage(stage_id)`：遍历表，遇到 `+0x00 != stage_id` 就停，
+只处理本阶段的条目（并再经两道掩码过滤）。**
+
+### 表项 +0x00 的取值分布（stage 字段）
+
+```
+[100]..[115]  t0 = 0x20000002   ← stage 2
+[116],[117]   t0 = 0x20000003   ← stage 3
+[118]         t0 = 0x20000002
+[119] appFwBoot.so        t0 = 0x20000004   ← ★★★ stage 4
+[120] subapp.so           t0 = 0x20000004
+[121] /usr/local/lib/libVssApp.so t0 = 0x20000004
+[122]..       t0 = 0x20000002   （下一组的 stage 2）
+```
+
+### ⇒ 结论（这是今晚最硬的一条）
+
+**`appFwBoot.so` 属于 stage 4；而 QEMU 里运行时只跑到 stage 2 的条目（dlopen 最后到 [107]，
+其 t0=0x20000002）。**
+
+**⇒ "appFwBoot 未被加载" 的真正原因：系统从未进入 stage 3 / stage 4 的加载流程。**
+* 不是"缺失模块"、不是"dlopen 失败"、也不是"循环中断"；
+* 而是**分阶段推进的机制没有走到后面阶段**。
+
+### 下一轮
+
+1. 找 `load_stage` 的调用者：谁在什么时候调 `load_stage(3)` / `load_stage(4)`
+   （大概率在某个"服务就绪"回调里，或 main 的不同阶段）；
+2. 若是某事件驱动 ⇒ 该事件在 QEMU 里未发生（硬件/服务依赖）⇒ QEMU 侧确认为边界；
+3. 若能直接调用 ⇒ 在探针里主动调 `load_stage(4)`（但需要正确的 r8/sl/r9 参数）。
