@@ -8469,3 +8469,35 @@ events = 0     dlsym 记录 = 0
 events = 124，dl = 68，appFw 尝试 = 0
 ⇒ **target 参数不影响是否加载 appFw**（结果与 target=qemu 一致）
 ```
+
+## 125. 2026-10-29 ★★★★ 决定性发现：**IMDB 表登记 200 个模块，v9 树里缺 125 个**
+
+对 `lib/libIMDB.so` 里的模块名做正则提取，与 `root/lib` 实际文件比对：
+
+```
+IMDB 表登记: 200 个 .so
+树里缺失:    125 个（62%！）
+缺失示例:  AppConfig.so / libBizInitializer.so / gui.so / libDDS.so /
+           libAdjModule.so / libAdjustUIProxy.so / libAtome*.so /
+           libCameraStillDate.so / libCoreSync.so / libHotplug.so /
+           libHandleRsrc.so / libI2SRight.so …
+```
+
+**并且这些模块在 E10 树、usr.m2_v2、port_m2 里也都不存在**（各树 .so 数量：151 / 152 / 150）。
+⇒ **不是路径问题，是这几个树本身都是"只含部分模块"的精简集合。**
+
+### 含义（这可能解释一切）
+
+1. `im.elf` 按 IMDB 表**串行**逐条 `dlopen → dlsym → fn(arg)`；
+   遇到缺失模块会 `dlopen` 失败（`return -1`，静默）；
+2. 关键的 **`libBizInitializer.so`（BIZ_Init，业务初始化）缺失** ⇒ 那批
+   `0x30/0x31` 族服务注册永远不会发生（与我们观测到的"缺失族"吻合！）；
+3. `AppConfig.so` 也缺失 ⇒ 如果它本该在 appFwBoot 之前/同时被加载，链条更早断；
+4. **⇒ M2 在 QEMU 里黑屏，很可能不是"移植错误"，而是"这棵树缺了 125 个模块"。**
+
+### 下一步（方向性变化）
+
+* **优先找完整的 M2 固件树**（那 125 个 .so 是必需的）；只有补全它们，
+  `BIZ_Init → ... → appFwBoot.Application_System_Init → dlopen(appFw.so)` 这条链才可能走通；
+* QEMU 侧用现在这套 harness 验证"补模块后链条是否前进"（补一个跑一次，看 events 与 M2DLSYM 是否增加）；
+* 真机侧同样适用：**若 v9b 的 /usr/lib 也缺这 125 个，那 v9b 注定黑屏**，与 libmpr 无关。
