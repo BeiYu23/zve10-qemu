@@ -23,7 +23,7 @@ static void out(const char *s, int n)
     if (g_kfd >= 0 && write(g_kfd, s, n) == n) return;
     write(2, s, n);
 }
-static void *n_reg, *n_regs, *n_rcv, *n_snd, *n_sd, *n_dl;
+static void *n_reg, *n_regs, *n_rcv, *n_snd, *n_sd, *n_dl, *n_rcv2;
 static int reg_logged;
 static unsigned long libobj_base(void) { return 0; }
 static void gi_fire(void);
@@ -316,6 +316,10 @@ void *m2_call_dlopen(const char *f, int fl)
 {
     if (!n_dl) { n_dl = dlsym(RTLD_NEXT, "dlopen"); }
     void *h = n_dl ? ((void *(*)(const char *, int))n_dl)(f, fl) : 0;
+    if (f && (strstr(f, "BizInitializer") || strstr(f, "appFw") || strstr(f, "AdjChk"))) {
+        { char b[240]; const char *e = h ? "ok" : (dlerror() ? dlerror() : "?");
+          int n = snprintf(b, sizeof b, "M2DLH name=%s h=%p %s\n", f, h, e); out(b, n); }
+    }
     if (f && (strstr(f, "appFw") || strstr(f, "AdjChk"))) {
         char b[240]; const char *e = h ? "none" : (dlerror() ? dlerror() : "?");
         int n = snprintf(b, sizeof b, "M2DLERR name=%s h=%p err=%s\n", f, h, e);
@@ -327,6 +331,31 @@ __attribute__((naked)) void *dlopen(const char *f, int fl)
 {
     __asm__ volatile("push {r0,r1,r2,r3,r4,lr}\n mov r0,sp\n bl m2_h_dl\n"
                      "pop {r0,r1,r2,r3,r4,lr}\n b m2_call_dlopen\n");
+}
+
+#define NQ6 40
+static unsigned r2_seen[NQ6], r2_n;
+void m2_h_rcv2(unsigned *r)
+{
+    int isnew = 1;
+    for (unsigned i = 0; i < r2_n && i < NQ6; i++) if (r2_seen[i] == r[0]) { isnew = 0; break; }
+    if (isnew && r2_n < NQ6) {
+        r2_seen[r2_n++] = r[0];
+        Dl_info di; unsigned long lr = (unsigned long)r[5] & ~1UL;
+        if (dladdr((void *)lr, &di) && di.dli_fname) {
+            char b[220]; int n = snprintf(b, sizeof b, "M2RCV2 qid=%08x lib=%s off=%08lx\n",
+                                          r[0], di.dli_fname, lr - (unsigned long)di.dli_fbase);
+            out(b, n);
+        }
+    }
+    if (!n_rcv2) { n_rcv2 = dlsym(RTLD_NEXT, "osal_rcv_msg");
+        if (!n_rcv2) { void *h = dlopen("/usr/lib/libosal_uipc.so", RTLD_LAZY); n_rcv2 = h ? dlsym(h, "osal_rcv_msg") : 0; } }
+}
+__attribute__((naked)) int osal_rcv_msg(void)
+{
+    __asm__ volatile("push {r0,r1,r2,r3,r4,lr}\n mov r0,sp\n bl m2_h_rcv2\n"
+                     "pop {r0,r1,r2,r3,r4,lr}\n ldr ip,=n_rcv2\n ldr ip,[ip]\n"
+                     "cmp ip,#0\n bxne ip\n mvn r0,#0\n bx lr\n");
 }
 
 __attribute__((constructor)) static void init(void)
