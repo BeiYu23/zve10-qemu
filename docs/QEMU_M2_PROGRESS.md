@@ -10201,3 +10201,124 @@ call#4 (0x54f664 FrameLoop)：**从未被到达**
 ③ 或者：直接给 0x910042 队列"喂"一条假应答，看 appFw 是否继续
 ④ 目标不变：call#3 完成 ⇒ 帧循环到达 ⇒ drawFramebuffer 被调用 ⇒ 抓帧
 ```
+
+---
+
+# ★★★★★★ 2026-10-31 第九十七层：**确证 appFw 死锁在"无人服务的队列 0x910042"上，完全无渲染活动**
+
+## ① 用户要求的标准运行方式（已固化）
+```bash
+/mnt/build/m2qemu/run-qemu-sd.sh <outdir>
+# 内部：
+systemd-run --unit=zve10-<name> --collect \
+  --property=MemoryMax=4G --property=MemoryAccounting=yes <qemu...>
+# 确切 PID：
+systemctl show -p MainPID --value zve10-<name>
+```
+**✅ 独立 cgroup（`systemd.slice/zve10-*.service`）—— 不计入 DSH 内存**
+**✅ 单实例保证（启动前 stop 同名 unit）**
+**✅ 确切 PID（不用 pgrep|head）**
+**⚠️ QEMU 的 stdout 进 journal：`journalctl -u zve10-<name>`**
+**⚠️ MemoryMax 必须 ≥4G（2G 会导致随机启动失败）**
+
+## ② ★★★★★ 阻塞原语钩子 —— 抓到主线程的死锁点
+
+**argtrace 增加 4 个 LD_PRELOAD 拦截（`osal_wai_sem_tmo` / `osal_rcv_msg_tmo` /
+`osal_snd_sync_direct` / `usleep`），并用 **dladdr** 解析调用者模块。**
+
+**核心结果（`out/dl1`）：**
+```
+BLK ssd tid=126 qid=0x920277 mod=/usr/bin/im.elf     off=0x2365
+BLK ssd tid=126 qid=0x910042 mod=/usr/lib/libMWF.so  off=0x207b1   (×3)
+BLK ssd tid=126 qid=0x910042 mod=/usr/lib/libObj.so  off=0x3d255   (×17+)
+```
+**⇒ **tid=126 = im.elf 的主线程**（tid==pid），也就是跑 `Application_Start` 的线程！
+⇒ 它反复向 **qid=0x910042** 发同步查询，调用点在 **libObj.so 偏移 0x3d255**。**
+
+## ③ ★★★★★ 决定性证据：**队列 0x910042 没有任何服务者**
+```
+rcv_msg 钩子记录到的队列（out/qid1）：
+  0x8f0139, 0xbd017a, 0x3310a20, 0x94020a, 0x7a804c, 0x7a0020,
+  0x16f6083, 0x1706084, 0x80003b, 0x5c011d, 0x7e002f, 0x55011e~0x550121 ...
+⇒ **0x910042 从未出现在 rcv_msg 里（0 次）**
+⇒ ssd 侧：19 次全部发往 0x910042
+
+**结论：主线程向 0x910042 发查询，但没有任何线程接收/应答该队列
+⇒ 同步调用失败/超时 ⇒ 重试 ⇒ 永久卡住 ⇒ Application_Start 永不返回
+⇒ 帧循环（call#4）永不执行 ⇒ 无渲染**
+```
+
+## ④ 查询函数本体（libObj @0x3d22c）
+```asm
+3d22c: push {r4,r5,r7,lr}; sub sp,#32
+3d234: cbz r0, 3d262                ; 空指针保护
+3d236: movs r5, #32                 ; 消息长度 32
+3d246: blx memset                   ; 清空 32 字节 buffer
+3d24a: ldr r0, =0x00910042          ; ★ qid
+3d24e: str r5, [r7, #0]             ; buf[0] = 32 (size)
+3d250: blx osal_snd_sync_direct     ; ★★★ 同步查询（阻塞等应答）
+3d254: cbnz r0, 3d258               ; 返回非0 ⇒ 跳过读应答
+3d256: ldr r0, [r7, #20]            ; 读应答状态
+3d258: ldrd r2,r3,[r7,#24]; strd r2,r3,[r4]   ; 拷出应答数据
+3d262: ldr r0, =0xfffffc00          ; 错误码 -1024
+```
+**⇒ 这是一个"向 0x910042 要 32 字节数据"的查询；`0xFFFFFC00(-1024)` 是 osal 的"不支持/无应答"通用错误码。**
+
+**调用者只有 2 处（0x3d2c2、0x3d306），都在同一个"请求-应答"辅助函数里（消息类型 2 与 15）。**
+
+## ⑤ 假成功补丁 —— **无效**
+```
+补丁：libObj 0x3d250 `fd f7 b4 eb`(blx) → `00 20 00 bf`(movs r0,#0; nop)
+⇒ 查询函数直接返回"成功"（应答数据全零）
+结果：ssd 调用仍有 22 次，帧仍为 0，日志停在 "INITSEQ resolve InfraBluetoothLowEnergy_init"
+⇒ **说明重试/阻塞不只在这一个查询函数里，或上层依赖应答内容**
+```
+
+## ⑥ ★★★★★ 内存快照对比 —— **完全没有渲染活动**
+```
+方法：25 秒内两次快照 guest RAM（512MB），对比 1MB 块的 MD5
+结果：**只有 2 个块变化：0x00000000 和 0x00400000（内核区）**
+⇒ **没有任何图形/帧缓冲区在被写入**
+⇒ 帧缓冲 0x22c48000 全零（SHA 34c69899504b，与所有历史运行一致）
+⇒ **确证：引擎完全没有产出任何像素**
+```
+
+## ⑦ 累计补丁清单（当前 initramfs）
+```
+① notify_model_system_error @appFw 0x2BC3174 → bx lr            ✅ 消模型断言
+② InfraBluetoothLowEnergy_init @lib 0x45d34 → bx lr             ✅ 消 BLE 断言
+③ isFrameDelay @libObj 0x105988 → return 1                      ⚠️ 无效（帧循环未到达）
+④ 帧循环 bne @appFw 0x54ED3E → nop                               ⚠️ 无效（同上）
+⑤ 查询函数 @libObj 0x3d250 → 返回成功                             ⚠️ 无效
+⑥ argtrace.so：4 个阻塞钩子 + dladdr + tid                       ✅ 诊断有效
+```
+
+## ⑧ 根本判断
+```
+appFw 的主线程（跑 Application_Start 的那个）卡在"向 qid 0x910042 查询服务状态"上，
+而该队列**没有任何服务者**。这解释了：
+  · 为什么 64 个线程里只有 1 个在跑（其余全在 tmo=-1 无限等）
+  · 为什么帧循环永不执行
+  · 为什么所有帧缓冲都是零
+⇒ **缺失的运行前提 = 一个应该注册/服务 0x910042 队列的服务模块**
+⇒ 这正是 goal 里说的"新引擎相对老引擎缺失的运行前提"
+```
+
+## ⑨ 下轮计划
+```
+① 找 0x910042 的**注册者**（谁调用 osal_reg_msg_queue_cb 传这个 qid）
+   · 静态：扫所有 .so 找 reg_msg_queue_cb 调用 + 附近有 0x910042 字面量
+   · 动态：hook osal_reg_msg_queue_cb，打印 qid，看哪个注册了
+② 如果该服务模块存在于树里但未加载 ⇒ 补加载
+③ 如果该模块缺失 ⇒ 写一个桩服务（a7c2-re 思路）
+④ 目标：主线程查询成功 ⇒ Application_Start 走完 ⇒ 帧循环 ⇒ 抓帧
+```
+
+## 方法论（第 100 条）★★★
+**对比两次内存快照是判断"是否真的在渲染"的最强手段：
+```
+本轮：25 秒 / 512MB / 1MB 粒度 / MD5 对比
+⇒ 只有内核区 2 个块变化 ⇒ **确证零渲染**
+⇒ 比"看某个固定地址是否为零"强得多（不会漏掉搬到别处的帧缓冲）
+```
+**⇒ 判据：怀疑"没渲染"时，先做时间维度的差异对比，再谈单点检查。**
