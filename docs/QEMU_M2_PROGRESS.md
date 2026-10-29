@@ -9155,3 +9155,46 @@ libmintx.so / libmprctrl.so / libRsrcHotshoe.so
    若是，需按 target 过滤后才是本次真正应加载的集合；
 2. 检查 `[119]` 表项的 `+0x0E`（flag）与其它已加载项是否有差异
    ⇒ 若差异明显（如 bit 表示"仅 product 机型加载"），即可解释"为何跳过 appFwBoot"。
+
+## 139. 2026-10-29 ★★★ 表序与运行序一致；断点落在 **[108] libAdjustUIProxy.so** 之前
+
+### 关键校验：表顺序 = 运行时 dlopen 顺序（前半段）
+
+```
+dlopen 前 15 个 -> 表下标：0,1,2,3,4,5,6,7,8,9,10,11,12,13,14
+下标序列单调递增 = True  ✅
+```
+**⇒ 我解析的 191 项表（起始 0xf400，步长 44）就是 im.elf 实际遍历的表，顺序正确。**
+（与协作方 186 项表的差异来自：我这边包含少量非模块项/重复项，导致下标偏移约 +9；
+ `appFwBoot` 在我这边是 [119]，在协作方是 [110]。）
+
+### 断点位置（用 dlopen **尝试**序列，覆盖 75 次）
+
+```
+能映射到表下标的尝试: 72 次
+最大下标: [107] libEMG.so -> emg_init        ← 已尝试
+自此之后**从未尝试**的条目：
+  [108] libAdjustUIProxy.so        -> AdjustUIProxy_init
+  [109] libTetheringResource.so    -> TetheringResource_Init
+  [110] libNetServiceTethering.so  -> netservicetethering_init
+  [111] libJiritsuUIView.so        -> JiritsuUIView_init
+  [112] libJiritsuSlave.so         -> JiritsuSlave_init
+```
+
+**⇒ 加载循环的最后一个成功条目是 `[107] libEMG.so (emg_init)`，
+下一个应当处理的 `[108] libAdjustUIProxy.so (AdjustUIProxy_init)` 从未被 dlopen。**
+
+### 注意：尾部顺序有偏离
+
+最后几次尝试的下标是 88 → 107 → 91 → 92 → 93 → 94（非单调）
+⇒ 说明**表里有分支/跳过逻辑**（例如某些条目按 target/flag 跳过），
+或存在"重试/延后加载"列表。
+**⇒ 但"最大下标 107 之后一条都没有"是干净的边界证据。**
+
+### 下一轮（目标达成路径）
+
+1. **反汇编 `libAdjustUIProxy.so` 的 `AdjustUIProxy_init`**（若文件存在）——
+   确认它是"未被调用"还是"调用了但阻塞"；
+2. 若文件不存在（很可能，因为之前的"缺失模块"里就有它）⇒ **`dlopen` 失败 ⇒ 循环在此中断**
+   ⇒ 断点确定 = `[108] libAdjustUIProxy.so` 缺失导致；
+3. 那就回到"补模块"或"跳过该条目"两条路（后者可以改我们的 preload 让 dlopen 返回假句柄）。
