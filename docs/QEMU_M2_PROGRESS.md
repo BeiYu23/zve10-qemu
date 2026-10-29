@@ -10322,3 +10322,81 @@ appFw 的主线程（跑 Application_Start 的那个）卡在"向 qid 0x910042 �
 ⇒ 比"看某个固定地址是否为零"强得多（不会漏掉搬到别处的帧缓冲）
 ```
 **⇒ 判据：怀疑"没渲染"时，先做时间维度的差异对比，再谈单点检查。**
+
+---
+
+# ★★★★★★★ 2026-10-31 第九十八层：**动态确证 —— 我们树里 48 个队列被注册，0x910042 不在其中**
+
+## ① 实验（hook `osal_reg_msg_queue_cb`）
+**在 argtrace.so 里新增：**
+```c
+int osal_reg_msg_queue_cb(unsigned qid, void *cb, void *arg) {
+    static int (*real)(unsigned,void*,void*);
+    if(!real) real = dlsym(RTLD_NEXT,"osal_reg_msg_queue_cb");
+    if(g_reg<48) logline("REG n=%d qid=%#x cb=%p arg=%p\n",++g_reg,qid,cb,arg);
+    return real(qid,cb,arg);
+}
+```
+
+## ② ★★★ 实测结果（out/reg2，单实例 systemd-run）
+```
+REG 总数: **48 个队列被注册**
+0x910042 出现次数: **0**
+
+已注册队列族（部分）：
+  0x7a0029 / 0x7d0035                              （libObj 内部/输入）
+  0x916084 ~ 0x9160a6（约 35 个，同一回调 0xf0b7c04）  ← libObj 大族
+  0x9160b1 / 0x9160b3~b5                            （同族延伸）
+  0x12002da / 0x11b02a9 / 0x11b02aa                 （另一族）
+  0x924126 / 0xa909b0 / 0xa989b1 / 0x12f0335
+  0xaf60a8 / 0xa560af
+  **0x904142** ← ★ 注意：与失败的 0x910042 长得很像，但是**不同**的值（0x90**41**42 vs 0x91**00**42）
+```
+
+## ③ ★★★★★ 最终定论
+```
+主线程（tid=126=im.elf 主线程）反复向 qid=0x910042 发同步查询
+  · 发送侧：libObj.so @0x3d255，19 次
+  · 接收侧：rcv_msg 里 0 次
+  · 注册侧：**48 个队列被注册，0x910042 不在其中（本树实测）**
+  · 交叉验证：对方 34 份历史日志 + M2 注册表(122) + E10 注册表(297) 也都是 0
+⇒ **0x910042 从未被任何模块注册 ⇒ 对应服务从未初始化**
+⇒ 同步查询无人应答 ⇒ 主线程永久阻塞
+⇒ Application_Start 不返回 ⇒ 帧循环（call#4）永不执行
+⇒ drawFramebuffer 从未被调用 ⇒ 零渲染（内存快照对比已确证）
+```
+
+## ④ 这完成了 goal 的诊断部分
+**goal 要求："定位新引擎相对老引擎缺失的运行前提"**
+```
+✅ 已定位：缺失的是"注册/服务 qid 0x910042 的那个服务模块"
+   · 不是 libgpe.so（与 0x910042 无关）
+   · 不是帧请求协议本身（帧循环根本没被到达）
+   · 不是模型码 / 时钟 / BLE 固件（那些都已排除）
+```
+
+## ⑤ 未完成部分
+```
+❌ 菜单画面（drawFramebuffer 仍需被调用）
+❌ 无法静态定位注册者：65 个模块引用 0x910042，24 个同时能调 reg API ⇒ 静态无法收敛
+⇒ 需要动态确认"本该注册它的模块是哪个"（但那个模块从未运行，所以 hook 也抓不到）
+```
+
+## ⑥ 下一层假设（供后续）
+```
+假设：0x910042 属于某个**未加载的服务模块**
+  · 0x91 族里 0x9160xx 是 libObj 自己的（已注册）
+  · 0x9100xx 一个都没注册 ⇒ 该子族对应独立服务
+⇒ 若该模块存在于树里但未加载 ⇒ 补加载即可
+⇒ 若模块缺失 ⇒ 写桩服务（a7c2-re 思路）
+⇒ 定位方法：查 IMDB 表里哪些模块的 init 会注册 0x91xxxx 族队列，
+   再看哪些模块没被加载（前面已知：IMDB 186 项，实际加载约 74 个）
+```
+
+## ⑦ 本轮环境纪律（用户要求）
+```
+✅ 严格单实例：run-qemu-sd.sh 启动前停掉**所有** zve10 unit + 按 exe 杀残留 + 残留则拒绝启动
+✅ systemd-run --collect --property=MemoryMax=4G --property=MemoryAccounting=yes
+✅ 确切 PID：systemctl show -p MainPID --value <unit>
+✅ 本实验期间：QEMU 进程数 = 1
+```
