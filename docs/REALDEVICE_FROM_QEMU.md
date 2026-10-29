@@ -161,3 +161,30 @@ LD_PRELOAD=/usr/lib/libmpr.so               → 全局 ✓（但 QEMU 上导致�
 2. 真机能起 UI 时的 `/proc/<im.elf>/task/*/stack` 或完整日志；
 3. 允许一次性外部 ptrace 注入（不改目标时序的观测方式，尚未尝试）；
 4. 若确实缺模块 ⇒ 完整的 M2 固件树。
+
+---
+
+## 8. ⚠️ 重要：真机与 QEMU 的**故障点可能不同**（对方推理 + 我的确认）
+
+**推理链（证据充分）：**
+```
+真机 /log/im_manual.log 里有 DMP_2D_Initialize : 0
+  ⇒ 那是 appFwBoot 的 Main() 里 uxengine_init2 的输出
+  ⇒ Main() 被调用过
+  ⇒ Application_System_Init() 被调用过（是它负责启动 Main 的线程）
+  ⇒ 其中的 dlopen("appFw.so") **无条件执行过**（IMDB 传入 arg="AppConfig.so" ⇒ 走分支 A）
+  ⇒ **真机确实尝试过加载 appFw.so**
+```
+
+**而 QEMU 侧：** 6 次运行的 dlopen 记录里 **`appFwBoot.so` 一次都没出现**
+（但它确实在 maps 里）⇒ 说明我们的 dlopen 观测漏了 `__libc_dlopen_mode` 这个入口，
+**QEMU 侧"到底走到哪一步"目前仍未确定**。
+
+**⇒ 对真机的含义：**
+| 真机 `grep -c appFw` | 真机实际情况 | 修复方向 |
+|---|---|---|
+| `0` 但 Main 跑过 | **尝试过 dlopen 并失败** | 补符号作用域（`s_count` 可见性）或补缺失依赖 |
+| `≥1` | 加载成功了 | 问题在更后面（UI 初始化/渲染） |
+
+**⚠️ 注意：QEMU 侧的 `0` 与真机侧的 `0` 含义不同**——
+QEMU 可能是"没走到"，真机是"走到了但失败"。**不要用 QEMU 的结论直接推真机。**
