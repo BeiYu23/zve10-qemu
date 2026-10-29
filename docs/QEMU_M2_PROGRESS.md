@@ -9069,3 +9069,41 @@ dl_iterate_phdr   ⇒ 标准 API、直接给结构化数据（名字+基址）�
 ```
 **⇒ 判断标准："这个信息有没有现成的 API？" 有就用 API，
    因为 API 的语义稳定，而文本格式会变、还依赖挂载状态。**
+
+## 137. 2026-10-29 ★★★ 同一次运行内用 `dl_iterate_phdr` 对比：两仪器一致，**appFwBoot 确实未加载**
+
+按协作方建议，用 `dl_iterate_phdr`（标准 API，不依赖 fork/`/proc`）替代 maps 采样，
+触发点改为"两个注册桩的全局计数达到 110 时"：
+
+```
+events = 134
+已加载对象（M2OBJ）= 76 个
+dlopen 记录（M2DL）  = 75 个          ← 76 与 75 差 1（主程序/执行体自身）⇒ 一致
+appFwBoot: obj=0, dl=0               ← ★ 两个仪器**同一次运行**内一致
+appFw.so : obj=0
+```
+
+**⇒ 在本轮运行中，`appFwBoot.so` 确实**从未被加载**（不是日志漏记）。**
+⇒ 上一轮 §135 的"矛盾"归结为**跨运行对比**，此处已被同 run 数据取代。
+
+### 最后加载的 8 个库
+
+```
+libInfraNetConnectionManagerEther.so / libNetService.so / libNetCommon.so /
+libSKDWrapperManager.so / libInfraAccessLogWrapper.so /
+libmintx.so / libmprctrl.so / libRsrcHotshoe.so
+```
+
+### 关键方法（可复用）
+
+**`dl_iterate_phdr` 是可靠的"当前进程已加载库"清单**：
+* 不需要 fork 子进程；
+* 不需要 `/proc`；
+* 直接给 `dlpi_name` + `dlpi_addr`；
+* 用它统计加载数量 = **"哪次运行走得最远"的可靠指标**（比日志长度可靠）。
+
+### 下一轮
+
+用协作方的 186 项 IMDB 表（有精确顺序）做映射：
+把本轮 76 个已加载库对应到表下标 ⇒ **最后一个成功的下标 = 断点**；
+其下一个条目（`[断点+1]`）的入口函数就是"卡住或未被执行"的那个。
