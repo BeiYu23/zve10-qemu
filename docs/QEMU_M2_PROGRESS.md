@@ -7710,3 +7710,44 @@ a7c2-re 的软件渲染部分（可直接移植参考）：
   这很可能一击命中；
 * 若根本没看到该调用 ⇒ 断点在 appFwBoot 更早的分支（strcmp/target 选择），
   下一步就查 `target=qemu` 与 `target=product` 的分支差异。
+
+## 112. 2026-10-29 ★★★ dlopen 拦截：40 次加载尝试，**appFw.so 一次都没被尝试**
+
+拦 `dlopen`（只记录首次出现的文件名，带重入保护），实测：
+
+```
+events = 181（基线正常）
+M2DL = 40 个不同的 dlopen 目标，全部是 IMDB 模块表里的库：
+  libosal_uipc / libosal_utm / libosal_ulogio / libInfraInterchipDatatrans /
+  libNVM / libbackup / libSaveLoadSettings / libbkdmn / libOnDemandLoader /
+  … /usr/lib/libObj.so / libInfraError / libJiritsu / libAtn / libGetLog /
+  libUniqIDGen / … / libInfraFsys / CameraOnDemandSaver / libInfraOptionInstall / libAiDictionary
+
+grep 'appfw' 命中 = 0     ← ★★★ 从未尝试加载
+```
+
+### 结论（比 §111 更硬）
+
+**不是 "dlopen 失败"，而是 "根本没调用"。**
+⇒ im.elf 的模块加载循环只做了这 40 个（IMDB 表的一轮），**UI 应用 appFw.so 从未被尝试**。
+⇒ 菜单/controller 不存在 ⇒ 强制开菜单（§110）必然失败 ⇒ 帧恒黑。
+
+### 现在的唯一问题
+
+**im.elf 主线程卡在 appFw.so 加载之前的哪一步？**
+
+已知：im.elf 主线程（tid=139）wchan = `osal_rcv_msg_tmo`（在等消息）。
+appFwBoot.so（8,312 B，已加载）里 `Application_System_Init` 有两个 dlopen（配置库），
+且含字符串 `appFw.so` / `Application_Start` ⇒ **它本该 dlopen appFw.so 并调用其
+`Application_Start`**，但没走到。
+
+### 下一轮（两条路，可并行验证）
+
+**A. 主动替它做**（`force-load`）：在探针构造期或延迟线程里直接
+`dlopen("/usr/lib/appFw.so")` + `dlsym("Application_Start")` + 调用，
+看能否绕过 im.elf 的等待直接拉起 UI（风险：缺少 appFwBoot 的初始化上下文，
+可能崩；但 QEMU 里代价低）。
+
+**B. 找出它在等谁**：`osal_rcv_msg_tmo` 是 libosal 内部调用，PLT 拦不到；
+改用"读 `wchan` + 该线程的 `/proc/<pid>/task/<tid>/stack`"▶ 若栈能给出
+调用链（`osal_rcv_msg_tmo` ← 哪个库），就能定位等待者。

@@ -23,7 +23,7 @@ static void out(const char *s, int n)
     if (g_kfd >= 0 && write(g_kfd, s, n) == n) return;
     write(2, s, n);
 }
-static void *n_reg, *n_regs, *n_rcv, *n_snd, *n_sd;
+static void *n_reg, *n_regs, *n_rcv, *n_snd, *n_sd, *n_dl;
 static int reg_logged;
 static unsigned long libobj_base(void) { return 0; }
 static void gi_fire(void);
@@ -291,6 +291,33 @@ static void dump_threads(void)
     closedir(d);
 }
 static void *thread_dumper(void *a) { (void)a; sleep(50); dump_maps(); dump_threads(); return 0; }
+
+#define NQ5 40
+static unsigned char dl_logged[NQ5]; static char dl_names[NQ5][64]; static unsigned dl_n;
+static int dl_guard;
+void m2_h_dl(unsigned *r)
+{
+    const char *name = (const char *)r[0];
+    if (!dl_guard && name) {
+        dl_guard = 1;
+        int seen = 0;
+        for (unsigned i = 0; i < dl_n && i < NQ5; i++) if (strncmp(dl_names[i], name, 63) == 0) { seen = 1; break; }
+        if (!seen && dl_n < NQ5) {
+            strncpy(dl_names[dl_n], name, 63); dl_logged[dl_n] = 1; dl_n++;
+            char b[160]; int n = snprintf(b, sizeof b, "M2DL name=%s\n", name);
+            out(b, n);
+        }
+        dl_guard = 0;
+    }
+    if (!n_dl) { n_dl = dlsym(RTLD_NEXT, "dlopen");
+        if (!n_dl) { void *h = dlopen("/lib/libdl.so.2", RTLD_LAZY); n_dl = h ? dlsym(h, "dlopen") : 0; } }
+}
+__attribute__((naked)) void *dlopen(const char *f, int fl)
+{
+    __asm__ volatile("push {r0,r1,r2,r3,r4,lr}\n mov r0,sp\n bl m2_h_dl\n"
+                     "pop {r0,r1,r2,r3,r4,lr}\n ldr ip,=n_dl\n ldr ip,[ip]\n"
+                     "cmp ip,#0\n bxne ip\n mov r0,#0\n bx lr\n");
+}
 
 __attribute__((constructor)) static void init(void)
 {
