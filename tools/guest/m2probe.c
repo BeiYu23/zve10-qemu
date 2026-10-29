@@ -13,7 +13,6 @@
 #include <link.h>
 #include <dirent.h>
 #include <sys/types.h>
-#include <signal.h>
 #include <pthread.h>
 #include <pthread.h>
 
@@ -231,48 +230,6 @@ __attribute__((naked)) int osal_snd_sync_direct(void)
 }
 
 static volatile pid_t dump_pid;
-static void force_ui(void)
-{
-    char b[200];
-    out("M2SIG enter\n", 13);
-    void *mpr = dlopen("/usr/lib/libmpr.so", RTLD_LAZY | RTLD_GLOBAL);
-    int n = snprintf(b, sizeof b, "M2SIG mpr=%p err=%s\n", mpr, mpr ? "none" : (dlerror() ? dlerror() : "?"));
-    out(b, n);
-    void *h = dlopen("/usr/lib/appFw.so", RTLD_LAZY | RTLD_GLOBAL);
-    n = snprintf(b, sizeof b, "M2SIG appFw=%p err=%s\n", h, h ? "none" : (dlerror() ? dlerror() : "?"));
-    out(b, n);
-    if (!h) return;
-    void *ap = dlsym(h, "Application_Start");
-    n = snprintf(b, sizeof b, "M2SIG Application_Start=%p\n", ap);
-    out(b, n);
-    void *cw = dlsym(RTLD_DEFAULT, "osal_create_waitable_thread");
-    if (!cw) { void *u = dlopen("/usr/lib/libosal_utm.so", RTLD_LAZY | RTLD_GLOBAL); cw = u ? dlsym(u, "osal_create_waitable_thread") : 0; }
-    n = snprintf(b, sizeof b, "M2SIG create_waitable=%p\n", cw);
-    out(b, n);
-    if (!ap || !cw) return;
-    struct { const char *name; int prio; int stack; void *fn; unsigned short flags; short pad; int a; int b; int c; } tp;
-    memset(&tp, 0, sizeof tp);
-    tp.name = "AppFw"; tp.prio = 4; tp.stack = 0x20000; tp.fn = ap; tp.flags = 0x1cf; tp.a = 1;
-    int rc = ((int (*)(void *))cw)(&tp);
-    n = snprintf(b, sizeof b, "M2SIG create rc=%d\n", rc);
-    out(b, n);
-}
-static void sig_handler(int sig, siginfo_t *si, void *uc)
-{
-    (void)sig; (void)si; (void)uc;
-    static volatile int done;
-    if (done) return;
-    done = 1;
-    force_ui();
-}
-static void *sig_waiter(void *a)
-{
-    (void)a;
-    sleep(150);
-    kill(dump_pid, SIGUSR1);
-    return 0;
-}
-
 static void dump_maps(void)
 {
     char path[96], buf[4096];
@@ -372,21 +329,16 @@ __attribute__((constructor)) static void init(void)
     n = snprintf(b, sizeof b, "M2INIT pid=%d cmd=%.48s\n", (int)getpid(), cmd);
     out(b, n);
     if (strstr(cmd, "im.elf")) {
-        { dump_pid = getpid();
-          pid_t c = fork(); if (c == 0) { thread_dumper(0); _exit(0); }
-          struct sigaction sa; memset(&sa, 0, sizeof sa);
-          sa.sa_sigaction = sig_handler; sa.sa_flags = SA_SIGINFO;
-          sigaction(SIGUSR1, &sa, 0);
-          pid_t c2 = fork(); if (c2 == 0) { sig_waiter(0); _exit(0); } }
+        { dump_pid = getpid(); pid_t c = fork(); if (c == 0) { thread_dumper(0); _exit(0); } }
     }
 }
 
-/* ★ M2/libmprctrl ABI shim: provide the (unsigned long) variant that
-   libmprctrl.so imports, forwarding to M2 libmpr's (unsigned int) version. */
+/* ABI shim: libmprctrl (E10-versioned) imports the (unsigned long) variant;
+   M2 libmpr only provides the (unsigned int) one. Forward between them. */
 extern int _ZN5MprIf34SetCreateParam_SupportContentTypesEj(unsigned int);
 int _ZN5MprIf34SetCreateParam_SupportContentTypesEm(unsigned long v)
 {
     static int once;
-    if (!once) { once = 1; out("M2SHIM typesM called\n", 23); }
+    if (!once) { once = 1; out("M2SHIM typesM called\n", 22); }
     return _ZN5MprIf34SetCreateParam_SupportContentTypesEj((unsigned int)v);
 }

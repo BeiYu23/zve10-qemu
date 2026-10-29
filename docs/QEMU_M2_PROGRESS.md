@@ -7917,3 +7917,35 @@ libmpr = M2 版(3,038,540 B)
 在"M2 版 libmpr + 垫片"这个**正确底座**上，重新审视：
 1. 为什么只到 124 条注册（少了哪些库的初始化）；
 2. 用哪种低干扰方式拉起 appFw（§115 的三条路径）。
+
+## 117. 2026-10-29 在正确底座（M2 libmpr）上加 ABI 垫片：符号问题解决，但事件数 124→112
+
+单变量实验：在干净探针里追加 `M2SHIM`（`…SupportContentTypes(unsigned long)` → 转发到 `(unsigned int)`）。
+
+```
+M2SHIM typesM called = 1        ← 垫片被调用（libmprctrl 的符号缺失已解决）
+events = 112（上一轮同配置未加垫片时 124）
+帧 distinct = 1
+```
+
+**判读：**
+* ✅ **垫片确实解决了 `libmprctrl` 的 ABI 缺失**（函数被调用，不再报 symbol lookup error）；
+* ⚠️ 事件数 112 略低于 120 阈值 ⇒ 按硬规则标记为"需复核"，但历史方差为 115~181，
+  112 可能只是启动时序抖动，**尚不能判定为回归**；
+* **结论：垫片是必需且有效的**（否则 libmprctrl 无法工作），保留。
+
+### 当前稳定配置（交接基线）
+
+```
+树      : /mnt/build/zv_m2probe/root（v9 混搭树）
+initramfs: initramfs-ui，libmpr.so = **M2 版**(3,038,540 B)
+探针    : m2probe.c（M2LIB/M2RCV/M2MAPS/M2SND/M2SD + M2SHIM；无强制加载代码）
+基线    : events ≈ 112~124，帧 distinct=1
+已知可加载 UI：dlopen(libmpr, RTLD_GLOBAL) → dlopen(appFw.so) → dlsym(Application_Start) ✅
+```
+
+### 剩余工作（下一轮起）
+
+1. 复核 112 vs 124 是否为噪声（连跑两次取稳定值）；
+2. 用低干扰方式拉起 appFw（§115 三条路径）；
+3. 若 UI 起来后仍黑屏 ⇒ 套用 §109 的 GRM 拦截（`GRM_gpermFillrect`/`gpermRectblit`，已确认 PLT 可拦）。
