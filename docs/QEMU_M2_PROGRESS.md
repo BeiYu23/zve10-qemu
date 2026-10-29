@@ -8528,3 +8528,69 @@ IMDB:default / IMDB:qemu / IMDB:nfs / IMDB:set / IMDB:USBJ / IMDB:RE-SUB
 * 找到指向 `"IMDB:qemu"` 的引用点，其邻近的指针数组就是该表。
 
 拿到 qemu 表后再与树比对，才是可靠结论。
+
+---
+
+# ★★★ 2026-10-30 18:00 第八十四层：IMDB 表 vs 树内文件比对 —— **阴性结果**（假阳性太多）
+
+## 比对数据
+```
+libIMDB 表里的模块名: 194
+v9b /lib (=/usr/lib): 209   rootfs /lib: 35
+⇒ 表里有、两处都没有的: **115 个**
+```
+
+## ⚠️ 但大部分是假阳性
+```
+① 部分"模块"是 **libObj.so 的内部组件**，不需要独立文件：
+   infra_tp_init / infra_hotshoe_init / uxengine_init2 → ✅ libObj.so 导出
+② 有些是**已知幽灵**（原厂也没有）：libgpe.so / libmprdummy.so
+③ 只有 5 个是"E10 有但混搭树丢了"：
+   libInfraBGMMeta / libInfraCacheMgr / libInfraHighlight
+   libInfraMakeScenario / libmprdummy
+⇒ **"115 个缺失"不是真问题**
+```
+
+## ★ BIZ_Init 假设**降级**
+```
+libBizInitializer.so → 三处都没有（v9b / rootfs / E10）
+BIZ_Init 符号        → libObj / appFw / appFwBoot 都不导出
+⇒ 即使文件存在，dlsym("BIZ_Init") 也会失败
+
+⚠️ 更关键：im.elf 的 load_module 在 dlopen 失败时返回 -1，
+   但实测 dl=68 说明**循环继续** ⇒ 缺失模块不阻塞后续模块
+⇒ **"BIZ_Init 阻塞"站不住**
+```
+
+## ✅ 比对澄清了一个重要机制
+```
+appFwBoot 导入 uxengine_init2
+libObj.so **导出** uxengine_init2
+⇒ appFwBoot 的 Main 调 uxengine_init2 时从**已全局加载的 libObj** 解析
+⇒ **解释了为什么"没有 appFw 也能跑到 DMP_2D_Initialize"**
+⇒ appFwBoot 只依赖 libObj（已加载），appFw 是它的**输出**不是**输入**
+⇒ 这条链条现在完全自洽
+```
+
+## 问题回到原点（两种可能仍未区分）
+```
+① dlsym(handle,"Application_System_Init") 返回 NULL ⇒ 静默跳过
+② 循环根本没处理到 appFwBoot 这一项（前面某项 fn() 阻塞）
+⇒ QEMU 线修 dlsym 钩子是唯一能区分的办法
+```
+
+## dlsym 钩子的两个坑（给 QEMU 线的建议）
+```
+① glibc 2.11 的 dlsym 可能在 libc 而非 libdl（libdl 只是空壳）
+   ⇒ 构造函数里用 RTLD_NEXT 应该安全（桩还没生效）
+   ⇒ 或 dlvsym(RTLD_NEXT,"dlsym","GLIBC_2.4")
+② 若 dlsym 在构造函数**之前**被别的库 init 调用，桩仍会递归
+⭐ 建议：**第一版只记录不转发**（返回 NULL），先看"谁在调 dlsym、要什么符号"
+   ⚠️ 返回 NULL 会让很多库加载失败 ⇒ 只跑一轮看日志
+```
+
+## 方法论（第 90 条）★★
+**"表项 vs 文件"这类比对，必须先确认"表项是否都对应独立文件"：
+libIMDB 混装了①独立 .so 模块 ②libObj 内部组件 ③幽灵注册，
+⇒ 直接做集合差集会得到大量假阳性（本次 115 个里绝大多数是假阳性）。
+⇒ **做差集前先分类**：表项是否有对应的独立文件语义？没有的话就不该参与差集。**
