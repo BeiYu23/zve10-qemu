@@ -9107,3 +9107,51 @@ libmintx.so / libmprctrl.so / libRsrcHotshoe.so
 用协作方的 186 项 IMDB 表（有精确顺序）做映射：
 把本轮 76 个已加载库对应到表下标 ⇒ **最后一个成功的下标 = 断点**；
 其下一个条目（`[断点+1]`）的入口函数就是"卡住或未被执行"的那个。
+
+## 138. 2026-10-29 ★★★ IMDB 表解析成功（191 项）+ 关键异常：**appFwBoot[119] 未加载，但表里 119 之后的库却加载了**
+
+### 表解析（成功）
+
+从 `libIMDB.so` 的 `.data.rel.ro`（va=0xf00c, size=0x27b4）按 44 字节步长解析：
+
+```
+表项数 = 191
+步长   = 0x2c(44)
+起始   = 0xf400
+字段   : +0x10 = 模块名, +0x14 = 入口符号
+导出到 : /tmp/m2p/imdb_table.txt（下标 / 模块名 / 入口符号）
+关键位置: [118] libBizInitializer.so -> BIZ_Init
+          [119] appFwBoot.so        -> Application_System_Init
+```
+
+### 与运行时已加载集合对照（同一次运行，obj2.log：76 个库）
+
+```
+能映射到表下标的: 37 个
+下标范围: 9 .. 176
+最后映射到的: [176] libInfraSKD.so -> SKData_Init
+```
+
+**加载集合的末尾（按 idx 但用错表序推断）曾误判为"停在 [176]"，但真正异常是：**
+
+```
+[119] appFwBoot.so     未加载
+[120]..[176] 多个库     已加载
+[177]..[183] libInfraOptionInstallUSB / InfraNetIncom /
+              InfraMCBClient / ExtTransferApp /
+              InfraBluetoothClassic / InfraStreamingUsb / InfraCCPF   未加载
+```
+
+### ⇒ 两个重要推论
+
+1. **加载不是"到某一条就整体停止"**：119 之后仍有大量库被加载
+   ⇒ 之前"循环停止在某下标"的模型**过于简单**；
+2. **`appFwBoot.so` 单独缺席**（而 dlopen 钩子也没有记录它）
+   ⇒ 更可能是**它的表项被跳过**（例如 flag/字段与 target 不匹配、或该表项属于另一张表）。
+
+### 下一轮（明确）
+
+1. 确认表里 191 项是否**混合了 6 张按 target 分组的表**（IMDB:default/qemu/nfs/set/USBJ/RE-SUB）；
+   若是，需按 target 过滤后才是本次真正应加载的集合；
+2. 检查 `[119]` 表项的 `+0x0E`（flag）与其它已加载项是否有差异
+   ⇒ 若差异明显（如 bit 表示"仅 product 机型加载"），即可解释"为何跳过 appFwBoot"。
