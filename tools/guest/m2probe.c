@@ -21,7 +21,7 @@ static void out(const char *s, int n)
     if (g_kfd >= 0 && write(g_kfd, s, n) == n) return;
     write(2, s, n);
 }
-static void *n_reg, *n_regs, *n_rcv, *n_snd;
+static void *n_reg, *n_regs, *n_rcv, *n_snd, *n_sd;
 static int reg_logged;
 static unsigned long libobj_base(void);
 static void read_singleton(void);
@@ -182,6 +182,27 @@ __attribute__((naked)) int osal_snd_sync_msg(void)
 {
     __asm__ volatile("push {r0,r1,r2,r3,r4,lr}\n mov r0,sp\n bl m2_h_res_snd\n"
                      "pop {r0,r1,r2,r3,r4,lr}\n ldr ip,=n_snd\n ldr ip,[ip]\n"
+                     "cmp ip,#0\n bxne ip\n mvn r0,#0\n bx lr\n");
+}
+
+#define NQ3 40
+static unsigned sd_seen[NQ3], sd_n;
+void m2_h_res_sd(unsigned *r)
+{
+    int isnew = 1;
+    for (unsigned i = 0; i < sd_n && i < NQ3; i++) if (sd_seen[i] == r[0]) { isnew = 0; break; }
+    if (isnew && sd_n < NQ3) {
+        sd_seen[sd_n++] = r[0];
+        char b[96]; int n = snprintf(b, sizeof b, "M2SD qid=%08x\n", r[0]);
+        out(b, n);
+    }
+    if (!n_sd) { n_sd = dlsym(RTLD_NEXT, "osal_snd_sync_direct");
+        if (!n_sd) { void *h = dlopen("/usr/lib/libosal_uipc.so", RTLD_LAZY); n_sd = h ? dlsym(h, "osal_snd_sync_direct") : 0; } }
+}
+__attribute__((naked)) int osal_snd_sync_direct(void)
+{
+    __asm__ volatile("push {r0,r1,r2,r3,r4,lr}\n mov r0,sp\n bl m2_h_res_sd\n"
+                     "pop {r0,r1,r2,r3,r4,lr}\n ldr ip,=n_sd\n ldr ip,[ip]\n"
                      "cmp ip,#0\n bxne ip\n mvn r0,#0\n bx lr\n");
 }
 
