@@ -8594,3 +8594,30 @@ libObj.so **导出** uxengine_init2
 libIMDB 混装了①独立 .so 模块 ②libObj 内部组件 ③幽灵注册，
 ⇒ 直接做集合差集会得到大量假阳性（本次 115 个里绝大多数是假阳性）。
 ⇒ **做差集前先分类**：表项是否有对应的独立文件语义？没有的话就不该参与差集。**
+
+## 127. 2026-10-29 补 `libBizInitializer.so` 桩实验：**dlopen 了，但入口函数仍未被调用**
+
+造了一个 8 KB 的桩 `libBizInitializer.so`（导出 `BIZ_Init`/`BIZ_Suspend`/`BIZ_Resume`，
+被调用时往 `/dev/kmsg` 打一行），放进 `initramfs-ui/usr/lib/`，重跑：
+
+```
+events = 124（不变）
+dl（dlopen 目标数）= 70   （上一轮 68 ⇒ 桩确实被 dlopen 了 ✅）
+BIZ_Init 被调用 = 0        ← ★ 入口函数从未被调用
+appFw 尝试 = 0
+```
+
+### 关键含义
+
+**`libBizInitializer.so` 被 dlopen 成功、且导出符号齐全，但 `BIZ_Init` 从未被调用**
+—— 与 `appFwBoot.so` 的症状**完全一样**（也是 dlopen 成功、入口未调用）。
+
+**⇒ 这不是"某个模块阻塞"，而是"im.elf 的加载循环在某个点之后不再调用任何模块入口"。**
+（协作方的判断得到验证：dlopen 失败不阻塞循环；真正的问题是"入口调用"这一环。）
+
+### 下一步（唯一能区分的实验）
+
+**dlsym 钩子 v2 —— 只记录、不转发**（避免上一版的递归自杀）：
+桩内第一次被调用时用 `dlopen("libc.so.6")+dlvsym` 取原生地址（构造期完成），
+记录 `(handle, sym, result)` 后转发；若取不到则记 NULL 并记录调用者 lr。
+看"最后一条 dlsym 是什么符号、返回什么"。
