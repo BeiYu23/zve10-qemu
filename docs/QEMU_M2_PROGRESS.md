@@ -9499,3 +9499,83 @@ ZV-E10M2  0x30030002   （平台字段 030002）
 ```
 **⇒ 判据：找"故障路径上唯一的、动态导入的、只触发一次的函数"做钩子，
    它的 lr 就是你要的地址。**
+
+---
+
+# ★★★★★ 2026-10-30 21:30 第八十九层：**两种失败模式辨析** —— QEMU 线"appFw 从未加载"被我的日志反驳
+
+## ① ★ QEMU 线的新发现：IMDB 加载是**分阶段**的
+**对方反汇编 im.elf @0xb900：**
+```asm
+b916: blx IMDB_get_entries        ; 表基址
+b91a: movs r4,#44                 ; 步长 0x2c（**与我解析的 0x2C 一致 ✓**）
+b91c: mla  r4,r4,r5,r0            ; &entries[i]
+b95e: ldr  r3,[r4,#0]             ; ★ 表项 +0x00 = **stage 字段**
+b960: cmp  r3, r8                 ; 与传入 stage 比较
+b962: beq  b968                   ; 相等 ⇒ 本阶段结束，返回
+b928/b930: tst 掩码 [r4,#8]/[r4,#4] ⇒ 不匹配则 skip
+⇒ **load_stage(stage_id)：只处理 `+0x00 == stage_id` 的连续条目**
+```
+**表项 +0x00 取值：**
+```
+[100]..[115]  t0 = 0x20000002   ← stage 2
+[116],[117]   t0 = 0x20000003   ← stage 3
+[118]         t0 = 0x20000002
+[119] appFwBoot.so  t0 = 0x20000004   ← ★ **stage 4**
+[120] subapp.so     t0 = 0x20000004
+[121] libVssApp.so  t0 = 0x20000004
+```
+**⇒ 表项结构补全：`+0x00 stage / +0x04 mask / +0x08 mask / +0x0E flag /
+   +0x10 name / +0x14 entry / +0x24 argA / +0x28 argB`，跨度 0x2C ✓**
+
+## ② ⚠️ 但对方结论"appFw 从未加载"被我日志反驳
+**`out/fp7/serial0.log` 第 306–315 行（实测）：**
+```
+306: ARGTRACE dlopen path=**appFwBoot.so** flags=0x101 -> 0xb5090
+307: INITSEQ resolve Application_System_Init
+308: ARGTRACE hooked **Application_System_Init** = 0xcf3e271
+310: ARGTRACE dlopen path=**appFw.so** flags=0x101 -> 0xb53f0
+311: ARGTRACE hooked **Application_Start** = 0x2e2a4581
+315: ARGTRACE >>> **Application_Start ENTER**
+```
+**⭐⭐ 基址反推验证（不是推测）：**
+```
+Application_Start VA = 0x54d581（Thumb，已反汇编确认）
+运行时地址 0x2e2a4581
+⇒ 基址 = 0x2e2a4581 - 0x54d581 = **0x2DD57000**（0x1000 对齐 ✓）
+⇒ **appFw.so 确实加载在 0x2DD57000**
+```
+
+## ③ ★★★ 两种失败模式（都真实，但故障点不同）
+```
+**模式 A**（对方最新运行）：只到 stage 2 ⇒ appFw 从未加载 ⇒ 故障在**阶段推进**
+**模式 B**（我的 fp7/s3b/bt… 16 次）：走到 stage 4 → appFw 加载 →
+          Application_Start 进入 → **model 断言** ⇒ 故障在**应用层**
+```
+
+## ④ ★ 强烈怀疑：模式 A 是**新探针干扰**造成的
+```
+① 我的 16 次运行用早期探针（argtrace）⇒ 都走到 stage 4
+② 对方最新加 dl_iterate_phdr / maps 采样 / osal 钩子 ⇒ 只到 stage 2
+③ 对方自己测到"改探针有 30~50% 概率把基线从 124 打坏"
+⇒ **模式 A 很可能是仪器效应，不是真机真实行为**
+```
+
+## ⑤ 结论与建议
+```
+✅ stage 模型正确（我的运行确实进入 stage 4 ⇒ **stage 推进是可满足的**，
+   不需要特定硬件，只需要正确的时序/消息）
+✅ __assert_fail 钩子在**模式 B 配置下有效**（库已加载）
+⚠️ 建议：**回 fp7 基线 → 只加 __assert_fail 一个钩子** → 一次拿到 lr
+⚠️ **一次只加一个探针** —— 模式 A 就是"加一堆"的产物
+```
+
+## 方法论（第 95 条）★★★
+**当两个会话对"某现象是否发生"给出相反结论时，先比较**它们各自的仪器配置**：
+```
+本次：对方"appFw 从未加载"（模式A）vs 我"appFw 已加载并断言"（模式B）
+⇒ 两边都没错，**是不同探针配置下的不同失败模式**
+⇒ 判据：**先对齐基线**（用同一份 initramfs + 同一组探针），再比较结论
+```
+**⇒ 推论：探针本身是系统的一部分。加探针会改变被观测系统的行为，
+   所以"我的运行显示 X"必须附带"在我的探针配置下"。**
