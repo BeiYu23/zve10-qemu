@@ -7131,3 +7131,32 @@ libObj.so 里 0x0090013d 出现 10 次，位置在 .rodata/literal pool
 2. 若时间成本过高：**承认 date-seeding 不是本次卡点**，回到 §90 的
    `flag[obj+0x98] + cond_wait`，用零扰动方式（一次性 ptrace 采样 r4/fp）确认对象；
 3. 真机 v9b 结果优先（若真机能起，则 QEMU 侧就是缺硬件/服务，不必再挖）。
+
+## 96. 2026-10-29 关键判定：M2 的 App **从未**调用日期服务（0x90013d 命中 0）
+
+检查 6 份 M2 运行日志中的 `0x90013d`（探针会记录每个 sync 发送 qid 的首现）：
+
+```
+mF.log / mH.log / mL.log / mO.log / mQ.log / mR.log   命中 = 0
+```
+
+**⇒ 从启动到冻结，**没有任何** `osal_snd_sync_msg` 发往 `0x90013d`。**
+
+⚠️ 但存在一个已知盲区：**探针没有 hook `osal_snd_sync_direct`**
+（`grep -c snd_sync_direct m2probe.c` = 0），而 a7c2 的 seed 程序用的正是 `direct` 变体
+⇒ **App 若走 `direct`，我们看不到**。
+
+### 判读
+
+1. **date-seeding 与本卡点的因果关系目前没有任何证据**：App 既没发（sync_msg 路径），
+   我们也没成功写（write 被拒）；
+2. 更可能的情况：**日期服务与"卡在 cond_wait"无关**，a7c2 的 date 步骤是
+   为他们的 `MENU_OPEN_SET` 路线准备的前置，不是通用必需。
+
+### 下一步（收敛，二选一）
+
+A. **补 hook `osal_snd_sync_direct`**（一次改动、只加日志、不改变调用），
+   跑一次即可确认 App 是否走 direct 且是否发往 0x90013d —— 若仍为 0，彻底关闭 date 线；
+B. 直接关闭 date 线，回到 §90 的 `flag[obj+0x98]` 对象确认（一次性 ptrace 采样）。
+
+**建议先做 A（最便宜、能给出"是/否"的确定答案）。**
