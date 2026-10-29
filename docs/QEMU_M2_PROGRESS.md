@@ -8046,3 +8046,29 @@ im.elf 通过 libIMDB 加载 `appFwBoot.so`，并由 libIMDB 按其模块表调�
 2. 看它的前置条件（例如前一个模块是否报告 ready、某个队列是否有应答）；
 3. 若条件依赖某模块的应答，而该模块在 QEMU 里根本起不来 ⇒ 判定 QEMU 侧不可复现，
    把结论交给真机（真机上该模块正常，链条会继续）。
+
+## 121. 2026-10-29 libIMDB 的模块描述表：`{模块文件, 入口符号}` 成对出现
+
+`libIMDB.so` 里 `appFwBoot.so` 与 `Application_System_Init` 相邻（0x55dc / 0x55e9），
+前后还有 `BIZ_Suspend` / `BIZ_Resume` 等入口符号名，构成一张字符串表：
+
+```
+…\0BIZ_Suspend\0BIZ_Resume\0appFwBoot.so\0Application_System_Init\0…
+```
+
+**⇒ libIMDB 用「模块名 + 入口符号名」的描述表驱动加载与启动，
+用 Thumb `ldr`+`add pc` 扫描找不到引用点 ⇒ 这些字符串是被**指针表**（.data.rel.ro）引用的。**
+（libIMDB 的 Flags 非纯 Thumb，代码/表混合，静态定位成本较高。）
+
+### 本轮结论（链条完整形态）
+
+```
+im.elf → libIMDB（模块描述表）→ 逐个 dlopen 模块(40 个) → 按表调用入口
+        ✔ appFwBoot.so 已加载
+        ✘ 但 "Application_System_Init" 从未被调用（否则会 dlopen appFw.so）
+        ⇒ appFw.so（64MB UI 应用）永不加载 ⇒ 黑屏
+```
+
+**⇒ 最后一个未知：libIMDB 调用入口的前置条件（很可能依赖某个模块 ready/应答）。**
+若该条件依赖 QEMU 缺失的硬件服务 ⇒ QEMU 路线在此自然终止；
+真机上只要那些服务正常，链条就会走到 `dlopen("appFw.so")`。
