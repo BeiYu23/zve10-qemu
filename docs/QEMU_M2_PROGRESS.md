@@ -9615,3 +9615,39 @@ Application_Start VA = 0x54d581（Thumb，已反汇编确认）
 | `seed-date-clock.c` | 时钟（§99 已证本机型只读，不适用） | ❌ |
 
 **⇒ 下一步应查：a7c2 的五个 shim 分别应答哪个 qid，M2 上同一 qid 是否也需要应答。**
+
+## 144. 2026-10-29 实验 A 结果：加载 udate.ko 后**未观察到断言**，但需复核
+
+在 **m2qemu harness**（对方的 workspace）的 init 里插入 `load /usr/kmod/udate.ko`（无参数），
+重建 cpio + Image 后运行 180 秒：
+
+```
+MODULE_END /usr/kmod/udate.ko   status=0     ← 加载成功
+ARGTRACE >>> Application_Start ENTER         ← 进入应用入口
+grep 'Assertion|lib_assert'      → 0 命中     ← ★ 未观察到断言
+日志末尾：INITSEQ resolve InfraBluetoothLowEnergy_init   ← 仍在继续初始化
+```
+
+对比 **fp7 基线（无额外 udate 行）**：同一位置之后立刻出现
+`im.elf: lib_assert.cpp:30: void lib::assert::notify_model_system_error(): Assertion `false' failed`
+
+### ⚠️ 但不能据此下结论，三个疑点
+
+1. **workspace 冲突**：我改的 init 与对方后台重建（PID 2109411）撞车，变量可能不干净；
+2. **观察窗口**：断言可能发生在 180 秒之后（fp7 的发生时刻未核对）；
+3. **init 差异**：我插入的是**无参数** udate（对方实验是**带日期参数**），两者不是同一变量。
+
+### ⇒ 待干净复核
+
+在干净基线上做三组对照：
+```
+A: 原 init（无 udate 行）          → 预期出现断言（fp7 已证）
+B: init + udate.ko（无参数）        → 本次观察：未出现（待重跑确认）
+C: init + udate.ko（带日期参数）    → 对方正在跑
+```
+
+### 附带修正
+
+`tools/guest/assert_probe.c` 已补 `.symver` + version script，
+导出的符号现在是 **`__assert_fail@GLIBC_2.4`**（与 appFw 的导入版本一致），
+否则钩子不生效（对方实测两轮没触发，怀疑正是此因）。
