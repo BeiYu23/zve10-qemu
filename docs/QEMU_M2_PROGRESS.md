@@ -8198,3 +8198,41 @@ libmprctrl.so 两棵树 md5 完全相同
 ⇒ **判据：查"尝试点"的返回值与错误信息（dlerror），而不是只看"结果是否出现"。**
 **⇒ 本例中 "maps 里没有 appFw.so" 被误读为"没尝试 dlopen"，
    实际是"dlopen 失败" —— 两者修法完全不同。**
+
+## 122. 2026-10-29 ★★★ 重要自我纠错：我的"40 次 dlopen"是**日志上限**，不是全部尝试
+
+协作方完整反汇编 `appFwBoot.so` 后指出：**它确实 dlopen 了 appFw.so，但失败被静默吞掉**：
+
+```
+12e4: cmp r8,#0        ; 传入的 arg
+12e8: beq 12f6         ; NULL → 分支A
+12ea: strcmp(arg, "AppConfig.so")
+12f4: cbnz → 1308      ; 不等 → 分支B
+分支A: dlopen("appFw.so", 0x101=RTLD_LAZY|RTLD_GLOBAL)
+       dlsym(handle, "Application_Start")
+分支B: dlopen("AdjChkConfig.so"); dlsym(handle, "app_adjchk_ui::main_loop()")
+汇合:  str fn → 线程参数; osal_create_waitable_thread(Main, fn); osal_set_cpu(t,15)
+
+Main: uxengine_init2 → initializeArena → setCwd("/usr/share/app/")
+      → GraphicsEngine 字体/布局 → setDatabase("global.xdb")
+      → cbz r4,skip; blx r4   ← ★ fn==NULL 时**直接跳过**，静默继续
+```
+
+**⇒ dlopen 的返回值完全没有检查 ⇒ 失败 ⇒ fn=NULL ⇒ Main 跳过调用 ⇒ 界面永不出现，且无任何错误日志。**
+
+**⚠️ 并且这解释了真机 `/log/im_manual.log` 只有两行（GLES Vecgen disabled / DMP_2D_Initialize: 0）的现象。**
+
+### 我的错误
+
+我在探针里限定了"最多记录 40 个不同的 dlopen 名字"（`#define NQ5 40`），
+而日志里恰好 `dl=40` ⇒ **`appFw.so` 可能是在第 41 个之后才尝试的，被我的上限吞掉了**。
+⇒ "40 次尝试里没有 appFw" **不能**推出"从未尝试加载 appFw"。
+
+### 下一步（明确）
+
+1. 把 dlopen 记录上限提高（40→200），并**记录返回值与 dlerror**
+   ⇒ 直接确认 `dlopen("appFw.so") == NULL` 及其错误文本；
+2. 顺便确认 im.elf 传给 `Application_System_Init` 的 arg 是 **NULL 还是 "AppConfig.so"**
+   （决定走 appFw 还是 AdjChkConfig 分支）；
+3. 修复点：**让 libmpr.so 在 appFwBoot 之前进入全局作用域**
+   （我们已验证：先 dlopen libmpr(RTLD_GLOBAL) 再 dlopen appFw 就能成功）。
