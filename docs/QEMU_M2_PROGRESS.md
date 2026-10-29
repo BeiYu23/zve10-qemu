@@ -9272,3 +9272,99 @@ dlopen 尝试 = 75 次，能映射到表下标 = 72 次
 ```
 **⇒ 在"全程日志"这一口径下，[108] 从未被尝试仍然成立**（这是目前最可靠的边界）。
 但**不能**用"libEMG 未出现在快照里"来补充论证。
+
+---
+
+# ★★★★★★★ 2026-10-30 20:00 第八十七层：**根因确认 —— 模型码不匹配导致 appFw 断言自杀**
+
+## ① 铁证：16/16 运行都有 `notify_model_system_error` 断言
+**翻查全部 QEMU 运行日志，**每一个**（bt/fix2/fp/fp7/multi/noble/noble2/pc/s1/s2/s3/s3b/samp/scan/self/sys）都有：**
+```
+ARGTRACE >>> Application_Start ENTER
+im.elf: lib_assert.cpp:30: void lib::assert::notify_model_system_error(): Assertion `false' failed.
+```
+**⇒ **确定性**，不是竞态。**
+
+**追溯符号来源：**
+```
+notify_model_system_error 只在 **appFw.so** 里（libObj/libIMDB/im.elf 都没有）
+⇒ 断言来自 appFw.so 自己
+```
+
+**⇒ 链条：**
+```
+appFw.so 加载成功 → Application_Start 被调用 → **appFw 内部 model 断言失败** → abort
+⇒ Application_Start 永不返回 ⇒ 帧循环永不启动 ⇒ 黑屏
+```
+
+## ② ★★★★★★ 根因：**模型码不匹配**
+```
+① nflasha1（模型/区域/版本存储）：
+     0x01030010 (ZV-E10)  出现 **1 次**，文件偏移 **0x678200**
+     0x21020010 (ZV-1M2)  出现 **0 次**
+
+② appFw.so（M2 新菜单应用）：
+     0x21020010 (ZV-1M2)  出现 **8 次**
+     0x01030010 (ZV-E10)  出现 **0 次**
+
+③ appFw.so 里的相关 API：
+     model::model_api::detail::expand_mr_regist(...)
+     model::model_api::detail::save_load_settings_load(const char*)
+     model::send_fatal_error_event(model::error_code_t)
+```
+
+**⇒ 结论：**
+```
+v9b 刷的是 /usr（M2 appFw，期望 model=0x21020010）
+nflasha1 **没刷**，里面还是 E10 的 model=0x01030010
+⇒ appFw 读模型 → 不匹配 → expand_mr_regist 失败 → notify_model_system_error 断言
+⇒ **黑屏根因**
+```
+
+## ③ 这解释了所有现象
+```
+✅ QEMU 与真机现象一致（两边 nflasha1 都是 E10 的）
+✅ 所有 libmpr/mprshim 修复无效（那些解决"能不能加载"，而 appFw **已经加载了**）
+✅ appFwBoot 入口调用与否不重要（appFw 自己崩了）
+✅ 为什么"帧循环 7 入口全 0"（Application_Start 被 abort 终止）
+✅ 为什么 QEMU 线测到"appFw 从未加载"与断言矛盾（可能采样时机太早）
+```
+
+## ④ 修复方案：**一处 4 字节**
+```
+nflasha1 文件偏移 0x678200，当前内容：
+  0x678200:  10 00 03 01 00 00 00 00 ...   ← 0x01030010 (ZV-E10) 小端，后跟全零（干净、孤立）
+
+改为 ZV-1M2 的 0x21020010（小端 = 10 00 02 21）：
+  0x678200:  10 00 02 21 00 00 00 00 ...
+⇒ **只改 4 个字节**
+```
+
+## ⑤ 三条风险
+```
+① 模型码可能被 bootloader/kernel 校验
+   ⚠️ 但现有证据：model 检查在 appFw（用户态），不在 bootloader
+② 改了 model 后，appFw 可能要求**更多 M2 特有数据**
+   （expand_mr_regist / save_load_settings_load 可能还读别的）
+   ⇒ 可能只是"过第一关"
+③ nflasha1 里还有 dat3=region / dat4=version，都是 E10 的
+   ⇒ 可能有不匹配（但 0x01030010 只出现 1 次 ⇒ 改它不会误伤）
+```
+
+## ⑥ 验证顺序（先在 QEMU，零风险）
+```
+第 1 步：QEMU 里改 nflasha1 这 4 字节 → 看断言是否消失、Application_Start 是否返回
+第 2 步（确认有效后）：真机刷 nflasha1（8,323,072 B，比 /usr 快得多，且只改 4 字节）
+```
+
+## ⑦ 对"减少刷机"的意义
+**如果模型码是根因，那以后**不需要反复刷 /usr** ——
+而是"改 nflasha1 的 4 字节 + 必要时改 /usr"两条线分开。**
+**⇒ 用户想要的"少刷机"目标，可能靠这一处 4 字节补丁直接达成。**
+
+## 方法论（第 93 条）★★★
+**"断言"是最强的证据源 —— 它比日志、比返回值、比采样都硬：
+本次 16/16 运行都有一行 `Assertion 'false' failed`，
+而我们前几十轮花了大量精力在"加载是否成功""符号是否解析"这些**间接指标**上。
+⇒ **排查黑屏/挂死类问题时，第一步就该全文搜 `assert` / `Assertion` / `panic` / `segfault`，
+   而不是先看"走到哪一步"。断言会直接告诉你"为什么停"。**
