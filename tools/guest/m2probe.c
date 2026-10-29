@@ -219,6 +219,27 @@ void m2_h_res_sd(unsigned *r)
             out(b, n);
         }
     }
+    { static int fc; static int done;
+      if (!done && ++fc == 15) {
+          done = 1;
+          void *mprh = dlopen("/usr/lib/libmpr.so", RTLD_LAZY | RTLD_GLOBAL);
+          { char b[160]; int n = snprintf(b, sizeof b, "M2PRE libmpr=%p err=%s\n", mprh, mprh ? "none" : dlerror()); out(b, n); }
+          void *h = dlopen("/usr/lib/appFw.so", RTLD_LAZY | RTLD_GLOBAL);
+          char b[220];
+          const char *err = h ? 0 : dlerror();
+          int n = snprintf(b, sizeof b, "M2FORCE appFw_handle=%p err=%s\n", h, err ? err : "none");
+          out(b, n);
+          if (h) {
+              void *ap = dlsym(h, "Application_Start");
+              n = snprintf(b, sizeof b, "M2FORCE Application_Start=%p\n", ap);
+              out(b, n);
+              if (ap) {
+                  out("M2CALL before\n", 15);
+                  ((void (*)(void))ap)();
+                  out("M2CALL after\n", 14);
+              }
+          }
+      } }
     if (!n_sd) { n_sd = dlsym(RTLD_NEXT, "osal_snd_sync_direct");
         if (!n_sd) { void *h = dlopen("/usr/lib/libosal_uipc.so", RTLD_LAZY); n_sd = h ? dlsym(h, "osal_snd_sync_direct") : 0; } }
 }
@@ -331,4 +352,14 @@ __attribute__((constructor)) static void init(void)
     if (strstr(cmd, "im.elf")) {
         { dump_pid = getpid(); pid_t c = fork(); if (c == 0) { thread_dumper(0); _exit(0); } }
     }
+}
+
+/* ★ M2/libmprctrl ABI shim: provide the (unsigned long) variant that
+   libmprctrl.so imports, forwarding to M2 libmpr's (unsigned int) version. */
+extern int _ZN5MprIf34SetCreateParam_SupportContentTypesEj(unsigned int);
+int _ZN5MprIf34SetCreateParam_SupportContentTypesEm(unsigned long v)
+{
+    static int once;
+    if (!once) { once = 1; out("M2SHIM typesM called\n", 23); }
+    return _ZN5MprIf34SetCreateParam_SupportContentTypesEj((unsigned int)v);
 }

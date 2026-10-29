@@ -7751,3 +7751,61 @@ appFwBoot.so（8,312 B，已加载）里 `Application_System_Init` 有两个 dlo
 **B. 找出它在等谁**：`osal_rcv_msg_tmo` 是 libosal 内部调用，PLT 拦不到；
 改用"读 `wchan` + 该线程的 `/proc/<pid>/task/<tid>/stack`"▶ 若栈能给出
 调用链（`osal_rcv_msg_tmo` ← 哪个库），就能定位等待者。
+
+## 113. 2026-10-29 ★★★★ 根因链闭合：`appFw.so` 加载失败因为缺 `sidb::referer::s_count`（在 libmpr 里）
+
+强制 dlopen 实验（在 `snd_sync_direct` 第 15 次回调用一次性触发）：
+
+```
+M2FORCE appFw_handle=(nil) err=/usr/lib/appFw.so: undefined symbol: _ZN4sidb7referer7s_countE
+```
+
+**符号溯源：**
+```
+_ZN4sidb7referer7s_countE 定义于 lib/libmpr.so（M2 版）
+E10 的 libmpr.so 不定义它
+⇒ 我们为修 libmprctrl 的 ABI 把 libmpr 换成 E10 版，结果把 appFw 需要的符号弄丢了！
+⇒ 但正常启动路径里 libmpr 从未被加载（40 个 dlopen 目标中没有它）
+⇒ 所以 appFw.so 永远加载失败 ⇒ 没有 UI ⇒ 黑屏
+```
+
+### 解决方案（已验证）
+
+1. **恢复 M2 的 `libmpr.so`**（3,038,540 B）；
+2. **补一个 ABI 垫片**：定义 `_ZN5MprIf34SetCreateParam_SupportContentTypesEm`，
+   转发到 M2 的 `…ContentTypesEj` ⇒ 解决 libmprctrl 的符号缺失，实测 `M2SHIM typesM called` ✅；
+3. **在加载 appFw 之前先 `dlopen("/usr/lib/libmpr.so", RTLD_GLOBAL)`** ⇒ 让 s_count 进入全局作用域。
+
+结果：
+```
+M2PRE   libmpr=0x30dc0  err=none
+M2FORCE appFw_handle=0x63c78 err=none        ← ★ UI 应用（64 MB）加载成功
+M2FORCE Application_Start=0xc54f581          ← 找到 UI 入口
+```
+
+（注意：双 LD_PRELOAD 会 stall，实测 events 10；必须用运行时 dlopen 而非 preload。）
+
+### 下一个障碍：`Application_Start` 必须跑在独立线程
+
+直接同步调用 ⇒ 阻塞（它就是 UI 主循环）：
+
+```
+M2CALL before   （之后没有 after，且注册事件掉到 10 ⇒ 调用线程被占死）
+```
+
+固件自己的做法（反汇编 appFwBoot.so Application_System_Init）：
+
+```
+在栈上构造 32 字节参数块：
+  +0  = 入口函数相关        +4  = 4
+  +8  = 库内取的值          +12 = 参数
+  +16 = 0x01cf (u16)        +20 = 1
+  +28 = 0
+然后: osal_create_waitable_thread(&params)   ← 单指针参数
+```
+
+### 下一轮
+
+按上述布局构造参数块，用 `osal_create_waitable_thread` 在**独立线程**里启动
+`Application_Start`（而不是同步调用），观察是否出现 UI 绘制与帧变化。
+⚠️ 若线程创建失败，退回"用固件自己的 appFwBoot 流程"——但它卡在更早的等待。
