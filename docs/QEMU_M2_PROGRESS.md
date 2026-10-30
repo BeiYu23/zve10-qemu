@@ -11197,3 +11197,59 @@ M2 的新引擎里，bus_power 包装器需要这些模块注册回调
 ⇒ 同一个补丁在 E10 是"必要"，在 M2 是"致命"
 ⇒ 判据：跨代移植补丁时，先确认它改动的对象在新架构里是否仍被同样使用
 ```
+
+---
+
+# ★★★★★★★ 2026-10-31 第一百一十层：**证据显示帧循环曾被进入**（backtrace 0x54f678），但伪造分配破坏堆
+
+## ① ★★★ 关键证据：帧循环确实被调用过
+在一次开启"通用 valloc 伪造 + SSM 伪造"的运行中，glibc 堆损坏的 backtrace 完整暴露了调用链：
+```
+/usr/lib/libMWF.so  ParamList::Clear / ParamMap::~ParamMap / ObjMsgBody::~ObjMsgBody
+/usr/lib/appFw.so(+0x2b36c70)
+/usr/lib/appFw.so(+0x2b16e22)
+/usr/lib/appFw.so(+0x2b20cf0)
+/usr/lib/appFw.so(+0x1d58fc0)
+/usr/lib/appFw.so(+0x1d5a404)
+/usr/lib/appFw.so(+0x54ef9a)      ← 帧循环函数 0x54ED12 附近
+/usr/lib/appFw.so(+0x54f678)      ← **帧循环 call#4（0x54f664 + 0x14）之内**
+Application_Start+0x2f
+```
+**⇒ Application_Start → 帧循环（0x54f664）**确实被调用了**！
+   之后在清理 MWF 消息参数时 glibc 报 `free(): invalid next size`。**
+
+## ② 堆损坏的根因判断
+```
+我们用 calloc() 伪造 osal_valloc_msg_wait 的返回消息
+⇒ 该消息随后被 OSAL 的 free_msg 释放（不是 glibc free）
+⇒ 分配器/释放器不匹配 ⇒ 堆元数据被破坏
+⇒ 后续 libMWF::ParamList::Clear 的 free 触发 glibc 检测
+```
+**⇒ 结论：**不能伪造 valloc**，必须让 OSAL 真实分配。**
+
+## ③ 无伪造时的稳定状态（out/m2ssm3）
+```
+行数 2915、INITSEQ 64、ENTER=1、glibc 错误 0、断言 0、GPE 包 0、帧 0
+FAKESSM 仅 9 次（0xcf016d 的伪造把该重试风暴压住了）
+最后停在 rcv_msg 等待（多线程静默）
+⇒ 但 0x8f0313 的 valloc 仍失败 ⇒ 走不到帧循环
+```
+
+## ④ 下一步（方向明确）
+```
+A. **不要伪造 valloc**；改为**真正创建队列**：
+   在 argtrace 里调用真实 osal_reg_msg_queue_cb(0x8f0313, dummy_cb, 0)
+   （以及 0x8f013a / 0xcf016d），让 OSAL 建立队列，valloc 就能真实成功
+   ⇒ 消息可被真实释放，不再破坏堆
+B. dummy_cb 需要按 OSAL 回调签名处理（可能需要回一个应答，否则同步发送会超时）
+C. 若队列创建成功，帧循环应能再次进入且不崩，然后再看 GPE 包/帧
+```
+
+## 方法论（第 109 条）★★★
+**"伪造分配器"是最危险的一类 hack：
+```
+本轮：calloc 伪造 OSAL 消息 ⇒ 被 OSAL free ⇒ 堆损坏
+⇒ 只要"谁分配谁释放"不匹配，就一定会炸，而且会炸在无关的地方（libMWF 析构）
+⇒ 判据：跨分配器边界时，必须用对方提供的创建 API（osal_reg_msg_queue_cb），
+   而不是自己 malloc 顶替
+```
