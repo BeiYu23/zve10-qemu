@@ -10672,3 +10672,68 @@ REG 总数: **48 个队列被注册**
 ```
 **⇒ 判据：当"预期会报错的组件"完全静默时，先查"它的调用链上游是否断了"，
    而不是怀疑该组件本身。**
+
+---
+
+# ★★★★★★★★ 2026-10-30 第一百零二层：**根因锁定 —— 内核构建差异导致 dma330_stub 加载失败**
+
+## ① 决定性实验：换用 chocotan 的内核
+```
+配置 A（我们原来）: kbuild-ui2 的 Image (279,908,228 B) + 我们的 cpio
+  ⇒ dma330_stub.ko **status=254（失败）**
+  ⇒ 串口出现：<3>subsys_request_irq: IRQ41 is occupied by mmci-pl18x (cmd).
+              <3>subsys_request_irq: IRQ42 is occupied by mmci-pl18x (pio).
+  ⇒ Application_Start ENTER 之后无帧
+
+配置 B（本次）: **chocotan 的 kbuild-ui Image (242,925,956 B)** + 我们的 cpio
+  ⇒ dma330_stub.ko **status=0（成功）**
+  ⇒ **IRQ 冲突 0 次**
+  ⇒ ★★★ **帧活动出现**：
+      UI_OUTPUT_COMMITTED {"frame":1,"physical":582688768,"bitmap":716536,"width":640,"height":480,"bpp":2,"byte_length":614400}
+      UI_OBSERVE pid=107 notifyDraw.enter=0xd5768
+      UI_OBSERVE pid=107 drawFramebuffer.enter=0xd4e98
+      UI_OUTPUT_COMMITTED {"frame":2,"physical":583303168,...}
+```
+
+## ② ★★★ 根因链（完整）
+```
+kbuild-ui2 的 .config 有 **CONFIG_MMC=y**
+  ⇒ mmci-pl18x（SD/MMC 控制器）驱动占用 IRQ 41/42
+  ⇒ **dma330_stub.ko 申请 IRQ 41/42 失败** ⇒ insmod 返回 254
+  ⇒ chocotan 的 prepare-initramfs.py 明确注释：
+     "The application init loads this module; **without it the UI cannot start**."
+  ⇒ **UI 无法启动** ⇒ Application_Start 卡住 ⇒ 帧循环不执行 ⇒ 零渲染
+```
+
+## ③ 参考项目的官方说明（上游 2 个新提交，本轮 fetch 到）
+```
+上游 HEAD = 07449ba（我们原来落后 2 个提交，已 fetch）
+新增文件：
+  scripts/prepare-firmware.py  (176 行) — 从用户自己的 ZV-E10 2.03 更新包提取
+  scripts/prepare-initramfs.py (184 行) — ★ 准备 initramfs：
+      · 必需设备节点: /dev/console(5,1) /dev/ttyAM0(204,16) /dev/ttyAMA0(204,64)
+      · 删除 /etc/ld.so.preload
+      · ★ 复制 work/modules/dma330-stub/dma330_stub.ko 并注释"without it the UI cannot start"
+      · 用 fakeroot 保留设备节点元数据后打包
+
+★ dma330_stub.ko 规格: 24,216 B, md5=58609799
+  之前我们的 initramfs **根本没有这个文件**（已补入）
+```
+
+## ④ 关键环境事实
+```
+① 我们缺 dma330_stub.ko ⇒ 已从 ref 补入 (58609799)
+② 补入后我们自己内核仍失败（IRQ 冲突）
+③ **换成 chocotan 的 kbuild-ui 内核 ⇒ dma330_stub 加载成功 + 帧循环启动**
+⇒ **必须用 kbuild-ui 的内核配置**（或从 kbuild-ui2 去掉 CONFIG_MMC=y / 调整 IRQ 分配）
+```
+
+## ⑤ 待解决
+```
+帧已提交（UI_OUTPUT_COMMITTED frame:1/2），
+但从 guest 物理 0x22BB2000 / 0x22C48000 读出来**仍是全零**
+⇒ 物理地址到 host 映射的换算还需要确认
+   （QEMU 的 memrsv UC 区域可能是独立映射，或该 physical 字段是"源指针"而非帧基址）
+⇒ 下一步：用 libuiobserve.so 自己的抓取路径（它 hook drawFramebuffer 并读 bitmap）
+   或解析 UI_CAPTURE_PAGE / UI_CAPTURE_META 里的 capture_offset / segments
+```
