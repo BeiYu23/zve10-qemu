@@ -10935,3 +10935,81 @@ B. 直接实现路线
 ⇒ 但 GEMINI 绘制计数全 0、GPE 只有启动栅栏
 ⇒ **必须分别验证"提交"与"绘制"两个环节**，否则会被提交日志误导
 ```
+
+---
+
+# ★★★★★ 2026-10-30 第一百零六层：REA + Ghidra 工具链落地；M2 系统服务队列语义首次反编译成功
+
+## ① 工具链安装（全部在 /mnt/build，用户要求）
+```
+/mnt/build/tools/node              Node 24.22.1（REA 要求 >=24.22.1）
+/mnt/build/tools/rea               rea-agents 6.8.0（npm，MCP 服务 + CLI 175 命令）
+/mnt/build/tools/ghidra_12.1.4_PUBLIC  Ghidra 12.1.4（REA 唯一接受的版本线）
+/mnt/build/tools/ghidra_12.2_PUBLIC    Ghidra 12.2（直接 headless 用）
+系统：radare2 6.0.7、aria2（16 线程下载）、pyghidra 3.2.0、JDK 25
+/mnt/build/tools/env.sh            统一环境变量（PATH/GHIDRA_INSTALL_DIR/JAVA_HOME）
+```
+**下载经验：GitHub 直连 TLS 会断，ghproxy.net 支持 Range（aria2 -x16 可达 3MB/s）；
+gh-proxy.com 不支持 Range（aria2 会报 Invalid range）；npmmirror 下 Node 达 3.3MB/s。**
+
+## ② REA 已注册进 DSH
+```
+/root/.dsh/cordis.patch.yml:
+  - insert:
+      - id: rea-mcp
+        name: "@deepseek-ai/dsh-mcp-client"
+        config: {serverName: rea, transport: stdio,
+                 command: /mnt/build/tools/rea/node_modules/.bin/rea, args: [mcp]}
+技能：/root/.agents/skills/reverse-engineer-anything（已出现在会话技能目录）
+rea doctor：ghidra provider available=True version=12.1.4
+⇒ MCP 工具需重连/重启会话后才会出现在工具列表
+```
+
+## ③ ★★★ REA+Ghidra 反编译结果（首次拿到 M2 服务协议）
+**libObj.so @0x3d22c（Ghidra 显示 FUN_0004d22c）：**
+```c
+int query(undefined4 *out) {
+  if (!out) return -0x400;
+  out[0]=0; out[1]=0;
+  msg[0x20]=0; msg[0]=0x20;                 /* 请求：32 字节，首字=0x20 */
+  status = osal_snd_sync_direct(0x910042, msg);
+  if (status == 0) status = msg[+0x14];     /* 回包 +0x14 = 结果码 */
+  out[0] = msg[+0x18];                      /* +0x18 = 数据字0 */
+  out[1] = msg[+0x1c];                      /* +0x1c = 数据字1 */
+  return status;
+}
+```
+**其调用者 libObj @0x3d284（FUN_0004d284）：**
+```c
+int send_infra(type, arg2, data, len) {
+  osal_valloc_msg_wait(0x8f013a, &msg, len+0x20, 0);
+  msg->type=2; msg->type2=type; msg->arg2=arg2; msg->len=len;
+  query(msg + 8);                    /* 填 8 字节 = 2 个数据字 */
+  memcpy(msg + 0xc, data, len);
+  ...
+  osal_snd_msg(0x8f013a, msg);       /* 兜底走 0x8f0313 同步 */
+}
+```
+**⇒ 结论：0x910042 返回的 8 字节是**每条 infra 消息携带的公共字段**
+   （极大可能是**系统时间戳**：0x910042 出现在 udate.ko 里，udate=日期时间驱动）
+   不是"ID 分配"，消息头里已有 type/arg/len，另有 8 字节时间戳是合理设计。**
+
+## ④ 本轮 QEMU 实验（全部单实例）
+```
+① 把 0x910042 就地应答为递增唯一 id（0x930000+）：
+   FAKEID 3 次、INITSEQ resolved=4、ENTER=0，末尾 <3>Killed process 116 (bootin.elf) —— guest OOM
+   （/proc/meminfo CommitLimit 仅 231MB，1GB guest 下 bootin+appFw 提交内存超限）
+② -m 2048 + mem=2G@0：内核在内存初始化阶段停住（47 行），该机器不支持 2G 布局
+⇒ 结论：不能靠加内存；要么减小 appFw 常驻，要么让 services 数量与真实一致
+```
+
+## ⑤ 下一步（明确）
+```
+A. 把 0x910042 回包按「时间戳」填充（sec/usec 或 ticks），看 INITSEQ 是否继续推进
+   —— 反编译 udate.ko 或找 time 服务的调用者确认单位
+B. 用 REA 继续反编译：
+   - libMWF @0x207e0（同类消息构造，0x8f013a + 0x8f0313）
+   - libJiritsu @0x7c49（调用 0x910042 最频繁，9 次）
+   - im.elf 的 INITSEQ 循环（谁在等待哪个 service）
+C. 解决 guest 内存：把 appFw.so 按需 mmap 或减少已加载模块后再跑
+```
