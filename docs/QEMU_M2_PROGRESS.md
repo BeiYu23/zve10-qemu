@@ -11711,3 +11711,71 @@ libbackup 已恢复原版（bfcb3bcd），Image 已重建
 最佳配置：M2 setting + M2 内核模块 + 自建 QEMU(sugilite IRQ 模型)
          8493 行 / ENTER=1 / INITSEQ=66 / GPE 包 19 / 帧 0
 ```
+
+---
+
+# ★★★★★★★★ 2026-10-31 第一百一十九层（终局）：**QEMU 路径 blocked 结论（精确到接口/符号/时序）**
+
+## ① 本轮最后的实验
+```
+把 grm_gles.ko 的 sugilite_ioctl 改成"永远返回成功"（mov r0,#0; bx lr）
+⇒ 启动在 2070 行处 ABORT（appFw 的 Application_Start 初始化异常）
+⇒ 绕过 ioctl 会让引擎的 GPU 初始化状态机直接崩
+⇒ 已恢复原版 grm_gles.ko（md5 8f743810），Image 重建完成
+```
+
+## ② 三次以上复现的同一阻塞（可判定 blocked）
+### 阻塞 A：backup 内核服务
+```
+接口：OSAL 同步消息队列 qid=0x3e014d（/dev/backup，backup.ko）
+符号：libbackup.so backup_sync_msg@0xf64
+      appFw.so 调用 Backup_reg_cb（ret=0 注册成功）@appFw+0x2b4cba9
+时序：INITSEQ MWF_Init 在 appFw 完整注册 backup 服务之前就发起同步请求
+依赖：/setting/Backup.bin 必须与 /version.txt 同代
+实证：
+  · 换 M2 的 /version.txt（22110_05.2025042601）后队列仍无应答
+  · patch Backup.bin 版本串（0x40）仍无应答
+  · patch backup_sync_msg 返回成功(*out=0 / *out=1) ⇒ 启动卡在 MWF_Init（452 行）
+  · Backup_load=0 ⇒ insmod status=5（file_load 失败）⇒ ulogio/dmm/udate 缺符号
+结论：backup 服务需要**真机首次开机生成的 Backup.bin**（M2 固件包不自带），
+      QEMU 无法凭空构造
+```
+### 阻塞 B：sugilite GPU 设备模型
+```
+接口：/dev/dmpgles2 + IRQ 76 + 寄存器窗口 0xf1000000
+符号：grm_gles.ko sugilite_interrupt / sugilite_ioctl / request_threaded_irq(76)
+时序：request_threaded_irq(76) 之后硬件在 base+0x34 置状态并拉中断
+寄存器契约：bit31→清 0x1000、0x40000000→清 0xc18、
+           0x04000000→清 0x1c、low4→写 1 到 0x3c/0x44
+已实现：/mnt/build/m2qemu/qsrc/hw/arm/zve10.c 的最小模型
+        （定时器每 20ms 置 0x40000001 并 raise IRQ76）
+实证：ISR 运行 3282 次、驱动提交 **19 个 GPE 启动栅栏包**（首次图形活动）
+      但 ioctl 等待的具体事件语义不符；绕过 ioctl 直接崩
+结论：缺的是**原厂 sugilite GPU 状态机/光栅化模型**，不是配置
+```
+
+## ③ 达成情况
+```
+目标要求：用确切 PID 抓到 640x480 bpp=2 非全零帧并对应 ZV-1M2 新菜单
+实际：8493 行 / ENTER=1 / INITSEQ=66 / GPE 包 19 / **帧 = 0**
+判定：**QEMU 内不可达**，原因为上述 A+B 两类硬件/运行期数据缺失
+```
+
+## ④ 对真机的可执行结论
+```
+1. nflasha15_v9b（已刷 /usr）里的 /kmod 是 E10 模块（5992e823/b37ee97c/a7f1258b）
+   ⇒ 换成 ZV-1M2 模块（dce71102/531fb647/8f743810…）
+2. nflasha2 的 ulogio.bin 是 E10（3796B/5394f68f）⇒ 换 M2（3400B/17a3a54c）
+   + /version.txt 换 22110_05.2025042601
+3. 真机自带首启生成的 Backup.bin 和真实 GPU/中断
+   ⇒ 三代对齐后，新引擎在真机具备全部运行前提
+```
+
+## 方法论（第 115 条·终）★★★
+**"模拟器可行性的判据"：
+```
+当阻塞同时满足下面两条时，QEMU 路线应判定为 blocked：
+① 依赖设备首次开机生成的数据（固件包不含、无法逆向出全量格式）
+② 依赖原厂硬件状态机（ISR/寄存器契约只能部分复现，绕过即崩）
+⇒ 此时正确做法是转真机验证，而不是继续在模拟器里堆 hack
+```
