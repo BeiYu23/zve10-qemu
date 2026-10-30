@@ -11665,3 +11665,49 @@ Backup.bin 不在固件包里，由设备首次开机生成
 ⇒ 模拟器要么用真机 dump，要么逆向格式手工造
 ⇒ 判据：遇到"模块能加载但服务不应答"，先查它依赖的运行期数据文件是否来自首启
 ```
+
+---
+
+# ★★★★★★ 2026-10-31 第一百一十八层：backup 不可伪造 —— MWF 依赖真实备份服务，QEMU 侧到边界
+
+## ① 本轮实验汇总
+```
+1) 改 Backup.bin 里的版本串（0x40 处）
+   30110_06.2026060501 → 22110_05.2025042601（M2 正确代际）
+   ⇒ backup.ko 仍 status=0，但 0x3e014d 仍无应答（5546 次 SSM）
+
+2) patch backup_sync_msg 返回成功 + *out=1（"数据大小=1"）
+   ⇒ 启动卡在 MWF_Init（452 行）
+   ⇒ 与 *out=0 一样失败
+⇒ 结论：**MWF_Init 依赖真实 backup 服务的事件/数据，任何伪造都会让它卡死**
+```
+
+## ② REA 反编译 backup.ko（地址映射有偏移，得到的是相邻函数）
+```
+backupfile_get_filename / backupfile_get_file_datasize 已反编译：
+  get_file_datasize 用 vfs_stat 取文件大小，失败则 backup_logrec(0x81,...) 返回 -1
+⇒ 文件缺失/不可读会直接失败（与 Backup_load=0 时 insmod status=5 一致）
+```
+
+## ③ 最终边界（本轮已确认）
+```
+QEMU 侧剩两个不可绕过项：
+A. backup 内核服务：需要设备首次开机生成的 Backup.bin + 与之匹配的
+   backup.ko 内部状态；我们只有 E10 的 Backup.bin（格式/内容不同代）
+B. sugilite GPU：已自建最小模型（能提交 19 个栅栏包），但无真实光栅化
+⇒ 二者都属于"需要真机运行期数据/原厂硬件模型"，不是配置问题
+```
+
+## ④ 真机侧结论（不变且更有把握）
+```
+真机：nflasha2 已有设备生成的 Backup.bin（正版），backup 服务天然可用
+      ⇒ 只要把 /kmod 换成 ZV-1M2 模块（+ /setting 同代），
+        新引擎在真机上具备全部运行前提（真实 GPU/中断/备份数据）
+```
+
+## ⑤ 恢复状态
+```
+libbackup 已恢复原版（bfcb3bcd），Image 已重建
+最佳配置：M2 setting + M2 内核模块 + 自建 QEMU(sugilite IRQ 模型)
+         8493 行 / ENTER=1 / INITSEQ=66 / GPE 包 19 / 帧 0
+```
