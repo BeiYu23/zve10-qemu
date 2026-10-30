@@ -11371,3 +11371,76 @@ C. 重新构建 qemu（work/qemu-src/build-zve10 已有 ninja 构建目录，改
 ⇒ 判据：当某个线程卡在 *_ioctl 且该驱动有 request_irq，
    先查模拟器设备是否真的会发中断，而不是继续在用户态找问题
 ```
+
+---
+
+# ★★★★★★★ 2026-10-31 第一百一十三层：自建 QEMU 并实现 sugilite 中断模型（首次尝试）
+
+## ① 自建 QEMU（不修改他人仓库）
+```
+rsync 复制 work/qemu-src（排除 build）→ /mnt/build/m2qemu/qsrc （902MB）
+./configure --target-list=arm-softmmu --enable-debug --disable-werror --disable-docs
+ninja -j4 → qemu-system-arm 73,844,432 B（3318 目标，约 4 分钟）
+```
+
+## ② 从 grm_gles.ko 反汇编拿到的硬事实
+```
+sugilite_chdev_register (.init.text)：
+  mov r0, #76            ← **IRQ 76**
+  ldr r1, =sugilite_interrupt
+  mov r3, #0x84          ← IRQF flags
+  bl request_threaded_irq
+sugilite_interrupt：
+  先读 base+0x34 状态；==0 ⇒ __bug_noarg（内核 BUG）
+  bit31 ⇒ 清 base+0x1000
+  0x40000000 ⇒ 清 base+0xc18
+  0x04000000 ⇒ 清 base+0x1c
+  low4 ⇒ 写 1 到 base+0x3c / base+0x44
+  再读状态 >>16 处理事件
+```
+
+## ③ 我们给 QEMU 加的模型（hw/arm/zve10.c）
+```c
+Zve10Sugi { regs[0x4000/4], qemu_irq irq, QEMUTimer *timer }
+sugi_read: 0x80→0x15；0x34 读到 0 时强制置 0x40000001（防 ISR BUG）
+sugi_write: 存寄存器 + 按 ISR 的清位语义清状态 + 更新 irq
+sugi_timer_tick: 每 10ms 置 0x40000001 并 raise IRQ
+init: 区域 0x4000，irq=pic[76-32]
+```
+
+## ④ 实测结果（out/m2irq / m2irq2）
+```
+中断确实送到了：sugilite_interrupt 被执行
+但内核 BUG：__bug_noarg ← sugilite_interrupt 的 dev_id 或状态检查失败
+两次运行都在 370 行、ENTER=0 处被这个 BUG 打断
+⇒ 说明我们的"最小中断模型"与驱动的真实契约不符
+   （dev_id、状态位语义、事件队列格式都需要真实设备文档）
+```
+
+## ⑤ 结论（硬件前提已精确定位到寄存器级）
+```
+M2 新引擎的 GPU 路径需要：
+  接口：sugilite /dev/dmpgles2 + IRQ 76
+  符号：sugilite_interrupt / sugilite_chdev_register / request_threaded_irq
+  时序：request_threaded_irq(76) 之后，硬件必须在 base+0x34 置状态位并拉中断
+  寄存器契约：bit31 / 0x40000000 / 0x04000000 / low4 各自对应不同的清位动作
+QEMU 现有模型：sugi_write 为空、无 irq、区域仅 0x1000
+⇒ 缺的不是配置，而是**原厂 GPU 设备模型**
+```
+
+## ⑥ 下一步可选
+```
+A. 继续逆向 sugilite_interrupt/ioctl 的完整状态机（需要大量时间）
+B. 用 QEMU trace 记录真实设备驱动期望的寄存器序列（没有真机，不可行）
+C. 放弃硬件路径，改走 E10 式"软件绘图"：为 M2 新引擎写一套 CPU 光栅化钩子
+   （工作量大，但不需要 GPU 模型）
+```
+
+## 方法论（第 111 条）★★★
+**"中断模型"不是拉一根 IRQ 就够：
+```
+本轮：IRQ 76 成功送达，但 ISR 立刻 BUG
+⇒ 驱动对 dev_id、状态位、事件队列都有硬契约
+⇒ 判据：模拟设备必须按驱动的 ISR 反汇编逐条实现状态机，
+   否则"中断能进"反而更快暴露不一致
+```
