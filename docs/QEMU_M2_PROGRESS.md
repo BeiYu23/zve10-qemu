@@ -11075,3 +11075,59 @@ initramfs 会完整解压进 ramfs，占用等量内存
 任何分析残留（Ghidra .rep、备份库）都会变成 OOM 的直接原因
 ⇒ 每次改树都要 `du -sh` 检查，异常增量先查分析工具残留
 ```
+
+---
+
+# ★★★★★★ 2026-10-31 第一百零八层：伪造缺失队列后推进到 3947 行；阻塞点逐层下移
+
+## ① 伪造 osal_valloc_msg_wait（0x8f013a / 0x8f0313）
+```c
+int osal_valloc_msg_wait(q,out,size,tmo){
+  r = real(...); if(!r) return 0;
+  if(q==0x8f0313 || q==0x8f013a){ p=calloc(1,size); *out=p; return 0; }  /* 伪造成功 */
+  return -1;
+}
+```
+**结果：**
+```
+日志 2810 → **3947 行**
+FAKEALLOC 663 次（0x8f013a size=36 为主）
+Application_Start ENTER=1
+新的终止点：assert at infra_wrapper_bus_power.cpp:140
+            function: void infra_wrapper_bus_power::detail::register_callback()
+```
+**⇒ 说明 0x8f0313/0x8f013a 的 valloc 失败只是"表面阻塞"，伪造后引擎继续初始化到 bus_power 回调注册。**
+
+## ② 断言定位（静态）
+```
+该断言字符串在 appFw.so 的 .rodata：
+  "assert at %s:%d" @0x2ce8b05
+  "function:%s"     @0x2ce8b3e
+  "infra_wrapper_bus_power.cpp" @0x2fb9181
+appFw 是 stripped 且用 base-register+offset 寻址，PC 相对字面量暴力搜索 0 命中
+⇒ 需要运行时钩子或 Ghidra 定点分析
+```
+
+## ③ 加入 abort/_exit 钩子后的运行（3465 行）
+```
+ABORT/UEXIT 记录 = 0（本次未走到 bus_power 断言）
+新阻塞：tid=196 反复 osal_snd_sync_msg(0xcf016d) from
+        /usr/lib/libInfraRemote.so off=0xd1e71
+⇒ 又缺一个 infra 队列（0xcf016d），与 0x8f0313 同类
+```
+
+## ④ 阶段结论
+```
+M2 新引擎的启动链是**大量 infra 服务队列**逐层初始化：
+  0x910042（时间戳，已伪造）→ 0x8f013a/0x8f0313（已伪造 valloc）
+  → bus_power 断言 → 0xcf016d（InfraRemote）
+每修一层就前进数百行日志；这是"服务生态不完整"的典型形态，
+而不是单一阻塞点。
+```
+
+## ⑤ 下一步
+```
+A. 把 valloc/snd 伪造扩展到 0xcf016d 等一系列 infra 队列（做成通用：未知 qid 一律伪造成功）
+B. 用 REA/Ghidra 定点分析 appFw 的 bus_power register_callback，直接 patch 掉断言
+C. 统计所有出现过的 qid，区分"有接收者/无接收者"，批量伪造无接收者的
+```
