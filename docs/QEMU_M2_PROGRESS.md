@@ -10737,3 +10737,61 @@ kbuild-ui2 的 .config 有 **CONFIG_MMC=y**
 ⇒ 下一步：用 libuiobserve.so 自己的抓取路径（它 hook drawFramebuffer 并读 bitmap）
    或解析 UI_CAPTURE_PAGE / UI_CAPTURE_META 里的 capture_offset / segments
 ```
+
+---
+
+# ★★★★★ 2026-10-30 第一百零三层：**Image 内嵌 initramfs 才发现**；软件帧全零
+
+## ① ★ 重大发现：ref 的 Image 内嵌了 initramfs
+```
+work/kbuild-ui/arch/arm/boot/Image 242,925,956 B
+  含 "070701"(newc 魔数) 1298 处、"TRAILER!!!" 3 处
+  含 "UI_BOOT_V2"、"libuiobserve.so"(2 次)
+⇒ **-initrd 传外部 cpio 被内置 initramfs 覆盖**
+⇒ 之前所有"改 /init、换库、overlay cpio"的实验**全部无效**（改的东西根本没被加载）
+```
+
+## ② 用二进制替换法把补丁库塞进 Image（同尺寸 78,944 B）
+```
+old: work/initramfs-ui/usr/lib/libuiobserve.so  md5=b1027b58
+new: uicap/libuiobserve.so                     md5=91f868e4（门槛 13→12 + 像素调试）
+在 Image 中定位唯一完整匹配 @0x264bf48，直接覆盖写出 work/Image-patched
+⇒ 补丁**生效**（串口出现 UI_PIXDBG）
+```
+
+## ③ ★★★ 关键负面结果：引擎的软件帧**全零**
+```
+UI_PIXDBG {"frame":1,"i":0,"b0":0,"b1":0,"b2":0,"uni":0,"phys":582688768}
+UI_PIXDBG {"frame":2,"i":0,"b0":0,"b1":0,"b2":0,"uni":0,"phys":583303168}
+⇒ headless_copy() 通过引擎 read-lock 拿到的 pixels 全 0、且非均匀性=0
+⇒ 即使把发布门槛从 13 降到 12，nonuniform 仍为假 ⇒ 仍不发布
+⇒ 印证：dma330_stub 的 dma330_mem_transfer_async 是**空实现**（return 0），
+   GPE present 不落内存；QEMU 侧 GPE 只打印包（zve10.c），不做复制
+```
+
+## ④ 因此"参考项目能出菜单"在当前资产上**未能复现**
+```
+用他们的 QEMU 二进制（101,499,080 B md5=e2a068c83e0f，比我们的新 552 B）+ 他们的 kernel + 他们的 ui.cpio：
+  · 能起、能到 UI、能提交 frame、能观测 GPE.present
+  · **但像素全零、发布被拒**
+⇒ 说明仓库里提交的 ui.cpio/Image 与 README 截图对应的构建产物**不是同一套**
+⇒ 上游新增的两个脚本才是正解：
+   scripts/prepare-firmware.py（从用户自己的 ZV-E10 2.03 更新包提取）
+   scripts/prepare-initramfs.py（组装 + 设备节点 + dma330_stub + fakeroot 打包）
+```
+
+## ⑤ 下一步（明确）
+```
+① 用上游新脚本从**原始固件包**重新生成 work/{usr,initramfs-ui}（不用仓库里提交的旧树）
+② 重新构建 kbuild-ui 的 Image（让内置 initramfs 与之一致）
+③ 再跑 capture-menu 流程验证是否真能出菜单
+④ 拿到可信基线后，再把 M2 的 libObj/appFw/appFwBoot 逐项换入做二分
+```
+
+## 方法论（第 104 条）★★★
+**"改了没生效"先查启动链是否真的用了你改的东西：
+```
+本轮：改了 /init、换了库、拼了 cpio，全无效果
+⇒ 真因：Image 内嵌 initramfs 优先，外部 -initrd 被忽略
+⇒ 判据：改动后先在 guest 里打印一个标记（md5/echo），确认生效再谈效果
+```
