@@ -11131,3 +11131,69 @@ A. 把 valloc/snd 伪造扩展到 0xcf016d 等一系列 infra 队列（做成通
 B. 用 REA/Ghidra 定点分析 appFw 的 bus_power register_callback，直接 patch 掉断言
 C. 统计所有出现过的 qid，区分"有接收者/无接收者"，批量伪造无接收者的
 ```
+
+---
+
+# ★★★★★★★ 2026-10-31 第一百零九层：**恢复原版 IMDB 后越过 bus_power 断言，进入 GPE 图形初始化**
+
+## ① ★★★ 关键修复：恢复固件原版 libIMDB.so
+```
+之前为了对齐 chocotan 的 E10 方案，patched libIMDB（排除 10 个模块）
+  md5 65e8c0d26800
+固件原版：md5 91eca62f9cae
+⇒ 恢复原版后：
+   assert at infra_wrapper_bus_power.cpp:140 **消失**
+   日志 3944 → **4081 行**
+   INITSEQ resolve 54 → **61**
+   Application_Start ENTER = 1
+```
+**⇒ 之前"IMDB 排除模块"的那次改造对 M2 是**有害**的（会让 appFw 的 bus_power 包装器注册失败并断言）。**
+
+## ② 当前进度：已到 GPE 图形初始化
+```
+日志末尾：
+  INITSEQ resolve grm_init
+  !!! GPE HW: PSC dummywrite disabled.
+随后静默（无新日志）
+QEMU 侧：**ZVE10_GPE_PACKET = 0**（引擎没有向 GPE 提交任何包）
+帧 = 0
+```
+**⇒ 引擎停在"GPU 初始化完成后、提交绘制命令之前"。**
+
+## ③ 有用的新信息（内存布局）
+```
+从 appFw 崩溃/转储的内存映射里拿到：
+  appFw.so 代码段映射 @0x2d932000（r-xp 大小 0x343f000）
+  /dev/stream 映射带物理偏移：
+    0x37792000 rw-s offset 0x22312000
+    0x37c5b000 rw-s offset 0x228b2000
+    0x37f21000 rw-s offset 0x22712000
+  FixedAreaTop=0x20098000, FixedAreaSize=0x7C000, Physical=0x200EB400
+⇒ **/dev/stream 的 mmap 文件偏移就是物理地址**（对后续找帧缓冲非常有用）
+```
+
+## ④ 本轮其他实验（失败/排除）
+```
+· abort/_exit 改成"返回" → 启动直接坏（472 行），不可行
+· 万能伪造 osal_valloc_msg_wait → 只影响 0x8f013a，无实质推进
+· 伪造 0xcf016d 同步发送 → 6 次后进入 bus_power 断言（当时 IMDB 还是 patched）
+· 给 monio 服务加 argtrace 预载或并行早启 → 内核 oops，不可行
+```
+
+## ⑤ 下一步
+```
+A. 恢复 IMDB 后，重新评估 0x8f0313 / 0x94016a / 0x12282f6 这些同步发送目标：
+   现在 libBusPower.so 已能正常注册，可能这些队列已经有接收者了
+B. 若仍无，把 snd_sync_msg 的伪造扩展到这些队列（返回成功 + 清零回包）
+C. 一旦 GPE 开始发包（qemu.log 出现 ZVE10_GPE_PACKET），立刻用
+   QMP stop + pmemsave 抓 0x22bb2000/0x22c48000 帧
+```
+
+## 方法论（第 108 条）★★★
+**"照抄参考项目的补丁"必须先验证它在目标树上的语义：
+```
+chocotan 的 IMDB 排除表是为 E10 的老引擎服务的（去掉 QEMU 跑不通的 USB/电源模块）
+M2 的新引擎里，bus_power 包装器需要这些模块注册回调
+⇒ 同一个补丁在 E10 是"必要"，在 M2 是"致命"
+⇒ 判据：跨代移植补丁时，先确认它改动的对象在新架构里是否仍被同样使用
+```
