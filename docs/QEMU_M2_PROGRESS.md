@@ -11253,3 +11253,58 @@ C. 若队列创建成功，帧循环应能再次进入且不崩，然后再看 G
 ⇒ 判据：跨分配器边界时，必须用对方提供的创建 API（osal_reg_msg_queue_cb），
    而不是自己 malloc 顶替
 ```
+
+---
+
+# ★★★★★★★★ 2026-10-31 第一百一十一层：**换对 ZV-1M2 的 /setting 后，valloc 失败归零、日志 7167 行**
+
+## ① ★★★★ 根因：/setting 是 E10 的，不是 ZV-1M2 的
+```
+之前 work/initramfs-ui/setting 里的文件来自 E10（ulogio.bin 3796 B md5=a401b16a）
+ZV-1M2 固件里的正确版本：
+  ulogio.bin   3400 B  md5=17a3a54c   ★
+  DmmConfig.bin 79932 B（E10 是 78120）
+  kemco.txt     1692 B（E10 是 1925）
+  facedmy.bin / appfw_infra 同样来自 M2
+⇒ 用 ZV-1M2 的整套 setting 替换后：
+   **VALLOCFAIL（0x8f013a 分配失败）从 655 次 → 0 次**
+   日志 4081 → **7167 行**（历史新高）
+   ENTER=1
+```
+**⇒ 这说明 0x8f013a（日志/ulogio 队列）确实依赖 /setting/ulogio.bin 的正确代际版本！
+   E10 的 ulogio.bin 让 ulogio 初始化失败 ⇒ 队列未创建 ⇒ valloc 655 次失败。**
+
+## ② 当前状态（out/m2set，7167 行）
+```
+VALLOCFAIL = 0
+APPLICATION_Start ENTER = 1
+帧 = 0
+最后卡在 libbackup 反复 osal_snd_sync_msg(0x3e014d)
+  （SSM tid=186 qid=0x3e014d mod=/usr/lib/libbackup.so off=0x1011）
+```
+
+## ③ 试过但失败的
+```
+Backup_load=0（不加载旧备份）⇒ 启动退回到 480 行、ENTER=0
+⇒ 必须 Backup_load=1；备份分区/文件参与启动
+```
+
+## ④ 下一步
+```
+A. 查 0x3e014d 的服务者（backup 服务）为何不应答：
+   - /dev/backup 节点已建（251,208）
+   - backup.ko 已加载 status=0, Backup_load=1
+   - 但 sync 消息无人回 ⇒ 可能是 backup 模块的"用户态服务"未起
+B. 观察主线程是否在等 backup 完成（SEM tid=103 im.elf off=0x380d）
+C. 若能越过 backup，应继续到帧循环/GPE 提交
+```
+
+## 方法论（第 110 条）★★★
+**"跨代移植"必须连 /setting 一起换：
+```
+本轮：只换了库和二进制，忘了 /setting/ulogio.bin 是 E10 的
+⇒ ulogio 初始化失败 ⇒ 日志队列 0x8f013a 未创建 ⇒ 655 次 valloc 失败
+⇒ 换对 3400B 的 M2 版本后全部消失
+⇒ 判据：固件树移植时，/setting、/system、/etc 这些"数据"必须与固件同代，
+   否则会出现"库正确但服务起不来"的怪现象
+```
