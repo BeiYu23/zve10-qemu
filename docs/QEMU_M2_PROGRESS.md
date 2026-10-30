@@ -11501,3 +11501,60 @@ C. 一旦 backup 通过，再看是否进入帧循环
 ⇒ 内核 BUG 打印的 r4/r7 直接给出真实基址
 ⇒ 判据：驱动寄存器基址不要猜，从 oops 寄存器或 ioremap 参数里读
 ```
+
+---
+
+# ★★★★★★★ 2026-10-31 第一百一十五层：恢复 8493 行状态；**对真机的两条具体修复项**
+
+## ① 本轮实验（QEMU 侧）
+```
+· osal_dynamic_id 在"换 ZV-1M2 内核模块后"**已经能工作**：
+  DYNID a=0x32 b=0x94 ret=0 out=0x946003… （之前 E10 模块下返回 -1024）
+· 但给 argtrace 加 osal_dynamic_id 钩子会破坏启动（415/406 行）⇒ 已移除
+· patch libbackup 的 backup_sync_msg 直接返回 0 ⇒ 启动卡在 MWF_Init（452 行，两次复现）
+  ⇒ 恢复固件原版 libbackup.so (md5 bfcb3bcd) 后恢复：
+     **8493 行、ENTER=1、INITSEQ=66、GPE 包 19**，再次停在 backup 服务 0x3e014d
+```
+**⇒ backup 服务是当前用户态最后一个硬阻塞（5612 次重试）。**
+
+## ② ★★★★ 对真机的直接价值（本轮最重要的产出）
+
+### 发现 1：已刷入真机的 /usr 镜像里，内核模块是 **E10 的**
+```
+nflasha15_v9b.ext2（我们刷入的 /usr 分区）：
+  /kmod/osal_uipc.ko  38960 B  md5=5992e823   ← **E10 版**
+  /kmod/backup.ko     73764 B  md5=b37ee97c   ← **E10 版**
+  /kmod/grm_gles.ko   15648 B  md5=a7f1258b   ← **E10 版**
+而 /lib 里的用户态是 **ZV-1M2 的**（libIMDB md5=91eca62f ✓ 原版）
+对照 ZV-1M2 固件应有：
+  osal_uipc.ko dce71102 / backup.ko 531fb647 / grm_gles.ko 8f743810
+
+QEMU 里已实测：**E10 模块 + M2 用户态 ⇒ osal_dynamic_id 返回 -1024、队列创建失败**
+⇒ 真机上同样会"库对、模块错"，服务注册/动态 ID 全挂
+⇒ **修复：把 /kmod 整体替换成 ZV-1M2 的模块即可**（不需改代码）
+```
+
+### 发现 2：setting 分区（nflasha2）的 ulogio.bin 是 **E10 的**
+```
+真机 nflasha2_current.img（vfat）：
+  /ulogio.bin  3796 B  md5=5394f68f   ← E10 代际
+ZV-1M2 需要：  3400 B  md5=17a3a54c
+QEMU 里实测：用 E10 的 ulogio.bin ⇒ 日志子系统初始化失败 ⇒
+             0x8f013a 队列未创建 ⇒ **655 次 valloc 失败**；换 M2 版后归零
+⇒ **修复：nflasha2 里 ulogio.bin（以及 DmmConfig/kemco/facedmy/appfw_infra）
+        换成 ZV-1M2 版本**
+```
+
+### 发现 3：新引擎的硬阻塞是**模拟器缺 GPU**，不是固件不兼容
+```
+M2 新引擎走 sugilite GPU 驱动 + IRQ 76 + 状态寄存器；
+真机有真实 GPU/中断/固件，**这些在真机上本来就存在**
+⇒ 只要"用户态 + 内核模块 + setting"三代对齐，真机有较大概率能正常进新引擎
+⇒ 我们卡住的是 QEMU 缺 sugilite 设备模型（已自建最小模型，能让驱动提交 19 个栅栏包）
+```
+
+## ③ 下一步
+```
+A. QEMU：解决 backup 服务 0x3e014d（最后一道用户态阻塞）
+B. 真机（若恢复）：/kmod 换 M2 模块 + nflasha2 换 M2 setting，再试一次
+```
