@@ -11607,3 +11607,61 @@ C. 或让 MWF_Init 跳过 backup 同步（需改 libMWF 的调用点而非 backu
 0x3e014d：valloc 成功、无接收者 ⇒ 服务方没注册/没启动
 ⇒ 判据：先看 valloc 是否成功，再区分"创建问题"还是"服务注册问题"
 ```
+
+---
+
+# ★★★★★★ 2026-10-31 第一百一十七层：backup 服务=内核模块依赖 M2 首启数据；QEMU 侧已到"缺原厂首启文件"的边界
+
+## ① 关键实验：Backup_reg_cb 其实是成功的
+```
+钩子结果：appFw.so 调用 Backup_reg_cb 两次，ret=0（注册成功）
+⇒ 回调注册正常；问题在 backup.ko 的**应答端**没起来
+```
+
+## ② Backup_load=0 的真相（重要）
+```
+日志：
+  backup_init() error (file_load)
+  insmod: can't insert '/usr/kmod/backup.ko': Input/output error  (status=5)
+  osal_ulogio: Unknown symbol Backup_read
+  dmm: Unknown symbol Backup_read
+  udate: Unknown symbol Backup_read_4Byte
+⇒ backup.ko 必须成功加载（否则 ulogio/dmm/udate 全部缺符号）
+⇒ 而它加载时必须能 file_load 到合法的 /setting/Backup.bin
+⇒ 我们的 Backup.bin 是 E10 的（1.2MB, 头 "BK4."），ZV-1M2 固件**不自带** Backup.bin
+  （M2 的 setting 只有 DmmConfig/appfw_infra/facedmy/kemco/ulogio）
+⇒ M2 的 Backup.bin 是**首次开机时由设备自己生成的**
+⇒ 当前边界：**缺 ZV-1M2 首启生成的 Backup.bin**
+```
+
+## ③ 当前最佳状态（恢复 Backup_load=1）
+```
+8493 行、ENTER=1、INITSEQ=66、GPE 包 19、帧 0
+唯一剩余阻塞：backup 队列 0x3e014d 无应答（backup.ko 的应答线程未工作）
+```
+
+## ④ 对真机的直接含义（重要）
+```
+真机的 nflasha2 里已有设备自己生成的 Backup.bin（正版）
+⇒ 真机不会有这个问题！
+⇒ 这再次说明：**QEMU 卡点是"缺设备首启数据"，不是固件缺陷**
+⇒ 真机上只要把 /kmod 换 M2 模块即可（Backup.bin 设备已有）
+```
+
+## ⑤ 结论与下一步
+```
+QEMU 侧剩余阻塞属于"需要真机首启数据或原厂 GPU 模型"两类，
+已不属于配置/库/模块配对问题。
+可选：
+A. 用真机 dump 的 nflasha2 Backup.bin 喂给 QEMU（需要真机数据）
+B. 逆向 backup.ko 的 Backup.bin 格式，手工造一个最小合法文件
+C. 接受当前状态，把结论转为真机验证（换 /kmod + 已有 Backup.bin）
+```
+
+## 方法论（第 114 条）★★★
+**"设备首启生成的数据"是模拟器永远缺的一类输入：
+```
+Backup.bin 不在固件包里，由设备首次开机生成
+⇒ 模拟器要么用真机 dump，要么逆向格式手工造
+⇒ 判据：遇到"模块能加载但服务不应答"，先查它依赖的运行期数据文件是否来自首启
+```
