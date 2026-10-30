@@ -11558,3 +11558,52 @@ M2 新引擎走 sugilite GPU 驱动 + IRQ 76 + 状态寄存器；
 A. QEMU：解决 backup 服务 0x3e014d（最后一道用户态阻塞）
 B. 真机（若恢复）：/kmod 换 M2 模块 + nflasha2 换 M2 setting，再试一次
 ```
+
+---
+
+# ★★★★★★ 2026-10-31 第一百一十六层：**backup 服务是最后一个用户态硬阻塞；发现 version.txt 代际错配**
+
+## ① 本轮状态（恢复后）
+```
+8493~8564 行、ENTER=1、INITSEQ=66、GPE 包 19
+backup SSM(0x3e014d) 持续重试 5700+ 次，帧 0
+线程：futex 28 / rcv 25 / sugilite_ioctl 1
+```
+
+## ② ★★★ 0x3e014d 的性质（已查清）
+```
+· 队列**存在**：backup_sync_msg 里的 osal_valloc_msg_wait(0x3e014d) 成功
+· 但**没有接收者**（rcv 列表无、REG 列表无）
+· libbackup.so 导出 backup_sync_msg / backup_async_msg /
+  backup_sharedcb_send_msg / Backup_reg_cb
+· appFw.so 与 libObj.so **导入 Backup_reg_cb / Backup_sync_subsystem**
+  ⇒ 备份服务的注册方应在 appFw/libObj 内部，但注册发生在更后面的初始化阶段
+  ⇒ 形成"MWF_Init 等 backup ↔ backup 服务要等 appFw 启动"的先后死结
+· 直接 patch backup_sync_msg（返回成功/*out=0）会让启动**卡在 MWF_Init（452 行）**
+  ⇒ MWF 依赖真实备份数据，不能用假回包
+```
+
+## ③ ★★★★ 新发现：/version.txt 也是 E10 的
+```
+我们树: 30110_06.2026060501   ← E10
+ZV-1M2: 22110_05.2025042601   ← 正确代际（已替换）
+backup.ko 内部读取 /version.txt（version_file_read）用于备份文件校验
+替换后 Backup_debug=1 输出：backup.ko: ** NO SAVE MODE **
+但 0x3e014d 仍无接收者 ⇒ version.txt 不是唯一原因
+```
+**⚠️ 注意：/version.txt 错配同样适用于真机镜像（nflasha15 里的 /version.txt 需确认代际）**
+
+## ④ 下一步
+```
+A. 查 appFw/libObj 里 Backup_reg_cb 的调用条件（是否要求 Application_Start 某阶段先完成）
+B. 尝试在 appFw 启动前手动调用 Backup_reg_cb 注册服务线程（argtrace 里 dlsym 调用）
+C. 或让 MWF_Init 跳过 backup 同步（需改 libMWF 的调用点而非 backup 本身）
+```
+
+## 方法论（第 113 条）★★★
+**"队列存在但无接收者"与"队列不存在"是两类不同故障：
+```
+0x8f013a：valloc 失败 ⇒ 队列没创建（ulogio.bin 代际错）
+0x3e014d：valloc 成功、无接收者 ⇒ 服务方没注册/没启动
+⇒ 判据：先看 valloc 是否成功，再区分"创建问题"还是"服务注册问题"
+```
