@@ -11444,3 +11444,60 @@ C. 放弃硬件路径，改走 E10 式"软件绘图"：为 M2 新引擎写一套
 ⇒ 判据：模拟设备必须按驱动的 ISR 反汇编逐条实现状态机，
    否则"中断能进"反而更快暴露不一致
 ```
+
+---
+
+# ★★★★★★★★ 2026-10-31 第一百一十四层：**sugilite 中断模型成功工作 —— 19 个 GPE 包首次出现**
+
+## ① 关键修正：sugilite 寄存器基址是 **0xf1000000（= GPE 设备）**，不是 0xf3400000
+```
+内核 BUG 的寄存器现场：r4=f1000000, r7=f1000034, r6=00000000
+⇒ 驱动 sugilite_ioread32(base+0x34) 读的是 **GPE 窗口**
+⇒ 之前把中断模型加在 0xf3400000 是错的（那只是 power-ack 窗口）
+```
+
+## ② 最终 QEMU 补丁（/mnt/build/m2qemu/qsrc/hw/arm/zve10.c）
+```c
+/* GPE 内新增 */
+Zve10Gpe { regs[0x4000/4], qemu_irq irq, QEMUTimer *timer }
+gpe_read(0x34): 首次读时启动 5s 后的周期定时器（20ms），空状态强制 0x40000001
+gpe_write: 按 ISR 语义清位（0x1000→bit31, 0xc18→0x40000000,
+           0x1c→0x04000000, 0x3c/0x44→low4）并更新 irq
+zve10_gpe_tick: 每次 |= 0x40000001 并 raise IRQ 76
+/* sugi 设备（0xf3400000）恢复为只读 0x80→0x15 的简单窗口 */
+```
+
+## ③ 实测（out/m2irq6，单实例）
+```
+GPE_TICK 3282 次、GPE_RD34 4250 次、寄存器写 6434 次
+**ZVE10_GPE_PACKET = 19** ← 首次出现 GPU 启动栅栏包！
+off=1800 写 19 次、off=1000 写 21 次
+内核 BUG = 0
+串口 8503 行、ENTER=1、INITSEQ 60、帧仍 0
+线程状态：futex 29 / rcv 24 / **sugilite_ioctl 1**（仍在等某个具体事件）
+最后卡在 libbackup 反复 snd_sync_msg(0x3e014d)
+```
+**⇒ 中断模型确实把 GPU 驱动推进到"提交 19 个启动栅栏包"，
+   但引擎仍卡在 backup 服务队列，未进入绘制。**
+
+## ④ 结论
+```
+QEMU 侧 sugilite 中断/寄存器模型**已可工作**（本层最大成果）
+剩下的阻塞回到用户态服务：0x3e014d（backup）无人应答
+```
+
+## ⑤ 下一步
+```
+A. 处理 0x3e014d：backup 服务队列（backup.ko 已换 M2 版，Backup.bin 仍是 E10 的 1.2MB）
+   - 可能需要 M2 格式的 Backup.bin，或让 backup.ko 自建（删掉会启动失败）
+B. 继续观察 sugilite_ioctl 等待的具体事件（可能需要特定状态位组合）
+C. 一旦 backup 通过，再看是否进入帧循环
+```
+
+## 方法论（第 112 条）★★★
+**"设备基址要从内核 oops 的寄存器现场确认"：
+```
+本轮：sugilite 驱动读 0xf1000034，而我们把模型放在 0xf3400000
+⇒ 内核 BUG 打印的 r4/r7 直接给出真实基址
+⇒ 判据：驱动寄存器基址不要猜，从 oops 寄存器或 ioremap 参数里读
+```
