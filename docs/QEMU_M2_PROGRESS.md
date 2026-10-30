@@ -11308,3 +11308,66 @@ C. 若能越过 backup，应继续到帧循环/GPE 提交
 ⇒ 判据：固件树移植时，/setting、/system、/etc 这些"数据"必须与固件同代，
    否则会出现"库正确但服务起不来"的怪现象
 ```
+
+---
+
+# ★★★★★★★★ 2026-10-31 第一百一十二层：**硬件级墙 —— M2 的新引擎等 sugilite GPU 中断，QEMU 从不发**
+
+## ① 换 ZV-1M2 全套内核模块（34 个）后的最好成绩
+```
+替换：backup.ko / grm_gles.ko / grm_ma.ko / dmm.ko / utimer.ko / kikilog.ko …（34 个）
+结果（out/m2mods2）：
+  日志 **8475 行**（历史新高）
+  INITSEQ resolve **66**
+  ENTER=1
+  glibc/断言 = 0
+  VALLOCFAIL 655（0x8f013a，随 kikilog/ulogio 组合回归）
+  帧 = 0、GPE 包 = 0
+```
+**对照：E10 模块 + M2 setting（out/m2set）= 7167 行、VALLOCFAIL 0。两套各有优劣。**
+
+## ② ★★★★ 线程级证据（/proc 采样）
+```
+TS pid=110 comm=im.elf nthread=64 nrunning=1
+   | osal_rcv_msg_tmo:24  __k_4u_wait_cb:4  poll_schedule_timeout:3
+   | hrtimer_nanosleep:1  futex_wait_queue_me:29  utimer_res_sleep:1
+   | **sugilite_ioctl:1**
+```
+**⇒ im.elf 有 64 个线程：24 个在等消息、29 个在 futex、1 个卡在 `sugilite_ioctl`。**
+
+## ③ ★★★★★ 根因：QEMU 的 sugi 设备**没有中断**
+```
+grm_gles.ko（ZV-1M2 版）：
+  符号：sugilite_interrupt / sugilite_dev_init / sugilite_register_init
+  依赖：request_threaded_irq / free_irq
+  字符串：request_irq fail %d、&sugilite_dev->int_status_lock
+
+QEMU hw/arm/zve10.c：
+  sugi_read(): 只对 0x80 返回 0x15（上电应答）
+  sugi_write(): **空函数**
+  设备注册：memory_region_init_io(sugi,…,0x1000) —— **没有 qemu_irq、从不 raise**
+⇒ **guest 的 sugilite 驱动 request_threaded_irq 后永远等不到中断
+   ⇒ 线程卡在 sugilite_ioctl ⇒ GPU 初始化不完成 ⇒ 引擎不提交 GPE 包 ⇒ 零帧**
+```
+**这就是 M2 新引擎相对 E10 老引擎缺失的"运行前提"：**
+- E10：老引擎走 libObj 里的软件绘图钩子（libuiobserve 可接管）
+- M2：新引擎走 `sugilite` GPU 驱动 + 中断，QEMU 无此模型
+
+## ④ 下一步（唯一可行方向）
+```
+A. 改 QEMU hw/arm/zve10.c：
+   给 sugi 设备分配 qemu_irq（接入 GIC），在 sugi_write 的特定寄存器写时 raise
+   需要先确定 grm_gles 请求的 IRQ 号（Readelf 显示 request_threaded_irq 在 .init.text，
+   偏移 0x18，符号未 strip，可进一步反汇编 .init.text 找立即数）
+B. 或 patch grm_gles.ko 的 sugilite_ioctl 等待逻辑直接返回成功
+C. 重新构建 qemu（work/qemu-src/build-zve10 已有 ninja 构建目录，改一个文件重编约几分钟）
+```
+
+## 方法论（第 111 条）★★★
+**"驱动等中断"是模拟器最常见的不完整点：
+```
+本轮：grm_gles 的 request_threaded_irq + sugilite_interrupt 完整存在，
+      但 QEMU 侧设备从不 raise IRQ ⇒ 线程永久阻塞
+⇒ 判据：当某个线程卡在 *_ioctl 且该驱动有 request_irq，
+   先查模拟器设备是否真的会发中断，而不是继续在用户态找问题
+```
