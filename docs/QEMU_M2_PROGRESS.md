@@ -10863,3 +10863,75 @@ hw/arm/zve10.c:
 ⇒ 上游随后新增的两个 prepare 脚本证明"从原始固件重建"才是正解
 ⇒ 判据：拿别人仓库当基线前，先确认它的提交产物是不是它文档描述的产物
 ```
+
+---
+
+# ★★★★★ 2026-10-30 第一百零五层：**GPE 只收到 11 个相同的启动栅栏包；UI 从未提交绘制命令**
+
+## ① 可控镜像上的完整数据（cap5）
+```
+启动：Image=work/kbuild-ui2/arch/arm/boot/Image（MMC off + 内嵌 refui 树）
+      242,866,180 B，boot 正常，UI 起，commit frame 1/2
+钩子全部安装成功（关键！证明 libObj 与参考实现完全匹配）：
+  hooks.installed.base=0x9959000
+  RM.hooks.installed=1
+  FONT.raster.hook_installed=1
+  （install() 会逐钩子校验 8 字节序言，任一不符就整体放弃 ⇒ 全过说明二进制一致）
+```
+
+## ② ★★★ 决定性数据：绘制路径**完全没被触发**
+```
+GEMINI.total.solid=0 / textrect=0 / quad=0 / line=0      ← CPU 光栅化器 0 条指令
+GPE 包只有 11 个，且**全部相同**（第2字 0x02056db0，即启动栅栏 0x0116f000）
+GPE 寄存器写 51 次：off=1000(val=0)×13、off=1800(val=4)×11、off=1804 各1次
+⇒ **引擎从未向 GPU/GPE 提交任何绘制命令**
+⇒ 引擎也没有调用 GEMINI 的 solid/rect/quad/line
+⇒ 所以 0x22bb2000 / 0x22c48000 永远为 0，FB_PHYS=0x22c48000 全黑
+```
+
+## ③ 但引擎确实在"准备内容"
+```
+FONT 记录 1715 条（字形光栅化在进行）
+LDEC.cpu.decoded=70（图像解码在进行）
+native.view.id=0xa0 / 0xa1 / 0xa3（视图对象已创建）
+notifyDraw / drawFramebuffer 被调用（提交事务）
+ui.send.queue=0x8f013a ×32（向"UI 服务"投递 0x34 字节消息）
+⇒ **内容在准备，但合成/绘制这一步没有发生**
+```
+
+## ④ 内核 oops（运行末期）
+```
+line 4636: Unable to handle kernel NULL pointer dereference at 00000024
+           ida_remove+0x7c ← sys_getdents64 ← proc_root_readdir
+（发生在 frame 2 之后、GEMINI 统计之后，非首帧阻塞原因）
+```
+
+## ⑤ 结论
+```
+参考仓库提交的 Image/initramfs 组合在**我们的环境**里：
+  · 能启动、能进 UI、能提交帧
+  · 但**没有任何绘制命令** ⇒ 无法出画面
+⇒ README 截图对应的构建产物 ≠ 仓库提交产物
+⇒ 必须走上游新增的重建流程（prepare-firmware.py + prepare-initramfs.py）
+   并用**原始固件包**重新生成 work/usr（2.03 原厂树），而不是复用现成树
+```
+
+## ⑥ 下一步（两条并行）
+```
+A. 重建路线
+   ① /mnt/build/fw/unpacked/unpacked_zve10/firmware.fdat（370MB）已有 ⇒ 可喂给 prepare-firmware.py
+   ② 跑 prepare-initramfs.py 生成全新 work/{initramfs-ui,initramfs-camera}
+   ③ 重建 Image（MMC off）后验证 GEMINI.total.* 是否 >0
+B. 直接实现路线
+   在 QEMU 里补一个最小的"present 复制"：解析 0x1800=4 提交包里的 src/dst 并 memcpy
+   ⇒ 即使引擎只提交栅栏，也能把引擎侧缓冲搬到 FB_PHYS
+   （但当前 src 也是 0，所以必须先把绘制做出来 ⇒ B 单独不够）
+```
+
+## 方法论（第 106 条）★★★
+**"帧被提交"不等于"画面被绘制"：
+```
+本轮：UI_OUTPUT_COMMITTED 出现、notifyDraw/drawFramebuffer 都调用了
+⇒ 但 GEMINI 绘制计数全 0、GPE 只有启动栅栏
+⇒ **必须分别验证"提交"与"绘制"两个环节**，否则会被提交日志误导
+```
