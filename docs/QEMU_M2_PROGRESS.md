@@ -11013,3 +11013,65 @@ B. 用 REA 继续反编译：
    - im.elf 的 INITSEQ 循环（谁在等待哪个 service）
 C. 解决 guest 内存：把 appFw.so 按需 mmap 或减少已加载模块后再跑
 ```
+
+---
+
+# ★★★★★★ 2026-10-31 第一百零七层：**M2 首次跑到 Application_Start 之后 2810 行；阻塞点换到 0x8f0313**
+
+## ① 关键修复：initramfs 里混进了 Ghidra 项目（157MB）
+```
+usr/lib/libObj.so_ghidra.rep = 157MB  ← pyghidra 默认把项目建在二进制同目录
+⇒ initramfs 从 263M 膨胀到 422M
+⇒ guest MemTotal 仅 473MB（1G 中 575MB 被保留），initramfs 吃掉大半
+⇒ OOM killer 杀掉 bootin.elf（CommitLimit 236MB）
+删除后：树 422M→266M，cpio 440M→263M，**OOM 消失**
+```
+
+## ② 0x910042 按「时间戳」应答（argtrace LD_PRELOAD）
+```c
+if(q==0x910042){ clock_gettime→syscall(SYS_clock_gettime,1,&ts);
+                 memset(m,0,32); w[5]=0; w[6]=sec; w[7]=usec; return 0; }
+```
+（注：用 `clock_gettime()` 会引入 GLIBC_2.17 符号，guest glibc 2.11 加载失败 ⇒ 必须用裸 syscall）
+
+## ③ ★★★ 效果（out/m2blk）
+```
+日志 689 → **2810 行**
+INITSEQ resolve 4 → **57**（含 Application_System_Init / InfraRemote / CameraBackground…）
+Application_Start ENTER = **1**
+OOM = 0、oops = 0
+帧相关仍为 0
+```
+
+## ④ ★★ 新的精确阻塞点（线程级）
+```
+tid=183 在 appFw.so +0x2c2b003 反复 osal_snd_sync_msg(0x8f0313)
+  · 发送 655 次，**接收 0 次**
+  · 反汇编该处：osal_valloc_msg_wait(0x8f0313,...) 失败 → 返回 0xfffffc00 → 循环重试
+im.elf 的 3 个线程在 sem_tmo（0x380d/0x3865/0x3891）等待
+队列收发现状：0x8f0139 收=2；**0x8f013a 收=0、0x8f0313 收=0**
+⇒ 基础设施服务进程没有创建这些队列
+```
+
+## ⑤ 尝试与结果
+```
+把 mwf_monio.elf / app_monio.elf 加进 init（与 bootin 同时启动）
+⇒ 启动直接崩（395 行，用户态异常）
+⇒ 说明这些服务不能与 bootin 并行早启，需要时序/参数
+```
+
+## ⑥ 下一步
+```
+A. 推迟启动 monio（bootin 之后 sleep 2-5s），或按原厂 init 的顺序
+B. 用 REA 反编译 osal_valloc_msg_wait 的调用者/队列创建 API，确认 0x8f0313 由谁创建
+C. 继续用 REA 分析 appFw 0x2c2b003 所属函数（谁在重试、重试上限、失败后行为）
+```
+
+## 方法论（第 107 条）★★★
+**"initramfs 必须瘦身"是 QEMU 相机模拟的硬约束：
+```
+1GB guest 实际只有 473MB 可用（575MB 保留）
+initramfs 会完整解压进 ramfs，占用等量内存
+任何分析残留（Ghidra .rep、备份库）都会变成 OOM 的直接原因
+⇒ 每次改树都要 `du -sh` 检查，异常增量先查分析工具残留
+```
