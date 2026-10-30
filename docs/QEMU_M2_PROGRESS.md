@@ -10795,3 +10795,71 @@ UI_PIXDBG {"frame":2,"i":0,"b0":0,"b1":0,"b2":0,"uni":0,"phys":583303168}
 ⇒ 真因：Image 内嵌 initramfs 优先，外部 -initrd 被忽略
 ⇒ 判据：改动后先在 guest 里打印一个标记（md5/echo），确认生效再谈效果
 ```
+
+---
+
+# ★★★★★ 2026-10-30 第一百零四层：可控内核构建成功；**软件光栅化器收到 0 条绘制指令**
+
+## ① 取得完全可控的启动镜像（关键基础设施）
+```
+kbuild-ui2/.config 改动：
+  CONFIG_MMC=y            → # CONFIG_MMC is not set     （消除 mmci 抢占 IRQ41/42 ⇒ dma330_stub 能加载）
+  CONFIG_INITRAMFS_SOURCE → "/mnt/build/m2qemu/work/refui"（把我们自己的 E10 树**内嵌**进 Image）
+重建：Image 242,866,180 B @ 2026-10-30 22:05:14，0 error
+⇒ 从此改 /init、换库**都会生效**（不再被内置 cpio 覆盖）
+```
+**⚠️ 之前所有"改 /init / 换库 / overlay cpio"实验全部作废，原因是 Image 内嵌 initramfs 优先。**
+
+## ② E10 基线在可控镜像上跑通，但**像素全零**
+```
+UI_PIXDBG {"frame":1,"i":0,"b0":0,"b1":0,"b2":0,"uni":0,"phys":582688768}
+UI_PIXDBG {"frame":2,"i":0,"b0":0,"b1":0,"b2":0,"uni":0,"phys":583303168}
+⇒ headless_copy() 拿到的像素全 0、非均匀性=0 ⇒ 不发布
+```
+
+## ③ ★★★ 真因：软件光栅化器（Gemini）**一条指令都没收到**
+```
+GEMINI.total.solid=0
+GEMINI.total.textrect=0
+GEMINI.total.quad=0
+GEMINI.total.line=0
+GEMINI.mapping.physical=0x22bb2000 / 0x22c48000   ← 面已映射
+UI_OBSERVE ui.send.queue=0x8f013a                  ← UI 把绘制命令**发到队列**
+UI_OBSERVE hooks.installed.base=0x9959000
+UI_OBSERVE RM.hooks.installed=0x1
+```
+**⇒ UI 进程只是把绘制命令投递给 0x8f013a 队列（服务端渲染模型），
+   而 CPU 端光栅化器（ui-gemini-backend.h）未消费这些命令 ⇒ 帧全零。**
+
+## ④ QEMU 侧确认（源码）
+```
+hw/arm/zve10.c:
+  FB_PHYS = 0x22c48000          ← 显示窗口读这里
+  gpe_write(): 只 fprintf 打印 GPE 包，**不做任何复制/绘制**
+  zve10_gfx_update(): 读 FB_PHYS → 转 RGBA 上屏
+⇒ 若 guest 不写 0x22c48000，屏幕必黑
+```
+
+## ⑤ 与参考项目 README 截图不符的原因
+```
+仓库提交的 Image/ui.cpio 组合**不能**复现菜单（像素全零）
+上游新增脚本（prepare-firmware.py / prepare-initramfs.py）才是他们的重建入口
+⇒ 需要用原始固件包重新生成 work/usr + initramfs-ui，并重建 Image
+```
+
+## ⑥ 下一步（明确、可执行）
+```
+① 用 /mnt/build/fw/FirmwareData_ZVE10V203.dat（或 unpacked_zve10）重建 work/usr（2.03 原厂树）
+② 跑 prepare-initramfs.py 生成 initramfs-ui（设备节点 + dma330_stub + fakeroot）
+③ 重建 Image（MMC off + 内嵌新树）
+④ 验证 GEMINI.total.* 是否 > 0、UI_PIXDBG 是否非零
+⑤ 基线可信后，再逐项换 M2 的 libObj/appFw/appFwBoot 做二分
+```
+
+## 方法论（第 105 条）★★★
+**"参考实现跑不通"时，先怀疑**提交产物≠文档产物**：
+```
+本轮：README 有菜单截图，但提交的 Image/cpio 组合渲染为全零
+⇒ 上游随后新增的两个 prepare 脚本证明"从原始固件重建"才是正解
+⇒ 判据：拿别人仓库当基线前，先确认它的提交产物是不是它文档描述的产物
+```
